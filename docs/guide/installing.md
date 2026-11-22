@@ -1,6 +1,6 @@
 # Install RetroBoot 3.0.0
 
-Select the installer for your computer and download its checksum. Get any Mac archive or ROM you plan to use from a source you are authorized to use. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#installers)
+Select the installer for your computer and download its checksum. The same page has the Mac disk library and a catalog URL you can add during setup. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#installers)
 
 If RetroBoot already runs on the device, use the [upgrade guide](upgrading.md). A fresh install to a selected PC disk or SD card erases that disk or card.
 

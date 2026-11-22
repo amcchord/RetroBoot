@@ -2,7 +2,7 @@
 
 RetroBoot runs Mac OS on a dedicated PC, Raspberry Pi or Planet Computers Gemini PDA. Power on and the selected Mac takes over the screen. Press **Ctrl+Alt+Delete** on a PC keyboard to open the local RetroBoot controls. A paired browser can manage the same computer over your local network.
 
-[Install RetroBoot](docs/guide/installing.md) · [Upgrade an existing system](docs/guide/upgrading.md) · [Host an image server](docs/guide/image-servers.md) · [How it works](docs/dev/how-it-works.md)
+[Install RetroBoot](docs/guide/installing.md) · [Upgrade an existing system](docs/guide/upgrading.md) · [Mac disk library](docs/guide/disk-library.md) · [Host an image server](docs/guide/image-servers.md) · [How it works](docs/dev/how-it-works.md)
 
 ![RetroBoot control panel preview on the checkerboard](docs/images/retroboot-panel.png)
 

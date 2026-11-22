@@ -1,8 +1,10 @@
 # Mac disk library
 
-On a RetroBoot computer, open **Startup Disk → Install Another… → Download a Mac**. Choose **RetroBoot downloads** and sign in, then select an image. You can also sign in to download a machine archive and its SHA-256 checksum from the private browser library. Keep the archive intact when copying it to a USB disk for import. [Private Mac disk library](https://mcchord.net/retroboot-downloads/private.html#macs)
+Download a current Mac archive and its SHA-256 checksum. Keep the archive intact when copying it to a USB disk for import. The library includes Internet Archive references for the original install media and updates. [Public Mac disk library](https://mcchord.net/retroboot-downloads/#macs)
 
-The library groups Macs by runtime and lists OS versions in numerical order. It shows the newest published revision of each edition. Standard and curated editions are separate Macs. Older downloads that already exist on disk can still be used.
+To browse and install from the library on RetroBoot 3.0.0, open **Startup Disk → Install Another… → Download a Mac → Image Servers…** and add `https://mcchord.net/retroboot-downloads/catalog.json`. [Add an image server](image-servers.md)
+
+The library groups Macs by runtime and lists OS versions in numerical order. It shows the newest published revision of each edition. Standard and curated editions are separate Macs. Previously downloaded archives can still be imported.
 
 | Runtime | Available images | Requirements |
 | --- | --- | --- |
