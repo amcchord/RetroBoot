@@ -10,7 +10,7 @@ Choose the method for the computer running RetroBoot. Shut down your Macs cleanl
 
 ## x86 PC
 
-1. On the existing machine, open **Software Update → Check for Updates**. Choose 3.0.0 for your installed flavor.
+1. If the computer already uses the RetroBoot downloads update feed, open **Software Update → Check for Updates**. Choose 3.0.0 for your installed flavor. For a computer with no update server, use the signed bundle below.
 2. Choose **Restart to Update** when staging finishes. RetroBoot tries the new system slot and keeps the previous one. The Macs, profiles and device settings stay on the data partition.
 3. Once the machine is running, open an existing Mac and check a saved document. The update appears under **This RetroBoot**.
 
