@@ -1,0 +1,76 @@
+diff --git a/hw/ide/macio.c b/hw/ide/macio.c
+index 1a8fa26..fc627a5 100644
+--- a/hw/ide/macio.c
++++ b/hw/ide/macio.c
+@@ -363,6 +363,27 @@ static void pmac_ide_flush(DBDMA_io *io)
+     pmac_ide_drain(io->opaque);
+ }
+ 
++/*
++ * pio-status-drain: firmware that polls Status/Alt Status after a PIO
++ * READ SECTORS (OpenBIOS waits 1 ms per poll while BSY is set) otherwise
++ * pays a full poll interval for every sector burst, because the block
++ * layer completes PIO reads asynchronously.  Finish the in-flight PIO read
++ * before reporting status, as pmac_ide_drain() already does for resets.
++ * Only PIO reads are drained: DMA and ATAPI transfers (Mac OS's own ATA
++ * driver, CD boots) never set pio_aiocb, and PIO writes and cache flushes
++ * stay asynchronous so the BQL is never held across a host write/fsync.
++ */
++static void pmac_ide_pio_status_drain(MACIOIDEState *d)
++{
++    IDEState *s = ide_bus_active_if(&d->bus);
++
++    if (d->pio_status_drain && s->pio_aiocb && s->blk &&
++        s->acct.type == BLOCK_ACCT_READ) {
++        trace_pmac_ide_pio_status_drain(d, s->unit);
++        blk_drain(s->blk);
++    }
++}
++
+ /* PowerMac IDE memory IO */
+ static uint64_t pmac_ide_read(void *opaque, hwaddr addr, unsigned size)
+ {
+@@ -370,6 +391,10 @@ static uint64_t pmac_ide_read(void *opaque, hwaddr addr, unsigned size)
+     uint64_t retval = 0xffffffff;
+     int reg = addr >> 4;
+ 
++    if (reg == 0x7 || reg == 0x8 || reg == 0x16) {
++        pmac_ide_pio_status_drain(d);
++    }
++
+     switch (reg) {
+     case 0x0:
+         if (size == 1) {
+@@ -625,6 +650,8 @@ static const Property macio_ide_properties[] = {
+     DEFINE_PROP_UINT64("dma-completion-delay-ns", MACIOIDEState,
+                        dma_completion_delay_ns,
+                        MACIO_IDE_DEFAULT_COMPLETION_DELAY_NS),
++    DEFINE_PROP_BOOL("pio-status-drain", MACIOIDEState, pio_status_drain,
++                     false),
+ };
+ 
+ static void macio_ide_finalizefn(Object *obj)
+diff --git a/hw/ide/trace-events b/hw/ide/trace-events
+index 0965dc3..ce8d555 100644
+--- a/hw/ide/trace-events
++++ b/hw/ide/trace-events
+@@ -27,6 +27,7 @@ pmac_ide_transfer_cb(void *m, int unit, int kind, int dma_cmd, bool atapi, int r
+ pmac_ide_transfer_submit(void *m, int unit, int kind, int dma_cmd, bool atapi, int64_t offset, uint64_t addr, int io_len, int buffer_size, int buffer_index) "macio-ide %p unit=%d kind=%d dma_cmd=%d atapi_submit=%d offset=%"PRId64" addr=0x%"PRIx64" len=%d buffer=%d index=%d"
+ pmac_ide_dbdma_start(void *m, int unit, int kind, int dma_cmd, int buffer_size, int buffer_index, uint8_t status, uint32_t nsector) "macio-ide %p unit=%d kind=%d dma_cmd=%d IDE-ready buffer=%d index=%d status=0x%02x nsector=%u"
+ pmac_ide_completion_scheduled(void *m, int unit, bool atapi, uint64_t delay_ns) "macio-ide %p unit=%d atapi=%d completion delayed by %"PRIu64" ns"
++pmac_ide_pio_status_drain(void *m, int unit) "macio-ide %p unit=%d PIO read completed for a status poll"
+ pmac_ide_completion(void *m, int unit, bool atapi, uint64_t delay_ns) "macio-ide %p unit=%d atapi=%d delayed completion after %"PRIu64" ns"
+ 
+ # BMDMA HBAs:
+diff --git a/include/hw/misc/macio/macio.h b/include/hw/misc/macio/macio.h
+index 8aa929c..f9fa280 100644
+--- a/include/hw/misc/macio/macio.h
++++ b/include/hw/misc/macio/macio.h
+@@ -98,6 +98,7 @@ struct MACIOIDEState {
+     bool dma_completion_atapi;
+     uint8_t dma_unit;
+     uint64_t dma_completion_delay_ns;
++    bool pio_status_drain;
+     QEMUTimer *dma_completion_timer;
+     uint32_t timing_reg;
+     uint32_t irq_reg;

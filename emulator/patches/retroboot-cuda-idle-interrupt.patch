@@ -1,0 +1,100 @@
+diff --git a/hw/misc/macio/cuda.c b/hw/misc/macio/cuda.c
+--- a/hw/misc/macio/cuda.c
++++ b/hw/misc/macio/cuda.c
+@@ -570,6 +570,50 @@ static void cuda_reset(DeviceState *dev)
+     adb_set_autopoll_enabled(adb_bus, false);
+ }
+ 
++/*
++ * Idle interrupt (RetroBoot).  Mac OS 9 sometimes loses the wakeup of its
++ * main ("blue") task, which runs the 68k interrupt work: Time Manager and
++ * VBL tasks, the cursor, the extension parade, Cuda's own 3 s TIMER_TICKLE.
++ * Lab traces (emulator/reports/startup-stall-20261011.md) show it after a
++ * Cuda transaction during which the decrementer expired inside the 68k Cuda
++ * interrupt handler: the nanokernel keeps handling its decrementer, but the
++ * blue task only runs again after the next *external* interrupt.  A real
++ * Mac has a steady supply of those (the graphics card's VBL interrupt, among
++ * others); QEMU's mac99 has none while Mac OS starts up, so the guest stayed
++ * frozen until the USB controller's frame-number-overflow interrupt, up to
++ * 33 s later.  Any external interrupt ends the freeze at once.
++ *
++ * So while Cuda is idle and the guest uses its shift-register interrupt,
++ * pulse the interrupt line every idle_irq_ms.  The guest sees an interrupt
++ * with nothing to report in IFR, exactly like the empty interrupt it already
++ * takes after every Cuda transaction (the edge latched while its handler
++ * polls the last byte), reads IFR/IER and returns.  idle-irq-ms=0 restores
++ * QEMU's behaviour (guests whose Cuda driver treats an empty interrupt as an
++ * error, e.g. Linux, should use it).
++ */
++static bool cuda_is_idle(CUDAState *s)
++{
++    MOS6522State *ms = MOS6522(&s->mos6522_cuda);
++
++    return (ms->ier & SR_INT) && !(ms->ifr & ms->ier) && (ms->b & TIP) &&
++           s->data_out_index == 0 && s->data_in_index >= s->data_in_size &&
++           !timer_pending(s->sr_delay_timer);
++}
++
++static void cuda_idle_irq(void *opaque)
++{
++    CUDAState *s = opaque;
++    MOS6522State *ms = MOS6522(&s->mos6522_cuda);
++
++    if (cuda_is_idle(s)) {
++        trace_cuda_idle_irq();
++        qemu_irq_raise(ms->irq);
++        qemu_irq_lower(ms->irq);
++    }
++    timer_mod(s->idle_irq_timer,
++              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + s->idle_irq_ms);
++}
++
+ static void cuda_realize(DeviceState *dev, Error **errp)
+ {
+     CUDAState *s = CUDA(dev);
+@@ -591,6 +635,12 @@ static void cuda_realize(DeviceState *dev, Error **errp)
+     s->sr_delay_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, cuda_set_sr_int, s);
+     s->sr_delay_ns = 20 * SCALE_US;
+ 
++    if (s->idle_irq_ms) {
++        s->idle_irq_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, cuda_idle_irq, s);
++        timer_mod(s->idle_irq_timer,
++                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + s->idle_irq_ms);
++    }
++
+     adb_register_autopoll_callback(adb_bus, cuda_adb_poll, s);
+ }
+ 
+@@ -611,6 +661,7 @@ static void cuda_init(Object *obj)
+ 
+ static const Property cuda_properties[] = {
+     DEFINE_PROP_UINT64("timebase-frequency", CUDAState, tb_frequency, 0),
++    DEFINE_PROP_UINT32("idle-irq-ms", CUDAState, idle_irq_ms, 50),
+ };
+ 
+ static void cuda_class_init(ObjectClass *oc, const void *data)
+diff --git a/hw/misc/macio/trace-events b/hw/misc/macio/trace-events
+--- a/hw/misc/macio/trace-events
++++ b/hw/misc/macio/trace-events
+@@ -9,6 +9,7 @@ cuda_packet_receive(int len) "length %d"
+ cuda_packet_receive_data(int i, const uint8_t data) "[%d] 0x%02x"
+ cuda_packet_send(int len) "length %d"
+ cuda_packet_send_data(int i, const uint8_t data) "[%d] 0x%02x"
++cuda_idle_irq(void) ""
+ 
+ # macio.c
+ macio_timer_write(uint64_t addr, unsigned len, uint64_t val) "write addr 0x%"PRIx64 " len %d val 0x%"PRIx64
+diff --git a/include/hw/misc/macio/cuda.h b/include/hw/misc/macio/cuda.h
+--- a/include/hw/misc/macio/cuda.h
++++ b/include/hw/misc/macio/cuda.h
+@@ -95,6 +95,10 @@ struct CUDAState {
+     uint64_t sr_delay_ns;
+     QEMUTimer *sr_delay_timer;
+ 
++    /* Periodic empty interrupt while Cuda is idle (0 = off), see cuda.c */
++    uint32_t idle_irq_ms;
++    QEMUTimer *idle_irq_timer;
++
+     int data_in_size;
+     int data_in_index;
+     int data_out_index;

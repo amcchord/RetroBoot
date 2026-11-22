@@ -1,0 +1,13 @@
+[Unit]
+Description=Copy the live installer root into RAM so the medium can be removed
+ConditionPathIsMountPoint=/run/retroboot/live/medium
+After=retroboot-hostd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/retroboot/image/rb-live-toram
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

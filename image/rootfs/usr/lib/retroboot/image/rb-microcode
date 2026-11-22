@@ -1,0 +1,219 @@
+#!/usr/bin/python3 -I
+"""Give GRUB this computer's own early microcode (image/reports/hostboot-2026-10-12.md).
+
+The image's initramfs carries no microcode. /boot/microcode.cpio has every
+Intel and AMD update (about 15 MB, nearly all Intel), and GRUB reads every byte
+of an initrd through the firmware: 45-70 ms per MB on the N5105 and N4100
+laptops. This writes the updates for the CPU this system runs on into a small
+early-microcode cpio on the ESP:
+
+  grub/retroboot/ucode-<id>.cpio    kernel/x86/microcode/GenuineIntel.bin or AuthenticAMD.bin
+
+<id> comes from /boot/microcode.cfg (`set rb_ucode_id=...`, a hash of the
+system slot's /boot/microcode.cpio), so a file made from one system version is
+never used with another: GRUB loads ucode-<id>.cpio when it exists for the slot
+it boots and the slot's full /boot/microcode.cpio otherwise (first boot, a new
+version, a disk moved to another computer). A CPU without updates gets an empty
+archive, so GRUB does not fall back to the full file at every boot.
+
+Written only when it changed; atomic ESP writes (temp file, fsync, rename);
+an ESP that cannot be written changes nothing and never fails the boot. The
+three most recent ucode-*.cpio files are kept (both system slots). A boot whose
+microcode set and CPU are the ones recorded in --state, with the file still on
+the ESP, does nothing else (no scan of the 21 MB of Intel updates).
+
+usage: rb-microcode [--esp DIR] [--boot DIR] [--cpuinfo FILE] [--firmware DIR] [--state FILE] [--dry-run]
+"""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+KEEP = 3
+
+
+def option(argv, name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+def cpu_identity(text):
+    """(vendor, family, model, stepping) of the first processor in /proc/cpuinfo."""
+    fields = {}
+    for line in text.splitlines():
+        if not line.strip():
+            if fields:
+                break
+            continue
+        key, _, value = line.partition(':')
+        fields.setdefault(key.strip(), value.strip())
+    vendor = fields.get('vendor_id', '')
+    try:
+        return vendor, int(fields['cpu family']), int(fields['model']), int(fields.get('stepping', '0'))
+    except (KeyError, ValueError):
+        return vendor, None, None, None
+
+
+def intel_signature(family, model, stepping):
+    """CPUID(1).EAX for a family/model/stepping as /proc/cpuinfo shows them."""
+    base_family = min(family, 0xf)
+    ext_family = family - 0xf if family >= 0xf else 0
+    return (stepping & 0xf) | ((model & 0xf) << 4) | (base_family << 8) | (((model >> 4) & 0xf) << 16) | (ext_family << 20)
+
+
+def newc(entries):
+    """An uncompressed newc cpio archive of (name, data or None for a directory)."""
+    out = bytearray()
+
+    def member(name, data, mode):
+        nb = name.encode() + b'\0'
+        hdr = '070701' + ''.join('%08X' % v for v in (0, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(nb), 0))
+        out.extend(hdr.encode() + nb)
+        out.extend(b'\0' * (-len(out) % 4))
+        out.extend(data)
+        out.extend(b'\0' * (-len(out) % 4))
+    for name, data in entries:
+        member(name, data if data is not None else b'', 0o100644 if data is not None else 0o040755)
+    member('TRAILER!!!', b'', 0)
+    return bytes(out)
+
+
+def intel_updates(firmware, family, model, stepping, run=subprocess.run):
+    """This CPU's Intel microcode: iucode_tool's selection (it also follows extended
+    signature tables), else the file named after the signature."""
+    fwdir = os.path.join(firmware, 'intel-ucode')
+    sig = intel_signature(family, model, stepping)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'bin')
+        try:
+            r = run(['iucode_tool', '-q', '-s', '0x%x' % sig, '--write-to=' + out, fwdir],
+                    capture_output=True, timeout=60)
+            if r.returncode == 0 and os.path.exists(out):
+                with open(out, 'rb') as f:
+                    return f.read()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    name = os.path.join(fwdir, '%02x-%02x-%02x' % (family, model, stepping))
+    try:
+        with open(name, 'rb') as f:
+            return f.read()
+    except OSError:
+        return b''
+
+
+def amd_updates(firmware, family):
+    fwdir = os.path.join(firmware, 'amd-ucode')
+    name = 'microcode_amd_fam%02xh.bin' % family if family >= 0x15 else 'microcode_amd.bin'
+    try:
+        with open(os.path.join(fwdir, name), 'rb') as f:
+            return f.read()
+    except OSError:
+        return b''
+
+
+def archive_for(cpuinfo_text, firmware, run=subprocess.run):
+    vendor, family, model, stepping = cpu_identity(cpuinfo_text)
+    data, member = b'', None
+    if family is not None and vendor == 'GenuineIntel':
+        data, member = intel_updates(firmware, family, model, stepping, run), 'GenuineIntel.bin'
+    elif family is not None and vendor == 'AuthenticAMD':
+        data, member = amd_updates(firmware, family), 'AuthenticAMD.bin'
+    entries = []
+    if data:
+        entries = [('kernel', None), ('kernel/x86', None), ('kernel/x86/microcode', None),
+                   ('kernel/x86/microcode/' + member, data)]
+    return newc(entries), {'vendor': vendor, 'family': family, 'model': model, 'stepping': stepping,
+                           'bytes': len(data)}
+
+
+def microcode_id(boot):
+    try:
+        with open(os.path.join(boot, 'microcode.cfg')) as f:
+            m = re.search(r'^set rb_ucode_id=([0-9a-f]{8,64})\s*$', f.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def fsync_path(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_atomic(path, data):
+    tmp = path + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    fsync_path(os.path.dirname(path))
+
+
+def prune(directory, keep_name):
+    files = []
+    for name in os.listdir(directory):
+        if re.fullmatch(r'ucode-[0-9a-f]+\.cpio', name) and name != keep_name:
+            p = os.path.join(directory, name)
+            files.append((os.path.getmtime(p), p))
+    for _, p in sorted(files, reverse=True)[KEEP - 1:]:
+        os.unlink(p)
+
+
+def main(argv):
+    esp = option(argv, '--esp', '/boot/efi')
+    boot = option(argv, '--boot', '/boot')
+    cpuinfo = option(argv, '--cpuinfo', '/proc/cpuinfo')
+    firmware = option(argv, '--firmware', '/usr/lib/firmware')
+    state = option(argv, '--state', '/var/lib/retroboot/state/microcode.json')
+    ident = microcode_id(boot)
+    if not ident:
+        print(json.dumps({'changed': False, 'reason': 'no /boot/microcode.cfg'}))
+        return 0
+    with open(cpuinfo) as f:
+        text = f.read()
+    name = 'ucode-%s.cpio' % ident
+    directory = os.path.join(esp, 'grub', 'retroboot')
+    path = os.path.join(directory, name)
+    record = {'id': ident, 'cpu': list(cpu_identity(text))}
+    try:
+        with open(state) as f:
+            known = json.load(f) == record
+    except (OSError, ValueError):
+        known = False
+    if known and os.path.exists(path):
+        print(json.dumps(dict(record, changed=False, file=name)))
+        return 0
+    data, info = archive_for(text, firmware)
+    try:
+        with open(path, 'rb') as f:
+            changed = f.read() != data
+    except OSError:
+        changed = True
+    result = dict(info, changed=changed, file=name)
+    if changed and '--dry-run' not in argv:
+        try:
+            os.listdir(esp)     # triggers the /boot/efi automount
+            os.makedirs(directory, exist_ok=True)
+            write_atomic(path, data)
+            prune(directory, name)
+        except OSError as exc:
+            # A read-only or missing ESP: GRUB keeps loading the full file; never fail the boot.
+            result.update(changed=False, error=str(exc))
+    if '--dry-run' not in argv and 'error' not in result:
+        try:
+            os.makedirs(os.path.dirname(state), exist_ok=True)
+            write_atomic(state, json.dumps(record).encode())
+        except OSError:
+            pass
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

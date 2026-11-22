@@ -1,0 +1,85 @@
+# RetroBoot Raspberry Pi rootfs packages (both flavors), arm64. One package per line.
+# Derived from image/config/packages.common: the same Debian 13 set without the x86-only
+# pieces (linux-image-amd64, Intel/AMD microcode and GPU firmware, GRUB, efibootmgr,
+# x86 Wi-Fi/Bluetooth families), plus the Raspberry Pi boot packages (apt-pinned).
+# Base system
+systemd
+systemd-sysv
+udev
+dbus
+kmod
+procps
+initramfs-tools
+busybox
+zstd
+# Raspberry Pi archive (config/apt-preferences): kernel 4 KiB pages (kernel8.img on Pi 4
+# and Pi 5), GPU firmware (start4.elf, fixup4.dat), Wi-Fi/Bluetooth firmware for the
+# onboard CYW43455 (brcmfmac43455-sdio.raspberrypi,*; BCM4345C0/C5.hcd)
+linux-image-rpi-v8
+raspi-firmware
+firmware-brcm80211
+bluez-firmware
+wireless-regdb
+# USB Wi-Fi/Ethernet dongles people plug into a Pi (MediaTek mt76, Realtek rtw88/r8152)
+firmware-mediatek
+firmware-realtek
+firmware-misc-nonfree
+# Storage
+e2fsprogs
+xfsprogs
+dosfstools
+gdisk
+cloud-guest-utils
+rsync
+util-linux
+# Offline Mac OS volume repair for hostd (non-free; APSL)
+hfsprogs
+# Classic Mac archives (StuffIt etc.) for the media library (apps/rbapps; LGPL-2.1)
+unar
+# Networking and management
+network-manager
+wpasupplicant
+avahi-daemon
+systemd-timesyncd
+ca-certificates
+openssl
+# Bluetooth keyboards, mice, trackpads and game controllers (hostd/retroboot/bluetooth.py);
+# the onboard controller is on a UART (hci_uart/btbcm through the device tree, no hciattach)
+bluez
+python3-dbus-fast
+# Audio (HDMI through vc4-hdmi, Pi 4's 3.5 mm jack through bcm2835-audio/headphones)
+alsa-utils
+alsa-ucm-conf
+# hostd runtime
+python3
+python3-aiohttp
+python3-cryptography
+python3-qrcode
+# Modern Web Helper (webproxy/)
+python3-lxml
+python3-readability
+python3-pil
+python3-cairosvg
+nftables
+# Platinum asset bundle (rbplatinum, ctypes)
+libfreetype6
+# rb-presenter runtime
+libdrm2
+libinput10
+libudev1
+libxkbcommon0
+libpng16-16t64
+# QEMU runtime; extended from the arm64 package's ELF dependencies at build time
+libglib2.0-0t64
+libpixman-1-0
+libslirp0
+libasound2t64
+zlib1g
+libfdt1
+libzstd1
+# Emulated ATI Radeon's host GL (EGL/GLES through Mesa: v3d on the Pi)
+libegl1
+libegl-mesa0
+libgles2
+libglvnd0
+libgl1-mesa-dri

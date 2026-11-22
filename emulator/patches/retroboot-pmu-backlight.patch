@@ -1,0 +1,207 @@
+diff --git a/hw/misc/macio/pmu.c b/hw/misc/macio/pmu.c
+index 1eba64d..539921e 100644
+--- a/hw/misc/macio/pmu.c
++++ b/hw/misc/macio/pmu.c
+@@ -280,6 +280,7 @@ static void pmu_bridge_send(PMUState *s, const char *line)
+ }
+ 
+ static void pmu_wake(PMUState *s, const char *why);
++static void pmu_backlight_report(PMUState *s, const char *why);
+ 
+ static void pmu_bridge_message(PMUState *s, const char *line)
+ {
+@@ -351,9 +352,13 @@ static void pmu_bridge_event(void *opaque, QEMUChrEvent event)
+         pmu_bat_trace(s, "bridge connected (connection %u)", s->bridge_opens);
+         snprintf(hello, sizeof(hello),
+                  "{\"type\":\"hello\",\"version\":%d,\"battery\":%s,"
+-                 "\"sleeping\":%s}\n", PMU_RB_BRIDGE_VERSION,
+-                 s->battery ? "true" : "false", s->sleeping ? "true" : "false");
++                 "\"sleeping\":%s,\"backlight\":%s}\n", PMU_RB_BRIDGE_VERSION,
++                 s->battery ? "true" : "false", s->sleeping ? "true" : "false",
++                 s->backlight ? "true" : "false");
+         pmu_bridge_send(s, hello);
++        if (s->backlight_cmds) {
++            pmu_backlight_report(s, "hello");
++        }
+         break;
+     case CHR_EVENT_CLOSED:
+         /* nothing here may write: CLOSED can come from inside a write */
+@@ -399,6 +404,67 @@ static void pmu_cmd_smart_battery(PMUState *s,
+                                 ours ? s->bat_current : 0);
+ }
+ 
++/*
++ * Backlight (RetroBoot, -global via-pmu.backlight=on): a PowerBook's display
++ * backlight.  The machine then publishes etc/retroboot/backlight and OpenBIOS
++ * adds the "backlight" node (backlight-control "pmu"), so Mac OS loads its
++ * backlight driver, and sets private power-management feature 0x200, so Mac
++ * OS's PowerBook button driver (ADB address 7, handler 0x1f; see
++ * hw/input/adb-buttons.c) hands the brightness, volume, mute and eject keys
++ * to its Button Manager.  The driver sets the level with PMU_BACKLIGHT_BRIGHT
++ * (lower is brighter) and switches the lamp with PMU_POWER_CTRL.  The host
++ * owns the real panel: each change goes over the power bridge
++ * ({"type":"backlight","level":N,"on":B}) and hostd sets the host backlight.
++ * Without the property both commands keep their old behaviour (no reply).
++ */
++static void pmu_backlight_report(PMUState *s, const char *why)
++{
++    char msg[128];
++
++    if (!s->backlight) {
++        return;
++    }
++    if (s->backlight_have_level) {
++        snprintf(msg, sizeof(msg),
++                 "{\"type\":\"backlight\",\"level\":%u,\"on\":%s,\"why\":\"%s\"}\n",
++                 s->backlight_level, s->backlight_on ? "true" : "false", why);
++    } else {
++        snprintf(msg, sizeof(msg),
++                 "{\"type\":\"backlight\",\"level\":null,\"on\":%s,\"why\":\"%s\"}\n",
++                 s->backlight_on ? "true" : "false", why);
++    }
++    pmu_bridge_send(s, msg);
++}
++
++static void pmu_cmd_backlight_bright(PMUState *s,
++                                     const uint8_t *in_data, uint8_t in_len,
++                                     uint8_t *out_data, uint8_t *out_len)
++{
++    *out_len = 0;
++    trace_pmu_rb_backlight("bright", in_len, in_len ? in_data[0] : 0);
++    if (!s->backlight || in_len < 1) {
++        return;
++    }
++    s->backlight_level = in_data[0];
++    s->backlight_have_level = true;
++    s->backlight_cmds++;
++    pmu_backlight_report(s, "level");
++}
++
++static void pmu_cmd_power_ctrl(PMUState *s,
++                               const uint8_t *in_data, uint8_t in_len,
++                               uint8_t *out_data, uint8_t *out_len)
++{
++    *out_len = 0;
++    trace_pmu_rb_backlight("power", in_len, in_len ? in_data[0] : 0);
++    if (!s->backlight || in_len < 1 || !(in_data[0] & PMU_POW_BACKLIGHT)) {
++        return;
++    }
++    s->backlight_on = !!(in_data[0] & PMU_POW_ON);
++    s->backlight_cmds++;
++    pmu_backlight_report(s, "power");
++}
++
+ static void pmu_cmd_int_ack(PMUState *s,
+                             const uint8_t *in_data, uint8_t in_len,
+                             uint8_t *out_data, uint8_t *out_len)
+@@ -908,6 +974,8 @@ static const PMUCmdHandler PMUCmdHandlers[] = {
+     { PMU_READ_PMU_RAM, "READ PMGR RAM", pmu_cmd_read_pmu_ram },
+     { PMU_SMART_BATTERY_STATE, "SMART BATTERY", pmu_cmd_smart_battery },
+     { PMU_SLEEP, "SLEEP", pmu_cmd_sleep },
++    { PMU_BACKLIGHT_BRIGHT, "BACKLIGHT BRIGHT", pmu_cmd_backlight_bright },
++    { PMU_POWER_CTRL, "POWER CTRL", pmu_cmd_power_ctrl },
+ };
+ 
+ static void pmu_dispatch_cmd(PMUState *s)
+@@ -1152,6 +1220,27 @@ static const VMStateDescription vmstate_pmu_battery = {
+     }
+ };
+ 
++static bool pmu_backlight_state_needed(void *opaque)
++{
++    PMUState *s = opaque;
++
++    return s->backlight;
++}
++
++static const VMStateDescription vmstate_pmu_backlight = {
++    .name = "pmu/retroboot-backlight",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pmu_backlight_state_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT8(backlight_level, PMUState),
++        VMSTATE_BOOL(backlight_have_level, PMUState),
++        VMSTATE_BOOL(backlight_on, PMUState),
++        VMSTATE_UINT32(backlight_cmds, PMUState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_pmu = {
+     .name = "pmu",
+     .version_id = 1,
+@@ -1178,6 +1267,7 @@ static const VMStateDescription vmstate_pmu = {
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_pmu_adb,
+         &vmstate_pmu_battery,
++        &vmstate_pmu_backlight,
+         NULL
+     }
+ };
+@@ -1188,6 +1278,10 @@ static void pmu_reset(DeviceState *dev)
+ 
+     /* OpenBIOS needs to do this? MacOS 9 needs it */
+     s->intmask = PMU_INT_ADB | PMU_INT_TICK;
++    /* The lamp is on at power-up; Mac OS sets a level when it changes it */
++    s->backlight_on = true;
++    s->backlight_have_level = false;
++    s->backlight_cmds = 0;
+     if (s->battery) {
+         /* Mac OS never sets the mask: power source changes must get through */
+         s->intmask |= PMU_INT_ENVIRONMENT;
+@@ -1274,6 +1368,7 @@ static const Property pmu_properties[] = {
+     DEFINE_PROP_BOOL("battery-trace", PMUState, battery_trace, false),
+     DEFINE_PROP_CHR("chardev", PMUState, chr),
+     DEFINE_PROP_BOOL("sleep", PMUState, sleep_wake, true),
++    DEFINE_PROP_BOOL("backlight", PMUState, backlight, false),
+ };
+ 
+ static void pmu_class_init(ObjectClass *oc, const void *data)
+diff --git a/hw/misc/macio/trace-events b/hw/misc/macio/trace-events
+index 92dc96f..bc25896 100644
+--- a/hw/misc/macio/trace-events
++++ b/hw/misc/macio/trace-events
+@@ -53,3 +53,4 @@ pmu_debug_protocol_cmd_resp_complete(int ier) "Response send complete. IER=0x%02
+ pmu_cmd_smart_battery(int bat, int flags, int charge, int current) "battery %d flags 0x%02x charge %d mAh current %d mA"
+ pmu_rb_sleep(unsigned n) "guest sleep %u"
+ pmu_rb_wake(const char *why) "wake: %s"
++pmu_rb_backlight(const char *cmd, int len, int val) "%s len %d val 0x%02x"
+diff --git a/hw/ppc/mac_newworld.c b/hw/ppc/mac_newworld.c
+index 8103d52..678fd45 100644
+--- a/hw/ppc/mac_newworld.c
++++ b/hw/ppc/mac_newworld.c
+@@ -593,6 +593,15 @@ static void ppc_core99_init(MachineState *machine)
+                                  "battery", NULL)) {
+         fw_cfg_add_file(fw_cfg, "etc/retroboot/battery", g_strdup("1"), 1);
+     }
++    /*
++     * RetroBoot backlight (-global via-pmu.backlight=on): OpenBIOS adds the
++     * PMU-controlled "backlight" node and the PowerBook-buttons feature bit.
++     */
++    if (has_pmu &&
++        object_property_get_bool(object_resolve_path_component(macio, "pmu"),
++                                 "backlight", NULL)) {
++        fw_cfg_add_file(fw_cfg, "etc/retroboot/backlight", g_strdup("1"), 1);
++    }
+ 
+     qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
+ }
+diff --git a/include/hw/misc/macio/pmu.h b/include/hw/misc/macio/pmu.h
+index 6771e44..42afacb 100644
+--- a/include/hw/misc/macio/pmu.h
++++ b/include/hw/misc/macio/pmu.h
+@@ -258,6 +258,13 @@ struct PMUState {
+     QEMUTimer *sleep_poll_timer;
+     qemu_irq wake_irq;          /* gpio out "wake": the machine resumes the CPU */
+     struct QemuInputHandlerState *wake_input;   /* exists only while asleep */
++
++    /* RetroBoot backlight (pmu.c "Backlight") */
++    bool backlight;             /* property: a PowerBook display backlight */
++    uint8_t backlight_level;    /* last PMU_BACKLIGHT_BRIGHT value (lower: brighter) */
++    bool backlight_have_level;  /* Mac OS has set a level since the reset */
++    bool backlight_on;          /* PMU_POWER_CTRL lamp state */
++    uint32_t backlight_cmds;
+ };
+ 
+ #define TYPE_VIA_PMU "via-pmu"

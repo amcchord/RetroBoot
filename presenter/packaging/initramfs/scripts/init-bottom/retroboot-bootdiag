@@ -1,0 +1,18 @@
+#!/bin/sh
+# Before switch_root: note the stage for Startup Details and let the
+# initramfs instance of rb-bootdiag save its state in /run/retroboot/bootdiag
+# (which moves into the real root) and exit; retroboot-bootdiag.service
+# continues from that state.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+[ -e /run/retroboot/bootdiag/pid ] && [ -x /usr/lib/retroboot/bin/rb-bootdiag ] || exit 0
+echo "<6>retroboot: stage switch-root" >/dev/kmsg 2>/dev/null || true
+/usr/lib/retroboot/bin/rb-bootdiag --initramfs-exit </dev/null >/dev/null 2>&1 || true
+exit 0

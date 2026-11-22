@@ -1,0 +1,1 @@
+quiet loglevel=0 rd.udev.log_level=0 udev.log_level=0 systemd.show_status=false rd.systemd.show_status=false vt.global_cursor_default=0 console=ttyS0,115200 video=efifb:off video=vesafb:off fbcon=map:9 drm_kms_helper.fbdev_emulation=0 amdgpu.dcdebugmask=0x410 sysctl.kernel.sysrq=0 fsck.repair=yes retroboot.diag=1

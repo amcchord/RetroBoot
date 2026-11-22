@@ -1,0 +1,18 @@
+[Unit]
+Description=RetroBoot data partition layout
+DefaultDependencies=no
+RequiresMountsFor=/var/lib/retroboot
+ConditionPathIsMountPoint=/var/lib/retroboot
+Before=local-fs.target var-log-journal.mount var-lib-bluetooth.mount
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -d -m 0755 /var/lib/retroboot/logs /var/lib/retroboot/machines /var/lib/retroboot/config /var/lib/retroboot/share /var/lib/retroboot/checkpoints
+ExecStart=/usr/bin/install -d -m 0700 /var/lib/retroboot/state
+ExecStart=/usr/bin/install -d -m 0700 /var/lib/retroboot/bluetooth
+ExecStart=/usr/bin/install -d -m 2755 -g systemd-journal /var/lib/retroboot/logs/journal
+
+[Install]
+WantedBy=local-fs.target

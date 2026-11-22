@@ -1,0 +1,22 @@
+{
+  "id": "disk-select",
+  "kind": "window",
+  "title": "Choose a Destination",
+  "width": 480,
+  "focus": "disk",
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "Choose the disk to install RetroBoot on."},
+    {"type": "text", "style": "small", "text": "The disk you choose will be erased completely. Disks that are too small or in use are dimmed."},
+    {"type": "list", "id": "disk", "rows": 5, "value": "nvme0n1", "items": [
+      {"id": "nvme0n1", "label": "Samsung SSD 980", "detail": "500 GB internal", "icon": "disk"},
+      {"id": "sda", "label": "SanDisk Ultra", "detail": "64 GB USB", "icon": "usb"},
+      {"id": "mmcblk0", "label": "SD Card", "detail": "8 GB, too small", "icon": "disk", "disabled": true},
+      {"id": "sdb", "label": "RetroBoot Installer", "detail": "in use", "icon": "usb", "disabled": true}
+    ]},
+    {"type": "buttons", "items": [
+      {"id": "back", "label": "Go Back", "align": "left"},
+      {"id": "cancel", "label": "Cancel"},
+      {"id": "continue", "label": "Continue", "default": true}
+    ]}
+  ]
+}

@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "flavor": "m68k",
+  "package": "linux-m68k",
+  "target_list": "m68k-softmmu",
+  "binary": "qemu-system-m68k",
+  "note": "Quadra 800 (68040) emulator package, D044. Same ClassicMac and QEMU pins as sources.lock.json (the PowerPC lock, which this file does not change); its own asset list, patch series and firmware. emulator/tests/test_m68k_sources.py checks the pins against the PowerPC lock.",
+  "classicmac": {
+    "url": "https://github.com/amcchord/ClassicMac.git",
+    "commit": "3e245943fba0d18af875a8a3a50a148a6d865535"
+  },
+  "qemu": {
+    "url": "https://gitlab.com/qemu-project/qemu.git",
+    "tag": "v11.0.2",
+    "commit": "e545d8bb9d63e9dd61542b88463183314cff9482"
+  },
+  "assets": [
+    {
+      "path": "qfb/mac_qfb.c",
+      "destination": "hw/display/mac_qfb.c",
+      "sha256": "b3d730a041a9e788c61717d8200dc9229af99665f11a8b8e51664bd00a334c97",
+      "bytes": 29923,
+      "binary_private_input": false
+    },
+    {
+      "path": "qfb/mac_qfb.h",
+      "destination": "include/hw/display/mac_qfb.h",
+      "sha256": "0c06cf5b4f001c6d83405015bf4967713c06ccc3836dbd85f31533d783f5d291",
+      "bytes": 1882,
+      "binary_private_input": false
+    },
+    {
+      "path": "qfb/mac_qfb.rom",
+      "destination": "pc-bios/mac_qfb.rom",
+      "sha256": "1eb349c019d9d985b957e2ee8a39890b1300f10bf4fa948bd5140fd3fb260038",
+      "bytes": 20480,
+      "binary_private_input": true,
+      "note": "ClassicMac's pinned build; it is only the source tree's pc-bios blob. The package ships RetroBoot's rebuild (firmware: mac_qfb.rom)"
+    }
+  ],
+  "classicmac_patches": [
+    {
+      "path": "qfb/integration.patch",
+      "sha256": "f8c682afb8ed716607dcda790da4b50adc83b431f1b11669a812f5696059c9ec",
+      "purpose": "nubus-qfb device (hw/display/mac_qfb.c, Kconfig, meson), q800 machine property fb=mac|qemu|none|dual (fb=none: the built-in DAFB is unplugged, nubus-qfb is added with -device), mac_qfb.rom installed as a firmware blob",
+      "files": [
+        "hw/display/Kconfig",
+        "hw/display/macfb.c",
+        "hw/display/meson.build",
+        "hw/m68k/Kconfig",
+        "hw/m68k/q800.c",
+        "include/hw/display/macfb.h",
+        "include/hw/m68k/q800.h",
+        "pc-bios/meson.build"
+      ]
+    },
+    {
+      "path": "qfb/asc-silence.patch",
+      "sha256": "231f177a40e8b9ac9504cee170bc99bfa4fb5ec678153bf59f281bc886f9bb14",
+      "purpose": "Apple Sound Chip: when no samples were produced, always write silence for the whole free region of the host buffer (a live host backend otherwise replays stale ring-buffer contents as a hum)",
+      "files": [
+        "hw/audio/asc.c"
+      ]
+    },
+    {
+      "path": "powermac/tcg-graphics-fast-path.patch",
+      "sha256": "1ccfd107eae5b41ae4faa0d1bb95a889ba5f9f893cb8b45649f768679b5c96ae",
+      "purpose": "target-generic TCG (accel/tcg only): a 32-region summary of translated bytes per page, so a guest store to a page that holds translated code but not at the stored bytes skips the TB walk and the page-collection lock; the victim-TLB flush loop is not unrolled. In the PowerPC lock too (selected); ClassicMac's own qemu-system-m68k is built with it",
+      "files": [
+        "accel/tcg/cputlb.c",
+        "accel/tcg/tb-maint.c"
+      ]
+    }
+  ],
+  "retroboot_patches": [
+    {
+      "path": "emulator/patches/retroboot-display.patch",
+      "sha256": "ee5e86de25b212a5b08be2bcf97b5591178596a412a0e3215bf7470f1d2d03ae",
+      "shared_with_ppc": true,
+      "purpose": "-display retroboot,socket=PATH (docs/ARCHITECTURE.md section 3); RESIZE goes to dpy_set_ui_info, which reaches nubus-qfb's ui_info hook",
+      "files": [
+        "meson.build",
+        "qapi/ui.json",
+        "ui/meson.build",
+        "ui/retroboot.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-display-idle-refresh.patch",
+      "sha256": "caf2b3c89f1e50141aa8c51d6ce81f5d7326083c20ac515f508b89d053c24a3b",
+      "shared_with_ppc": true,
+      "purpose": "-display retroboot,idle-refresh=MS (default 100): the framebuffer is scanned every 100 ms after 1 s without drawing or input",
+      "files": [
+        "qapi/ui.json",
+        "ui/retroboot.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/qemu-char-socket-reconnect-yank.patch",
+      "sha256": "b9a1b261da6a51ee6cc5b84024ea8a445a5eda3c7b9d968759cf3c33a26163e1",
+      "shared_with_ppc": true,
+      "purpose": "upstream backport ddf5738503e2: a failed connect attempt of a reconnecting socket chardev no longer aborts QEMU (target-generic; kept so a reconnecting chardev behaves as in the PowerPC package)",
+      "files": [
+        "chardev/char-socket.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-relative-pointer.patch",
+      "sha256": "f3bfdbc2283a9048c7fc5a3f8804b94c0322dadfcb4a5eeb2d116e7b86ffe660",
+      "shared_with_ppc": true,
+      "purpose": "display message 22 (relative deltas, to the ADB mouse) and pointer-mode events",
+      "files": [
+        "ui/retroboot.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-qfb-resize.patch",
+      "sha256": "e80a3bc29803cb68b274c6859c24026cd21c9d7d07a57360eb77d2a259944b34",
+      "shared_with_ppc": false,
+      "purpose": "the presenter's RESIZE always reaches nubus-qfb: a request equal to the latched one is dropped only while the card shows that size (the boot size is latched at realize, so asking for it after the guest left it was lost); host-resize-request=WxH (the display backend's re-request, as std-VGA's) and a read-only mode property",
+      "files": [
+        "hw/display/mac_qfb.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-qfb-lengths.patch",
+      "sha256": "b3880556729c9beddc3efba94209f675e124b1fc8cb80c53b31cf2029bcf189e",
+      "shared_with_ppc": false,
+      "purpose": "nubus-qfb declares device lengths and a page count that fit the card: the Quadra ROM clears minorLength bytes (256 MiB in mac_qfb.rom) from the screen base and bus-erred in the next slot (Sad Mac at the gray screen); majorLength and the page count ran 64 KiB past VRAM from the screen base (vpBaseOffset 0x10000)",
+      "files": [
+        "hw/display/mac_qfb.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-q800-restart-reset.patch",
+      "sha256": "7308f70aebb271b838d838e872d25669e3e93e16611b676990188e8a8181de0a",
+      "shared_with_ppc": false,
+      "purpose": "Mac OS's Restart on the Quadra is a system reset (SHUTDOWN guest-reset with -action reboot=shutdown): m68k CPU property restart-resets, on for q800 through its compat globals; a RESET instruction after the first since the last system reset requests a system reset (the Quadra ROM executes RESET at power-on and when Mac OS restarts; QEMU's RESET did nothing, so Restart rebooted in place without any QMP event); a q800 system reset (this one or QMP system_reset) also writes the ROM's reset vectors back to 0 and 4 (they held Mac OS's vectors, and the CPU started in RAM: a white screen), so the ROM starts again",
+      "files": [
+        "hw/m68k/q800.c",
+        "include/hw/m68k/q800.h",
+        "target/m68k/cpu.c",
+        "target/m68k/cpu.h",
+        "target/m68k/helper.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-tcg-notdirty-fast.patch",
+      "sha256": "5e05b4a32c527a35e29cabfed149d80df52e55a749be574e066d1eb33fcd4afb",
+      "shared_with_ppc": false,
+      "purpose": "target-generic TCG: stores into pages that still hold translated code (classic Mac OS keeps stacks, driver globals and heap blocks beside code: 58 million such stores in a Mac OS 8.1 start) read the page's dirty bits once and set only bits that are clear, instead of two atomic bitmap sets and five bitmap searches per store; same dirty bits and TLB state",
+      "files": [
+        "accel/tcg/cputlb.c",
+        "include/system/physmem.h",
+        "system/physmem.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-tcg-hot-data-pages.patch",
+      "sha256": "4be2c60cbb8e12c4910e329992a7817c89c0a31c1ac73ed2da274ba8c7527b32",
+      "shared_with_ppc": true,
+      "purpose": "hot data pages (TCG accelerator property x-hot-data-writes, default 64, 0 = off): a page holding translated code is write-protected in the softmmu TLB, so every store to it takes notdirty_write even when the code coverage mask shows it touches no code; after that many such stores since the page was last protected, all TBs on the page are dropped (unless the storing TB is on it) and the TLB entry turns writable. A page protected again within 10 ms of a drop doubles its threshold (at most 256x), one left unprotected for over 1 s halves it. info jit prints hot-data-writes and \"Hot data page drops\". Quake III on the PMU machine trapped 600,000 stores/s on one stack page sharing 45 translated instructions (emulator/reports/hot-data-pages-2026-10-24.md). m68k: after retroboot-tcg-notdirty-fast (cputlb.c), which re-reads the page's dirty bits after the invalidation, so a drop that leaves the page without code takes the original path (TLB entry made writable).",
+      "files": [
+        "accel/tcg/internal-common.h",
+        "accel/tcg/tb-context.h",
+        "accel/tcg/tb-maint.c",
+        "accel/tcg/tcg-all.c",
+        "accel/tcg/tcg-stats.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-qfb-vbl-sync.patch",
+      "sha256": "58d5d943f8f4566d09dd0a5922723da1ae058f29920808b286d2c2ac2964ffb7",
+      "shared_with_ppc": false,
+      "purpose": "nubus-qfb's VBL (vbl-ns, default 16625800) falls on the same virtual instants as VIA1's 60.15 Hz interrupt, so an idle Mac wakes once per frame instead of twice; vbl-ns=16666667 is the original 60.00 Hz",
+      "files": [
+        "hw/display/mac_qfb.c",
+        "include/hw/display/mac_qfb.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-qfb-refresh.patch",
+      "sha256": "19ef3357190c98243dc0d79e69ba05aee30e5a7287c7c57dc5fedaa835f14a9d",
+      "shared_with_ppc": false,
+      "purpose": "nubus-qfb snapshots the dirty bitmap of the visible screen only, and only when one of its pages is dirty (the 32 MiB snapshot also walked every vCPU TLB entry at each refresh); a screen past the end of VRAM wraps in the dirty check (it aborted QEMU on a snapshot range assertion)",
+      "files": [
+        "hw/display/mac_qfb.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-qfb-millions.patch",
+      "sha256": "0421584d2866ecf7e817d096d7df4ff9d25f5d361824799f7e9c3c74daac9a7e",
+      "shared_with_ppc": false,
+      "purpose": "nubus-qfb's depth register takes 32 as millions (24), as realize does for the depth property: the qfb driver's open writes 32 for a card that starts in millions (slot PRAM mode $85) and QEMU took it as 1 bit",
+      "files": [
+        "hw/display/mac_qfb.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-qfb-snapshot-mode.patch",
+      "sha256": "56d3be2b14068fbf5037a3d01f157035fd91886b4cabce8181a101ddce865f02",
+      "shared_with_ppc": false,
+      "purpose": "nubus-qfb captures base, stride, width, height, depth and surface identity across its dirty snapshot; if the vCPU changes the mode during dirty TLB synchronization, free the incoherent snapshot, invalidate VRAM and defer rendering. Prevents querying a new mode outside the old snapshot without relaxing physmem bounds checks; preserves the narrow snapshot and idle fast path.",
+      "files": [
+        "hw/display/mac_qfb.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-q800-adb-idle.patch",
+      "sha256": "8c7fa3d4d6cfc2f7b421442514a84c773dc1b6450d7896ea33efa5837c1982de",
+      "shared_with_ppc": false,
+      "purpose": "mos6522-q800-via1 ADB autopolling: adb-poll-ms (default 11, the Macintosh II ADB Manager rate; QEMU polled every 20 ms, so an ADB mouse moved the pointer at most 50 times a second) while there is input, adb-idle-poll-ms (default 100) once the keyboard and mouse have been idle for adb-idle-after-ms (1000); input polls at once; each empty autopoll was several VIA1 interrupts (about 250 a second at an idle Finder); the settings live in the VIA (qbus_init zeroed the bus's defaults, so idle polling never engaged), the ADB bus reset restores adb-poll-ms (it set 20 ms) and a new autopoll mask waits the idle period too (idle 8.1 Finder: 105 autopolls/s -> 10); adb-idle-poll-ms=0 / adb-poll-ms=0 keep QEMU's behaviour",
+      "files": [
+        "hw/input/adb-kbd.c",
+        "hw/input/adb-mouse.c",
+        "hw/input/adb.c",
+        "hw/misc/mac_via.c",
+        "include/hw/input/adb.h",
+        "include/hw/misc/mac_via.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-q800-t2-hold.patch",
+      "sha256": "09445cdb4c02ff940c55b861d3d41d38f6d3d85e0f6e66d438eb0aebcf85046f",
+      "shared_with_ppc": false,
+      "purpose": "mos6522-q800-via1.t2-hold (default on, x-t2-hold-quiet-us 100, x-t2-hold-max-us 4000): a VIA1 timer-2 interrupt that falls due while the vCPU translates waits until it has not translated for 100 us, at most 4 ms, so the Quadra ROM's delay-loop calibration cannot take its interrupt between a stored count and the next timer load (the double store over low memory: a start that never leaves the startup gray, runs wild or aborts QEMU); the PowerPC retroboot-via-t2-hold for the generic 6522 without coherent timers; t2-hold=off is QEMU's behaviour",
+      "files": [
+        "accel/tcg/cpu-exec.c",
+        "accel/tcg/translate-all.c",
+        "hw/misc/mac_via.c",
+        "hw/misc/mos6522.c",
+        "include/hw/misc/mos6522.h",
+        "include/system/cpu-timers.h",
+        "system/cpu-timers.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-q800-t2-slow-host.patch",
+      "sha256": "aeb1940a334a015d9e139e5290018176b995f8d0f7a8780c4765d380fd1139c6",
+      "shared_with_ppc": false,
+      "purpose": "q800 VIA1 timer-2 hold hard bound 20 ms instead of 4 ms for slow or nested ARM translation; keeps quiet release at 100 us, new-load cancellation and explicit off switch; fixes known ROM calibration corruption when the first-time window exceeds 4 ms; no PowerPC timer or ROM changes",
+      "files": [
+        "hw/misc/mac_via.c"
+      ]
+    }
+  ],
+  "firmware": {
+    "mac_qfb.rom": {
+      "made_by": "emulator/qfb/build-qfb-rom.sh (Retro68 with its Multiversal Interfaces, lua; ClassicMac's toolchain read-only)",
+      "source": "ClassicMac qfb/driver at the pinned revision (the unmodified rebuild is bit-identical to qfb/mac_qfb.rom 1eb349c0...) + emulator/qfb/retroboot-gray-rows.patch",
+      "pinned_unmodified_sha256": "1eb349c019d9d985b957e2ee8a39890b1300f10bf4fa948bd5140fd3fb260038",
+      "patches": [
+        {
+          "path": "emulator/qfb/retroboot-gray-rows.patch",
+          "sha256": "6eae83baf6c5ae24311dfcfd97339a8d1d607cf9417cdbb73f12c888efbd848e"
+        }
+      ],
+      "sha256": "60710f1c9767ca27fe8483251767dd9756f0d8bc81b7a3e1548b60861817f944",
+      "bytes": 20480,
+      "private": true
+    },
+    "classicvirtio-68k.rom": {
+      "made_by": "emulator/classicvirtio/build-declrom-68k.sh (Retro68, ClassicMac's toolchain read-only)",
+      "source": "classicvirtio fc401b4c731027cb4068f3415def7fe79f6659da + ClassicMac floppy-driver, powermac-boot, tools-mount, display-aware-input + RetroBoot folder-dates, share-cache, local-time, folder-finfo, folder-move, names (not location: PowerPC Name Registry only)",
+      "pinned_unmodified_sha256": "3a3bcea8f642a6206bf0084759c7469938fdaec457a5ebee413c862b2a79dfa9",
+      "sha256": "a8c2a6937190d60666b2307eaea09ef5b43a60fd0287759e41ecdf5e16504ddf",
+      "bytes": 229376,
+      "private": true
+    },
+    "q800-pram-seed.img": {
+      "made_by": "emulator/scripts/make_q800_pram_seed.sh (rbd_quadra_lab.py seed), depth 8",
+      "how": "256 zero bytes; boot Mac OS 8.1 with the contract argv minus the virtio card (an all-zero PRAM with classicvirtio's card hangs the ROM: it fetches code from the card's declaration ROM space before the MMU maps it) to the Finder and Shut Down; boot that PRAM with the full contract argv and Shut Down; then the qfb card's slot parameter RAM (slot D, offset 0x66: board ID 0x9545, mode) gets mode 0x83 (256 colors), Mac OS's first-start depth. Only the Apple ROM and Mac OS wrote the other bytes, as on a real Mac's first two starts: settings, no code. Deterministic apart from the mode byte",
+      "layout": {
+        "signature": "0x0C 'NuMc'",
+        "slot_pram": "8 bytes per NuBus slot from 0x46 (slot 9); slot D at 0x66, its mode byte 0x68 (0x80 1-bit, 0x81 2, 0x82 4, 0x83 8, 0x84 16, 0x85 32)",
+        "default_startup": "0x78: ffffffdf (SCSI ID 0)"
+      },
+      "sha256": "bcd637f68cf318866c1449171e9995fed689c47775c138fad3eec267eb4dbc85",
+      "bytes": 256,
+      "private": true
+    }
+  },
+  "excluded_ppc_patches": {},
+  "feature_patches": {
+    "q800-restart-reset": "retroboot-q800-restart-reset.patch",
+    "tcg-notdirty-fast": "retroboot-tcg-notdirty-fast.patch",
+    "nubus-qfb-vbl-sync": "retroboot-qfb-vbl-sync.patch",
+    "nubus-qfb-refresh": "retroboot-qfb-refresh.patch",
+    "adb-idle-poll": "retroboot-q800-adb-idle.patch",
+    "via-t2-hold": "retroboot-q800-t2-hold.patch",
+    "nubus-qfb-millions": "retroboot-qfb-millions.patch",
+    "tcg-hot-data-pages": "retroboot-tcg-hot-data-pages.patch",
+    "nubus-qfb-snapshot-mode": "retroboot-qfb-snapshot-mode.patch",
+    "q800-t2-hold-slow-host": "retroboot-q800-t2-slow-host.patch"
+  }
+}

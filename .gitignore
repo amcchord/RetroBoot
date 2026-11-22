@@ -1,0 +1,63 @@
+# Contained worktrees and disposable build output
+/worktrees/
+/build/
+/output/
+/scratch/
+/tmp/
+/artifacts/
+
+# Full evidence and private fixtures remain local; commit redacted summaries instead.
+/evidence/
+/private/
+/fixtures/private/
+/media/
+/guest-data/
+
+# Guest disks, installation media, ROMs, and packaged binary archives
+*.rom
+*.hfv
+*.dsk
+*.img
+*.qcow
+*.qcow2
+*.vmdk
+*.vdi
+*.iso
+*.toast
+*.dmg
+*.zip
+*.tar
+*.tar.gz
+*.tar.xz
+*.tgz
+*.rdump
+*.idump
+
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+*.pem
+.secrets/
+
+# Local tooling caches
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+
+# User-provided classic Mac media (private)
+/iso/
+*.sit
+*.sea
+*.hqx
+*.bin
+
+# Retro68 build output of the guest helpers
+/guest/rbdisplay/build/
+/guest/rbidle/build/
+/research/gfx/guestapps/build/

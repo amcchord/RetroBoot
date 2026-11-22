@@ -1,0 +1,37 @@
+#!/bin/sh
+# initramfs-tools hook: RetroBoot Startup Details (rb-bootdiag, ARCHITECTURE 16).
+# Copies rb-bootdiag (libc only) and what Escape needs on any keyboard this
+# early: evdev (not part of MODULES=most; the built-in i8042 keyboard has no
+# event device without it), the USB and I2C HID drivers and the vendor HID
+# drivers of common laptop and receiver keyboards (udev loads the present
+# device's driver), and vfat with its code pages for saving the report to the
+# installer's USB stick (RBINSTEFI). Each only when this kernel has it as a module.
+set -e
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+RB_BOOTDIAG=/usr/lib/retroboot/bin/rb-bootdiag
+if [ ! -x "$RB_BOOTDIAG" ]; then
+    echo "retroboot-bootdiag: $RB_BOOTDIAG missing; startup details not included" >&2
+    exit 0
+fi
+copy_exec "$RB_BOOTDIAG" /usr/lib/retroboot/bin/rb-bootdiag
+
+for module in evdev hid hid-generic usbhid i2c-hid i2c-hid-acpi \
+              xhci-pci xhci-hcd ehci-pci ehci-hcd ohci-pci ohci-hcd uhci-hcd \
+              hid-lenovo hid-apple hid-logitech-dj hid-logitech-hidpp hid-microsoft hid-asus \
+              hid-cherry hid-chicony hid-elan hid-multitouch \
+              vfat nls_cp437 nls_ascii; do
+    if modinfo -k "${version}" "$module" >/dev/null 2>&1; then
+        manual_add_modules "$module"
+    fi
+done

@@ -1,0 +1,26 @@
+[Unit]
+Description=RetroBoot guest (Mac OS)
+Documentation=file:///usr/lib/retroboot/hostd/README.md
+# Started and stopped only by hostd (systemctl start --no-block); never enabled.
+After=local-fs.target systemd-tmpfiles-setup.service systemd-sysusers.service retroboot-guestnet.service
+# Mac OS never runs without the isolation table if it can be loaded (hostd also checks it);
+# a failure to load it does not keep Mac OS from starting.
+Wants=retroboot-guestnet.service
+
+[Service]
+Type=exec
+Environment=PYTHONPATH=/usr/lib/retroboot/hostd
+Environment=PYTHONDONTWRITEBYTECODE=1
+# guest-launcher runs as root only to verify the package, prepare sockets and
+# logs, then executes QEMU as rbguest (groups audio, cdrom, rbdata, render, video).
+ExecStart=/usr/bin/python3 -m retroboot.launcher
+# 0 guest-shutdown, 10 guest-reset, 20 host-requested stop, 1 otherwise.
+SuccessExitStatus=10 20
+Restart=no
+# SIGTERM reaches guest-launcher, which forwards it to QEMU and records the
+# exit; systemd only SIGKILLs the cgroup after the timeout.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Nice=-5
+SyslogIdentifier=retroboot-guest

@@ -1,0 +1,129 @@
+RetroBoot: one Gemini PDA DTB for both panel/touch variants
+
+Applied by build-kernel.sh on top of gemini-nixos 6a172f5's kernel delta (GPL-2.0).
+
+The Gemini ships with two panel variants and their touch controllers share CTP_RST
+(GPIO68): a Novatek unit (LCM aeon_nt36672_fhd_dsi_vdo_x600_xinli) has an NT36772 at
+i2c4 0x62; an AUO/Solomon unit has an SSD2092 at 0x53. Upstream enables only the
+SSD2092 node, so touch is dead on Novatek units.
+
+- DTS: enable touchscreen@62 as well (its inverted-x/-y stay as upstream calibrated).
+- ssd2092: never assert CTP_RST unless a chip answers. Take the line deasserted,
+  give a chip LK held in reset time to reach DS mode, require a one-byte read to
+  ACK at 0x53, and only then run the vendor reset pulse. If the Novatek driver already
+  owns the line (-EBUSY), return -ENODEV quietly.
+- novatek-nt36xxx: -EBUSY on CTP_RST (the SSD2092 driver bound) -> -ENODEV quietly.
+
+--- a/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda.dts
++++ b/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda.dts
+@@ -902,14 +902,24 @@
+ 	/*
+ 	 * [atzero unit, 2026-10-01] This unit is the OTHER Gemini panel
+ 	 * variant: i2cdetect on i2c4 shows only 0x53 (Solomon SSD2092),
+-	 * nothing at 0x62. The Novatek node is disabled and the SSD2092
+-	 * node below enabled. To build for a Novatek unit, swap the two
+-	 * status lines back (both nodes claim CTP_RST/GPIO68).
++	 * nothing at 0x62.
++	 *
++	 * [RetroBoot 2026-10-14] One DTB for both variants: BOTH nodes are
++	 * enabled. A Novatek unit (LCM aeon_nt36672_fhd_dsi_vdo_x600_xinli)
++	 * answers only at 0x62, an AUO/Solomon unit only at 0x53. Both nodes
++	 * claim CTP_RST (GPIO68) exclusively, so whichever driver binds owns
++	 * the line and the other one's probe ends at -EBUSY -> -ENODEV.
++	 * Clients are created in node order and both drivers register before
++	 * the i2c-mt65xx adapter (drivers/input links before drivers/i2c),
++	 * so the Novatek node probes first: it never resets the chip (TDDI;
++	 * LK owns the display side) and only reads at 0x01. ssd2092 never
++	 * asserts CTP_RST unless a chip ACKs at 0x53 first, so the reverse
++	 * order cannot reset a Novatek unit's touch/display controller.
+ 	 */
+ 	touchscreen@62 {
+ 		compatible = "novatek,nt36772-ts";
+ 		reg = <0x62>;	/* vendor DTB cap_touch@62 */
+-		status = "disabled";
++		status = "okay";
+ 		reset-gpios = <&pio 68 GPIO_ACTIVE_LOW>;	/* CTP_RST */
+ 		vcc-supply = <&touch_vcc>;
+ 		iovcc-supply = <&vdd_fixed_1v8>;
+--- a/drivers/input/touchscreen/novatek-nt36xxx.c
++++ b/drivers/input/touchscreen/novatek-nt36xxx.c
+@@ -398,6 +398,12 @@
+ 	 * active-low, so OUT_LOW) if the board wires one at all. */
+ 	data->reset_gpio = devm_gpiod_get_optional(dev, "reset",
+ 						    GPIOD_OUT_LOW);
++	/* [RetroBoot] CTP_RST is shared with the SSD2092 node (the other
++	 * Gemini panel variant). If that driver owns it, it found its chip. */
++	if (PTR_ERR_OR_ZERO(data->reset_gpio) == -EBUSY) {
++		dev_info(dev, "CTP_RST is owned by another touch driver: no NT36772 on this unit\n");
++		return -ENODEV;
++	}
+ 	if (IS_ERR(data->reset_gpio))
+ 		return PTR_ERR(data->reset_gpio);
+ 
+--- a/drivers/input/touchscreen/ssd2092.c
++++ b/drivers/input/touchscreen/ssd2092.c
+@@ -470,6 +470,29 @@
+ 	ssd2092_int_clear(ts);
+ }
+ 
++/*
++ * RetroBoot: read-only presence check. The Gemini's two panel variants share
++ * CTP_RST (GPIO68) and the DTB enables both touch nodes, so this driver must
++ * not pulse reset on a Novatek unit, whose NT36xxx is a TDDI controller that
++ * LK alone initialises. A plain one-byte read only addresses the chip (no
++ * command bytes). A chip LK held in reset needs time after the release to
++ * reach DS mode (vendor: 80 ms + up to 400 ms for INT), hence the retries.
++ */
++static int ssd2092_detect(struct ssd2092 *ts)
++{
++	u8 b;
++	int ret = -ENODEV;
++	int i;
++
++	for (i = 0; i < 6; i++) {
++		msleep(100);
++		ret = i2c_master_recv(ts->client, &b, 1);
++		if (ret == 1)
++			return 0;
++	}
++	return ret < 0 ? ret : -EIO;
++}
++
+ static int ssd2092_probe(struct i2c_client *client)
+ {
+ 	struct device *dev = &client->dev;
+@@ -484,10 +507,17 @@
+ 	ts->client = client;
+ 
+ 	/*
+-	 * LK/vendor-DTS leave CTP_RST (GPIO68) LOW = held in reset, so ask
+-	 * for the line asserted and run the full reset pulse ourselves.
++	 * LK/vendor-DTS leave CTP_RST (GPIO68) LOW = held in reset; the full
++	 * reset pulse below runs only once a chip has answered at this address.
++	 * [RetroBoot] Take the line DEASSERTED (a no-op where it is already
++	 * high, as on Novatek units) instead of asserted. If the Novatek
++	 * driver already owns it, that panel variant is present: not ours.
+ 	 */
+-	ts->reset_gpiod = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	ts->reset_gpiod = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
++	if (PTR_ERR_OR_ZERO(ts->reset_gpiod) == -EBUSY) {
++		dev_info(dev, "CTP_RST is owned by another touch driver: no SSD2092 on this unit\n");
++		return -ENODEV;
++	}
+ 	if (IS_ERR(ts->reset_gpiod))
+ 		return dev_err_probe(dev, PTR_ERR(ts->reset_gpiod),
+ 				     "failed to get reset GPIO\n");
+@@ -497,6 +527,13 @@
+ 		return dev_err_probe(dev, PTR_ERR(ts->int_gpiod),
+ 				     "failed to get INT GPIO\n");
+ 
++	ret = ssd2092_detect(ts);
++	if (ret) {
++		dev_info(dev, "no SSD2092 at 0x%02x (%d): other panel variant, reset untouched\n",
++			 client->addr, ret);
++		return -ENODEV;
++	}
++
+ 	ret = ssd2092_hw_reset(ts);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "chip not ready after reset\n");

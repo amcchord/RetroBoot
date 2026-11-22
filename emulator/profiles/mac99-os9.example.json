@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "retroboot-os9-baseline",
+  "package_root": "/srv/retroboot/workstream-b/output/linux-ppc",
+  "run_dir": "/srv/retroboot/workstream-b/evidence/unique-run-id",
+  "cpu": "7400",
+  "ram_mb": 512,
+  "display": {"backend": "vnc", "width": 1024, "height": 768, "depth": 32},
+  "audio": {"backend": "none"},
+  "media": {
+    "disk": "/srv/retroboot/workstream-b/private/os9-copy.raw",
+    "disk_fixture_id": "classicmac-os9-921-v2",
+    "boot": "disk"
+  },
+  "network": "user-sungem",
+  "input": "virtio-tablet",
+  "share": {"enabled": true, "path": "/srv/retroboot/workstream-b/private/share", "tag": "RetroBoot Share"},
+  "timing": "realtime",
+  "nvram": "volatile"
+}

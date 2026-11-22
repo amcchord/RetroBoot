@@ -1,0 +1,21 @@
+# RetroBoot on the Gemini PDA: once multi-user.target is reached and hostd (and, in the
+# debug flavor, sshd) are up, reset the initrd's boot-attempt counter (rb-gemini-boot-ok).
+# Three boots in a row that never get here make the initrd boot Gemian instead.
+# DefaultDependencies=no: a unit wanted by multi-user.target would otherwise be ordered
+# before it, and this one must come after it.
+[Unit]
+Description=Mark this RetroBoot boot healthy (boot-attempt counter)
+DefaultDependencies=no
+Requires=sysinit.target
+After=sysinit.target basic.target multi-user.target retroboot-hostd.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-boot-ok
+
+[Install]
+WantedBy=multi-user.target

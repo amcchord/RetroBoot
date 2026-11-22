@@ -1,0 +1,16 @@
+# RetroBoot on the Gemini PDA: this unit's own Wi-Fi record (MAC + TX calibration),
+# copied read-only from the Android nvdata partition before the Wi-Fi powers on.
+[Unit]
+Description=Gemini Wi-Fi record from nvdata
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service systemd-udev-trigger.service
+Before=retroboot-gemini-wifi.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-wifi-nvram
+
+[Install]
+WantedBy=multi-user.target

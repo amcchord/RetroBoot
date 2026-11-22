@@ -1,0 +1,16 @@
+fadd_chain
+fmul_indep
+fmadd_horner
+fmadds_horner
+fdiv_fdivs
+cvt_frsp_fctiw
+lfs_stfs
+fcmpu_fsel
+xform_single
+normalize_single
+math_double
+vmx_xform
+vmx_light
+integer_loop
+mixer_fadds_magic
+int_with_lfs_stfs

@@ -1,0 +1,20 @@
+{
+  "id": "boot-options",
+  "kind": "window",
+  "title": "RetroBoot Startup",
+  "width": 420,
+  "focus": "mode",
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "How do you want to start up?"},
+    {"type": "list", "id": "mode", "rows": 3, "scrollbar": false, "value": "macos", "items": [
+      {"id": "macos", "label": "Start Mac OS", "detail": "Macintosh HD", "icon": "mac"},
+      {"id": "recovery", "label": "Recovery", "detail": "repair, restore, diagnostics", "icon": "wrench"},
+      {"id": "setup", "label": "Setup", "detail": "network, display, disks", "icon": "disk"}
+    ]},
+    {"type": "text", "style": "small", "text": "Use the arrow keys to choose, then press Return."},
+    {"type": "buttons", "items": [
+      {"id": "shutdown", "label": "Shut Down", "align": "left"},
+      {"id": "start", "label": "Start Up", "default": true}
+    ]}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+ "hw": ["Extensions:Apple QD3D HW Driver", "Extensions:Apple QD3D HW Plug-In", "Extensions:OpenGLRendererATI",
+        "Extensions:PowerBook G3 Series Modem", "Extensions:PowerBook Internal Modem", "Extensions:PowerMac G3 Modem",
+        "Extensions:iMac Modem Extension", "Extensions:Internal V.90 Modem",
+        "Extensions:QuickTime FireWire DV Enabler", "Extensions:QuickTime FireWire DV Support"],
+ "bg": ["Extensions:Time Synchronizer", "Extensions:Software Update Scheduler", "Extensions:FBC Indexing Scheduler"],
+ "print": ["Extensions:Desktop Printer Menu", "Extensions:Desktop Printer Spooler", "Extensions:Desktop PrintMonitor"],
+ "pb": ["Control Panels:Trackpad", "Control Panels:Password Security", "Control Panels:Location Manager",
+        "Extensions:Location Manager Extension", "Control Strip Modules:Battery Monitor",
+        "Control Strip Modules:Energy Settings", "Control Strip Modules:Location Manager Controls",
+        "Control Strip Modules:Media Bay"],
+ "airport": ["Extensions:AirPort AP", "Extensions:AirPort AP Support", "Extensions:AirPort Driver",
+             "Control Strip Modules:AirPort Control Strip"],
+ "qt": ["Extensions:QuickTime™", "Extensions:QuickTime™ MPEG Extension", "Extensions:QuickTime™ Musical Instruments",
+        "Extensions:QuickTime™ PowerPlug", "Extensions:QuickTime™ VR", "Extensions:QuickTime Extensions",
+        "Control Strip Modules:QuickTime Strip"],
+ "speech": ["Extensions:Speech Manager", "Extensions:Speech Recognition", "Extensions:SpeakableItems",
+            "Extensions:MacinTalk 3", "Extensions:MacinTalk Pro", "Control Strip Modules:SpeakableItems Strip"]
+}

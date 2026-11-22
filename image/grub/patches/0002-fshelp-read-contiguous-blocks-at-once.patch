@@ -1,0 +1,116 @@
+--- a/grub-core/fs/fshelp.c
++++ b/grub-core/fs/fshelp.c
+@@ -350,6 +350,9 @@
+    the DATA argument to READ_HOOK.  GET_BLOCK is used to translate
+    file blocks to disk blocks.  The file is FILESIZE bytes big and the
+    blocks have a size of LOG2BLOCKSIZE (in log2).  */
++/* At most this many contiguous blocks per disk read (16 MiB of 4 KiB blocks).  */
++#define FSHELP_MAX_RUN 4096
++
+ grub_ssize_t
+ grub_fshelp_read_file (grub_disk_t disk, grub_fshelp_node_t node,
+ 		       grub_disk_read_hook_t read_hook, void *read_hook_data,
+@@ -359,7 +362,7 @@
+ 		       grub_off_t filesize, int log2blocksize,
+ 		       grub_disk_addr_t blocks_start)
+ {
+-  grub_disk_addr_t i, blockcnt;
++  grub_disk_addr_t i, first, blockcnt;
+   int blocksize = 1 << (log2blocksize + GRUB_DISK_SECTOR_BITS);
+ 
+   /*
+@@ -387,54 +390,72 @@
+ 
+   blockcnt = ((len + pos) + blocksize - 1) >> (log2blocksize + GRUB_DISK_SECTOR_BITS);
+ 
+-  for (i = pos >> (log2blocksize + GRUB_DISK_SECTOR_BITS); i < blockcnt; i++)
++  /*
++   * RetroBoot: blocks that follow each other on the disk are read with one
++   * grub_disk_read, which hands the firmware requests of up to the disk's
++   * max_agglomerate (640 KiB on EFI) instead of one 32 KiB cache block per
++   * request.  Some laptop firmware spends about 2 ms per block I/O request,
++   * so a 40 MB kernel and initrd took seconds in requests alone.  The bytes
++   * read, the zero fill of sparse blocks and the read hook are unchanged.
++   */
++  first = pos >> (log2blocksize + GRUB_DISK_SECTOR_BITS);
++  for (i = first; i < blockcnt; )
+     {
+-      grub_disk_addr_t blknr;
+-      int blockoff = pos & (blocksize - 1);
+-      int blockend = blocksize;
+-
+-      int skipfirst = 0;
++      grub_disk_addr_t blknr, n = 1;
++      grub_size_t skipfirst = 0, size;
+ 
+       blknr = get_block (node, i);
+       if (grub_errno)
+ 	return -1;
+ 
+-      blknr = blknr << log2blocksize;
++      if (blknr)
++	while (i + n < blockcnt && n < FSHELP_MAX_RUN)
++	  {
++	    grub_disk_addr_t next = get_block (node, i + n);
++
++	    if (grub_errno)
++	      return -1;
++	    if (next != blknr + n)
++	      break;
++	    n++;
++	  }
++
++      size = (grub_size_t) n << (log2blocksize + GRUB_DISK_SECTOR_BITS);
+ 
+-      /* Last block.  */
+-      if (i == blockcnt - 1)
++      /* Last block: only up to the end of the request.  */
++      if (i + n == blockcnt)
+ 	{
+-	  blockend = (len + pos) & (blocksize - 1);
++	  grub_size_t blockend = (len + pos) & (blocksize - 1);
+ 
+-	  /* The last portion is exactly blocksize.  */
+-	  if (! blockend)
+-	    blockend = blocksize;
++	  if (blockend)
++	    size -= blocksize - blockend;
+ 	}
+ 
+-      /* First block.  */
+-      if (i == (pos >> (log2blocksize + GRUB_DISK_SECTOR_BITS)))
++      /* First block: from the requested offset.  */
++      if (i == first)
+ 	{
+-	  skipfirst = blockoff;
+-	  blockend -= skipfirst;
++	  skipfirst = pos & (blocksize - 1);
++	  size -= skipfirst;
+ 	}
+ 
+       /* If the block number is 0 this block is not stored on disk but
+-	 is zero filled instead.  */
++	 is zero filled instead (never part of a longer run).  */
+       if (blknr)
+ 	{
+ 	  disk->read_hook = read_hook;
+ 	  disk->read_hook_data = read_hook_data;
+ 
+-	  grub_disk_read (disk, blknr + blocks_start, skipfirst,
+-			  blockend, buf);
++	  grub_disk_read (disk, (blknr << log2blocksize) + blocks_start,
++			  skipfirst, size, buf);
+ 	  disk->read_hook = 0;
+ 	  if (grub_errno)
+ 	    return -1;
+ 	}
+       else
+-	grub_memset (buf, 0, blockend);
++	grub_memset (buf, 0, size);
+ 
+-      buf += blocksize - skipfirst;
++      buf += size;
++      i += n;
+     }
+ 
+   return len;

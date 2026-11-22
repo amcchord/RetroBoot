@@ -1,0 +1,23 @@
+[Unit]
+Description=RetroBoot guest isolation (Mac OS can't reach this computer's services)
+Documentation=file:///usr/lib/retroboot/hostd/README.md
+# Loads the nftables table inet retroboot_guest (retroboot/guestnet.py): the QEMU
+# user's connections to any address of this computer are refused, except DNS and the
+# Modern Web Helper's ports. Independent of the helper's on/off setting; before the
+# guest can start. Never touches inbound traffic (LAN access to hostd).
+DefaultDependencies=no
+After=systemd-sysusers.service local-fs.target
+Before=retroboot-guest.service network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PYTHONPATH=/usr/lib/retroboot/hostd
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m retroboot.guestnet apply
+ExecStop=/usr/bin/python3 -m retroboot.guestnet remove
+SyslogIdentifier=retroboot-guestnet
+
+[Install]
+WantedBy=multi-user.target

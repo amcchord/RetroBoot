@@ -1,0 +1,995 @@
+diff --git a/meson.build b/meson.build
+index 51f5f28..37846d2 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2575,6 +2575,8 @@ endif
+ config_host_data.set('CONFIG_SPICE', spice.found())
+ config_host_data.set('CONFIG_X11', x11.found())
+ config_host_data.set('CONFIG_DBUS_DISPLAY', dbus_display)
++config_host_data.set('CONFIG_RETROBOOT_DISPLAY',
++                     host_os == 'linux' and pixman.found())
+ config_host_data.set('CONFIG_CFI', get_option('cfi'))
+ config_host_data.set('CONFIG_SELINUX', selinux.found())
+ config_host_data.set('CONFIG_XEN_BACKEND', xen.found())
+diff --git a/qapi/ui.json b/qapi/ui.json
+index e3da776..e6a60b1 100644
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -1513,6 +1513,10 @@
+ #
+ # @dbus: Start a D-Bus service for the display.  (Since 7.0)
+ #
++# @retroboot: Hand the framebuffer to the RetroBoot presenter through
++#     shared memory over a local socket and accept its input.
++#     (Since 11.0)
++#
+ # Since: 2.12
+ ##
+ { 'enum'    : 'DisplayType',
+@@ -1525,10 +1529,26 @@
+     { 'name': 'curses', 'if': 'CONFIG_CURSES' },
+     { 'name': 'cocoa', 'if': 'CONFIG_COCOA' },
+     { 'name': 'spice-app', 'if': 'CONFIG_SPICE' },
+-    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' }
++    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' },
++    { 'name': 'retroboot', 'if': 'CONFIG_RETROBOOT_DISPLAY' }
+   ]
+ }
+ 
++##
++# @DisplayRetroBoot:
++#
++# RetroBoot presenter display options.
++#
++# @socket: Path of the presenter's AF_UNIX SOCK_SEQPACKET socket.
++#     QEMU connects as a client and retries every 100 ms until the
++#     presenter listens, without blocking the guest.
++#
++# Since: 11.0
++##
++{ 'struct'  : 'DisplayRetroBoot',
++  'data'    : { 'socket' : 'str' },
++  'if'      : 'CONFIG_RETROBOOT_DISPLAY' }
++
+ ##
+ # @DisplayOptions:
+ #
+@@ -1563,7 +1583,9 @@
+       'egl-headless': { 'type': 'DisplayEGLHeadless',
+                         'if': 'CONFIG_OPENGL' },
+       'dbus': { 'type': 'DisplayDBus', 'if': 'CONFIG_DBUS_DISPLAY' },
+-      'sdl': { 'type': 'DisplaySDL', 'if': 'CONFIG_SDL' }
++      'sdl': { 'type': 'DisplaySDL', 'if': 'CONFIG_SDL' },
++      'retroboot': { 'type': 'DisplayRetroBoot',
++                     'if': 'CONFIG_RETROBOOT_DISPLAY' }
+   }
+ }
+ 
+diff --git a/ui/meson.build b/ui/meson.build
+index 69404bc..202ec5e 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -25,6 +25,7 @@ system_ss.add(when: spice_protocol, if_true: files('vdagent.c'))
+ 
+ if host_os == 'linux'
+   system_ss.add(files('input-linux.c', 'udmabuf.c'))
++  system_ss.add(when: pixman, if_true: files('retroboot.c'))
+ endif
+ system_ss.add(when: cocoa, if_true: files('cocoa.m'))
+ 
+diff --git a/ui/retroboot.c b/ui/retroboot.c
+new file mode 100644
+index 0000000..3e73cbd
+--- /dev/null
++++ b/ui/retroboot.c
+@@ -0,0 +1,910 @@
++/*
++ * RetroBoot display backend
++ *
++ * Hands the guest framebuffer to the RetroBoot presenter through a sealed
++ * memfd and injects the presenter's keyboard and pointer input.  QEMU is the
++ * client of the presenter's AF_UNIX SOCK_SEQPACKET socket.  The protocol is
++ * specified in the RetroBoot repository, docs/ARCHITECTURE.md section 3
++ * ("Display socket"); all integers are host-endian.
++ *
++ * QEMU never blocks on the presenter: connection attempts are retried from a
++ * timer, every send is non-blocking, and a damage message that cannot be
++ * queued is replaced by one full-surface damage once the socket accepts data
++ * again.  The shared buffer always holds the latest copied frame.
++ *
++ * Copyright (c) 2026 RetroBoot contributors
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include <sys/socket.h>
++#include <sys/un.h>
++
++#include "qapi/error.h"
++#include "qemu/cutils.h"
++#include "qemu/error-report.h"
++#include "qemu/main-loop.h"
++#include "qemu/memfd.h"
++#include "qemu/timer.h"
++#include "ui/console.h"
++#include "ui/input.h"
++#include "ui/kbd-state.h"
++#ifdef CONFIG_TCG
++#include "exec/icount.h"
++#endif
++
++#define RBD_PROTOCOL_VERSION        1
++#define RBD_MAX_DAMAGE_RECTS        64
++#define RBD_CONNECT_RETRY_MS        100
++#define RBD_REFRESH_CONNECTED_MS    16
++#define RBD_REFRESH_DISCONNECTED_MS 500
++#define RBD_REFRESH_MIN_MS          4
++#define RBD_REFRESH_MAX_MS          1000
++#define RBD_RECV_BUFFER             512
++#define RBD_RECV_BUDGET             256
++#define RBD_RESIZE_MIN              64
++#define RBD_RESIZE_MAX              16384
++/* fourcc_code('X', 'R', '2', '4'), as in drm_fourcc.h */
++#define RBD_DRM_FORMAT_XRGB8888     0x34325258u
++
++enum {
++    RBD_MSG_HELLO = 1,
++    RBD_MSG_SURFACE = 2,
++    RBD_MSG_DAMAGE = 3,
++    RBD_MSG_GUEST_EVENT = 4,
++    RBD_MSG_KEY = 16,
++    RBD_MSG_POINTER_ABS = 17,
++    RBD_MSG_BUTTON = 18,
++    RBD_MSG_RESIZE = 19,
++    RBD_MSG_RELEASE_ALL = 20,
++    RBD_MSG_REFRESH_RATE = 21,
++};
++
++typedef struct RBDHeader {
++    uint32_t type;
++    uint32_t len;
++} RBDHeader;
++
++typedef struct RBDHello {
++    uint32_t version;
++    uint32_t qemu_pid;
++    char session[40];
++} RBDHello;
++
++typedef struct RBDSurface {
++    uint32_t width;
++    uint32_t height;
++    uint32_t stride;
++    uint32_t drm_format;
++    uint64_t size;
++} RBDSurface;
++
++typedef struct RBDRect {
++    int32_t x, y, w, h;
++} RBDRect;
++
++typedef struct RBDDamage {
++    uint32_t seq;
++    uint32_t count;
++    RBDRect rects[RBD_MAX_DAMAGE_RECTS];
++} RBDDamage;
++
++typedef struct RBDPair {
++    uint32_t a;
++    uint32_t b;
++} RBDPair;
++
++QEMU_BUILD_BUG_ON(sizeof(RBDHeader) != 8);
++QEMU_BUILD_BUG_ON(sizeof(RBDHello) != 48);
++QEMU_BUILD_BUG_ON(sizeof(RBDSurface) != 24);
++QEMU_BUILD_BUG_ON(sizeof(RBDRect) != 16);
++QEMU_BUILD_BUG_ON(sizeof(RBDPair) != 8);
++
++/* Presenter button numbers 0..4, in protocol order. */
++static const InputButton rbd_buttons[] = {
++    INPUT_BUTTON_LEFT,
++    INPUT_BUTTON_MIDDLE,
++    INPUT_BUTTON_RIGHT,
++    INPUT_BUTTON_WHEEL_UP,
++    INPUT_BUTTON_WHEEL_DOWN,
++};
++
++typedef struct RetroBootDisplay {
++    DisplayChangeListener dcl;
++    char *socket_path;
++    int fd;
++    QEMUTimer *connect_timer;
++    bool waiting_logged;
++    uint32_t interval_ms;
++    int64_t start_ms;
++
++    /* Current console surface (owned by the console layer). */
++    DisplaySurface *surface;
++
++    /* Shared XRGB8888 buffer handed to the presenter. */
++    int mem_fd;
++    void *mem;
++    size_t mem_size;
++    uint32_t mem_width;
++    uint32_t mem_height;
++    uint32_t mem_stride;
++    pixman_image_t *mem_image;
++
++    pixman_region32_t damage;
++    bool surface_pending;
++    bool full_damage_pending;
++    uint32_t damage_seq;
++
++    QKbdState *kbd;
++    uint32_t buttons_down;
++
++    bool icount_at_start;
++    bool handoff_seen;
++    bool handoff_event_pending;
++    int64_t handoff_uptime_ms;
++    int64_t handoff_virtual_ms;
++
++    uint64_t connections;
++    uint64_t damage_sent;
++    uint64_t damage_dropped;
++} RetroBootDisplay;
++
++static void rbd_disconnect(RetroBootDisplay *rbd, const char *reason);
++
++static int64_t rbd_uptime_ms(RetroBootDisplay *rbd)
++{
++    return qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - rbd->start_ms;
++}
++
++/*
++ * Returns 1 when the message was queued, 0 when the socket is full (the
++ * caller decides whether to retry or drop) and -1 when the connection is
++ * gone (rbd_disconnect() has already run).
++ */
++static int rbd_send(RetroBootDisplay *rbd, uint32_t type,
++                    const void *payload, size_t len, int pass_fd)
++{
++    RBDHeader hdr = { .type = type, .len = len };
++    struct iovec iov[2] = {
++        { .iov_base = &hdr, .iov_len = sizeof(hdr) },
++        { .iov_base = (void *)payload, .iov_len = len },
++    };
++    struct msghdr msg = {
++        .msg_iov = iov,
++        .msg_iovlen = len ? 2 : 1,
++    };
++    union {
++        struct cmsghdr align;
++        char buf[CMSG_SPACE(sizeof(int))];
++    } control;
++    ssize_t ret;
++
++    if (rbd->fd < 0) {
++        return -1;
++    }
++    if (pass_fd >= 0) {
++        struct cmsghdr *cmsg;
++
++        memset(&control, 0, sizeof(control));
++        msg.msg_control = control.buf;
++        msg.msg_controllen = sizeof(control.buf);
++        cmsg = CMSG_FIRSTHDR(&msg);
++        cmsg->cmsg_level = SOL_SOCKET;
++        cmsg->cmsg_type = SCM_RIGHTS;
++        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
++        memcpy(CMSG_DATA(cmsg), &pass_fd, sizeof(int));
++    }
++
++    do {
++        ret = sendmsg(rbd->fd, &msg, MSG_DONTWAIT | MSG_NOSIGNAL);
++    } while (ret < 0 && errno == EINTR);
++
++    if (ret < 0) {
++        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS) {
++            return 0;
++        }
++        rbd_disconnect(rbd, strerror(errno));
++        return -1;
++    }
++    return 1;
++}
++
++static void rbd_send_event(RetroBootDisplay *rbd, const char *json)
++{
++    rbd_send(rbd, RBD_MSG_GUEST_EVENT, json, strlen(json), -1);
++}
++
++static const char *rbd_clock_name(void)
++{
++#ifdef CONFIG_TCG
++    if (icount_enabled()) {
++        return "icount";
++    }
++#endif
++    return "real-time";
++}
++
++static void rbd_send_clock_event(RetroBootDisplay *rbd)
++{
++    g_autofree char *json = NULL;
++
++    if (rbd->handoff_seen) {
++        json = g_strdup_printf("{\"event\":\"clock\",\"clock\":\"%s\","
++                               "\"handoff_uptime_ms\":%" PRId64 "}",
++                               rbd_clock_name(), rbd->handoff_uptime_ms);
++    } else {
++        json = g_strdup_printf("{\"event\":\"clock\",\"clock\":\"%s\"}",
++                               rbd_clock_name());
++    }
++    rbd_send_event(rbd, json);
++}
++
++/* Watch for ClassicMac's instruction-count to real-time clock handoff. */
++static void rbd_check_clock(RetroBootDisplay *rbd)
++{
++#ifdef CONFIG_TCG
++    if (icount_enabled()) {
++        rbd->icount_at_start = true;
++    } else if (rbd->icount_at_start && !rbd->handoff_seen) {
++        rbd->handoff_seen = true;
++        rbd->handoff_event_pending = true;
++        rbd->handoff_uptime_ms = rbd_uptime_ms(rbd);
++        rbd->handoff_virtual_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
++        info_report("retroboot: guest clock handed off to real time "
++                    "after %" PRId64 " ms (virtual clock %" PRId64 " ms)",
++                    rbd->handoff_uptime_ms, rbd->handoff_virtual_ms);
++    }
++#endif
++    if (rbd->handoff_event_pending && rbd->fd >= 0) {
++        g_autofree char *json = g_strdup_printf(
++            "{\"event\":\"boot-handoff\",\"clock\":\"real-time\","
++            "\"uptime_ms\":%" PRId64 ",\"virtual_ms\":%" PRId64 "}",
++            rbd->handoff_uptime_ms, rbd->handoff_virtual_ms);
++
++        if (rbd_send(rbd, RBD_MSG_GUEST_EVENT, json, strlen(json), -1) > 0) {
++            rbd->handoff_event_pending = false;
++        }
++    }
++}
++
++static void rbd_set_interval(RetroBootDisplay *rbd)
++{
++    update_displaychangelistener(&rbd->dcl,
++                                 rbd->fd >= 0 ? rbd->interval_ms
++                                              : RBD_REFRESH_DISCONNECTED_MS);
++}
++
++/* Shared buffer ---------------------------------------------------------- */
++
++static void rbd_buffer_free(RetroBootDisplay *rbd)
++{
++    if (rbd->mem_image) {
++        pixman_image_unref(rbd->mem_image);
++        rbd->mem_image = NULL;
++    }
++    if (rbd->mem) {
++        qemu_memfd_free(rbd->mem, rbd->mem_size, rbd->mem_fd);
++        rbd->mem = NULL;
++    }
++    rbd->mem_fd = -1;
++    rbd->mem_size = 0;
++    rbd->mem_width = 0;
++    rbd->mem_height = 0;
++    rbd->mem_stride = 0;
++}
++
++/*
++ * Make the shared buffer match the current surface geometry.  A fresh,
++ * size-sealed memfd is created for every geometry change; the presenter
++ * learns about it through SURFACE.
++ */
++static bool rbd_buffer_ensure(RetroBootDisplay *rbd)
++{
++    Error *err = NULL;
++    uint32_t width, height, stride;
++    size_t size;
++    int fd = -1;
++    void *mem;
++
++    if (!rbd->surface) {
++        return false;
++    }
++    width = surface_width(rbd->surface);
++    height = surface_height(rbd->surface);
++    if (!width || !height) {
++        return false;
++    }
++    if (rbd->mem && rbd->mem_width == width && rbd->mem_height == height) {
++        return true;
++    }
++
++    stride = width * 4;
++    size = (size_t)stride * height;
++    mem = qemu_memfd_alloc("retroboot-display", size,
++                           F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL,
++                           &fd, &err);
++    if (!mem) {
++        error_report_err(err);
++        return false;
++    }
++
++    rbd_buffer_free(rbd);
++    rbd->mem = mem;
++    rbd->mem_fd = fd;
++    rbd->mem_size = size;
++    rbd->mem_width = width;
++    rbd->mem_height = height;
++    rbd->mem_stride = stride;
++    rbd->mem_image = pixman_image_create_bits(PIXMAN_x8r8g8b8, width, height,
++                                              mem, stride);
++    return true;
++}
++
++static void rbd_copy_rect(RetroBootDisplay *rbd, int x, int y, int w, int h)
++{
++    pixman_image_composite32(PIXMAN_OP_SRC, rbd->surface->image, NULL,
++                             rbd->mem_image, x, y, 0, 0, x, y, w, h);
++}
++
++static void rbd_copy_full(RetroBootDisplay *rbd)
++{
++    if (surface_is_placeholder(rbd->surface)) {
++        /* QEMU's "display not active" notice is never shown to the user. */
++        memset(rbd->mem, 0, rbd->mem_size);
++        return;
++    }
++    rbd_copy_rect(rbd, 0, 0, rbd->mem_width, rbd->mem_height);
++}
++
++/* Frame delivery --------------------------------------------------------- */
++
++static int rbd_send_damage(RetroBootDisplay *rbd, const pixman_box32_t *boxes,
++                           int count)
++{
++    RBDDamage msg;
++    int i;
++
++    msg.seq = ++rbd->damage_seq;
++    msg.count = count;
++    for (i = 0; i < count; i++) {
++        msg.rects[i].x = boxes[i].x1;
++        msg.rects[i].y = boxes[i].y1;
++        msg.rects[i].w = boxes[i].x2 - boxes[i].x1;
++        msg.rects[i].h = boxes[i].y2 - boxes[i].y1;
++    }
++    return rbd_send(rbd, RBD_MSG_DAMAGE, &msg,
++                    offsetof(RBDDamage, rects) + count * sizeof(RBDRect), -1);
++}
++
++static void rbd_flush(RetroBootDisplay *rbd)
++{
++    pixman_box32_t full;
++    const pixman_box32_t *boxes;
++    int count, i, ret;
++
++    if (rbd->fd < 0 || !rbd->surface) {
++        return;
++    }
++
++    if (rbd->surface_pending) {
++        RBDSurface msg;
++
++        if (!rbd_buffer_ensure(rbd)) {
++            return;
++        }
++        rbd_copy_full(rbd);
++        pixman_region32_clear(&rbd->damage);
++        msg = (RBDSurface) {
++            .width = rbd->mem_width,
++            .height = rbd->mem_height,
++            .stride = rbd->mem_stride,
++            .drm_format = RBD_DRM_FORMAT_XRGB8888,
++            .size = rbd->mem_size,
++        };
++        if (rbd_send(rbd, RBD_MSG_SURFACE, &msg, sizeof(msg),
++                     rbd->mem_fd) > 0) {
++            rbd->surface_pending = false;
++            rbd->full_damage_pending = false;
++        }
++        return;
++    }
++
++    if (!rbd->mem) {
++        return;
++    }
++
++    full = (pixman_box32_t) {
++        .x1 = 0, .y1 = 0, .x2 = rbd->mem_width, .y2 = rbd->mem_height,
++    };
++    pixman_region32_intersect_rect(&rbd->damage, &rbd->damage, 0, 0,
++                                   rbd->mem_width, rbd->mem_height);
++    boxes = pixman_region32_rectangles(&rbd->damage, &count);
++    if (!surface_is_placeholder(rbd->surface)) {
++        for (i = 0; i < count; i++) {
++            rbd_copy_rect(rbd, boxes[i].x1, boxes[i].y1,
++                          boxes[i].x2 - boxes[i].x1,
++                          boxes[i].y2 - boxes[i].y1);
++        }
++    }
++
++    if (rbd->full_damage_pending) {
++        /* An earlier damage message was dropped: repaint everything. */
++        ret = rbd_send_damage(rbd, &full, 1);
++    } else if (count > RBD_MAX_DAMAGE_RECTS) {
++        ret = rbd_send_damage(rbd, pixman_region32_extents(&rbd->damage), 1);
++    } else if (count > 0) {
++        ret = rbd_send_damage(rbd, boxes, count);
++    } else {
++        return;
++    }
++
++    if (ret > 0) {
++        rbd->full_damage_pending = false;
++        rbd->damage_sent++;
++    } else if (ret == 0) {
++        rbd->full_damage_pending = true;
++        rbd->damage_dropped++;
++    }
++    if (rbd->fd >= 0) {
++        pixman_region32_clear(&rbd->damage);
++    }
++}
++
++/* Input ------------------------------------------------------------------ */
++
++static void rbd_release_all(RetroBootDisplay *rbd)
++{
++    QemuConsole *con = rbd->dcl.con;
++    unsigned i;
++
++    qkbd_state_lift_all_keys(rbd->kbd);
++    if (rbd->buttons_down) {
++        for (i = 0; i < ARRAY_SIZE(rbd_buttons); i++) {
++            if (rbd->buttons_down & (1u << i)) {
++                qemu_input_queue_btn(con, rbd_buttons[i], false);
++            }
++        }
++        rbd->buttons_down = 0;
++        qemu_input_event_sync();
++    }
++}
++
++/*
++ * Map a surface pixel to the centre of its span on the absolute axis.  The
++ * classic Mac tablet driver computes value * extent / 0x8000, so the centre
++ * lands back on the same pixel for every surface size.
++ */
++static int rbd_abs_value(uint32_t pos, uint32_t extent)
++{
++    int64_t value = ((int64_t)pos * 2 + 1) * (INPUT_EVENT_ABS_MAX + 1) /
++                    (2 * (int64_t)extent);
++
++    return MIN(value, INPUT_EVENT_ABS_MAX);
++}
++
++static void rbd_pointer_abs(RetroBootDisplay *rbd, uint32_t x, uint32_t y)
++{
++    QemuConsole *con = rbd->dcl.con;
++    uint32_t width, height;
++
++    if (!rbd->surface) {
++        return;
++    }
++    width = surface_width(rbd->surface);
++    height = surface_height(rbd->surface);
++    if (!width || !height) {
++        return;
++    }
++    x = MIN(x, width - 1);
++    y = MIN(y, height - 1);
++    qemu_input_queue_abs(con, INPUT_AXIS_X, rbd_abs_value(x, width),
++                         INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX);
++    qemu_input_queue_abs(con, INPUT_AXIS_Y, rbd_abs_value(y, height),
++                         INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX);
++    qemu_input_event_sync();
++}
++
++static void rbd_button(RetroBootDisplay *rbd, uint32_t button, bool down)
++{
++    uint32_t bit;
++
++    if (button >= ARRAY_SIZE(rbd_buttons)) {
++        return;
++    }
++    bit = 1u << button;
++    if (!down && !(rbd->buttons_down & bit)) {
++        return; /* never send a release for a button we did not press */
++    }
++    if (down) {
++        rbd->buttons_down |= bit;
++    } else {
++        rbd->buttons_down &= ~bit;
++    }
++    qemu_input_queue_btn(rbd->dcl.con, rbd_buttons[button], down);
++    qemu_input_event_sync();
++}
++
++static void rbd_key(RetroBootDisplay *rbd, uint32_t qcode, bool down)
++{
++    if (qcode == Q_KEY_CODE_UNMAPPED || qcode >= Q_KEY_CODE__MAX) {
++        return;
++    }
++    qkbd_state_key_event(rbd->kbd, qcode, down);
++}
++
++/*
++ * The console layer and ClassicMac's VGA host-resize latch both ignore a
++ * request equal to the previous one, so asking again for a size the guest
++ * has since left would be lost.  Re-arm the latch through the VGA device's
++ * "host-resize-request" property: two synchronous writes under the BQL bump
++ * the request serial twice and leave the wanted size latched.  The guest
++ * driver debounces the serial, so it only ever acts on the final size.
++ */
++static bool rbd_resize_nudge(RetroBootDisplay *rbd, uint32_t width,
++                             uint32_t height)
++{
++    Object *dev = object_property_get_link(OBJECT(rbd->dcl.con), "device",
++                                           NULL);
++    g_autofree char *detour = NULL;
++    g_autofree char *wanted = NULL;
++    Error *err = NULL;
++
++    if (!dev || !object_property_find(dev, "host-resize-request")) {
++        return false;
++    }
++    detour = g_strdup_printf("%" PRIu32 "x%" PRIu32, width, height + 1);
++    wanted = g_strdup_printf("%" PRIu32 "x%" PRIu32, width, height);
++    if (!object_property_set_str(dev, "host-resize-request", detour, &err) ||
++        !object_property_set_str(dev, "host-resize-request", wanted, &err)) {
++        warn_report_err(err);
++        return false;
++    }
++    return true;
++}
++
++static void rbd_resize(RetroBootDisplay *rbd, uint32_t width, uint32_t height)
++{
++    QemuConsole *con = rbd->dcl.con;
++    g_autofree char *json = NULL;
++    const char *method = "unsupported";
++
++    if (width < RBD_RESIZE_MIN || height < RBD_RESIZE_MIN ||
++        width > RBD_RESIZE_MAX || height > RBD_RESIZE_MAX) {
++        warn_report("retroboot: ignoring resize to %" PRIu32 "x%" PRIu32,
++                    width, height);
++        return;
++    }
++    if (dpy_ui_info_supported(con)) {
++        QemuUIInfo info = *dpy_get_ui_info(con);
++
++        if (info.width != width || info.height != height) {
++            info.width = width;
++            info.height = height;
++            dpy_set_ui_info(con, &info, false);
++            method = "ui-info";
++        } else if (rbd->surface &&
++                   (surface_width(rbd->surface) != width ||
++                    surface_height(rbd->surface) != height) &&
++                   rbd_resize_nudge(rbd, width, height)) {
++            method = "re-request";
++        } else {
++            method = "unchanged";
++        }
++    }
++    json = g_strdup_printf("{\"event\":\"resize-request\",\"width\":%" PRIu32
++                           ",\"height\":%" PRIu32 ",\"method\":\"%s\"}",
++                           width, height, method);
++    rbd_send_event(rbd, json);
++}
++
++static void rbd_handle_message(RetroBootDisplay *rbd, const uint8_t *buf,
++                               size_t size)
++{
++    RBDHeader hdr;
++    RBDPair pair = { 0, 0 };
++    const uint8_t *payload = buf + sizeof(hdr);
++
++    if (size < sizeof(hdr)) {
++        warn_report_once("retroboot: ignoring short presenter message");
++        return;
++    }
++    memcpy(&hdr, buf, sizeof(hdr));
++    if (hdr.len != size - sizeof(hdr)) {
++        warn_report_once("retroboot: ignoring presenter message with "
++                         "inconsistent length");
++        return;
++    }
++
++    switch (hdr.type) {
++    case RBD_MSG_KEY:
++    case RBD_MSG_POINTER_ABS:
++    case RBD_MSG_BUTTON:
++    case RBD_MSG_RESIZE:
++        if (hdr.len < sizeof(pair)) {
++            warn_report_once("retroboot: ignoring truncated presenter message");
++            return;
++        }
++        memcpy(&pair, payload, sizeof(pair));
++        break;
++    case RBD_MSG_REFRESH_RATE:
++        if (hdr.len < sizeof(uint32_t)) {
++            warn_report_once("retroboot: ignoring truncated presenter message");
++            return;
++        }
++        memcpy(&pair.a, payload, sizeof(uint32_t));
++        break;
++    default:
++        break;
++    }
++
++    switch (hdr.type) {
++    case RBD_MSG_KEY:
++        rbd_key(rbd, pair.a, pair.b != 0);
++        break;
++    case RBD_MSG_POINTER_ABS:
++        rbd_pointer_abs(rbd, pair.a, pair.b);
++        break;
++    case RBD_MSG_BUTTON:
++        rbd_button(rbd, pair.a, pair.b != 0);
++        break;
++    case RBD_MSG_RESIZE:
++        rbd_resize(rbd, pair.a, pair.b);
++        break;
++    case RBD_MSG_RELEASE_ALL:
++        rbd_release_all(rbd);
++        break;
++    case RBD_MSG_REFRESH_RATE:
++        rbd->interval_ms = MIN(MAX(pair.a, RBD_REFRESH_MIN_MS),
++                               RBD_REFRESH_MAX_MS);
++        rbd_set_interval(rbd);
++        break;
++    default:
++        warn_report_once("retroboot: ignoring unknown presenter message "
++                         "type %" PRIu32, hdr.type);
++        break;
++    }
++}
++
++static void rbd_read(void *opaque)
++{
++    RetroBootDisplay *rbd = opaque;
++    uint8_t buf[RBD_RECV_BUFFER];
++    int budget = RBD_RECV_BUDGET;
++    ssize_t n;
++
++    while (rbd->fd >= 0 && budget-- > 0) {
++        n = recv(rbd->fd, buf, sizeof(buf), MSG_DONTWAIT | MSG_TRUNC);
++        if (n < 0) {
++            if (errno == EINTR) {
++                continue;
++            }
++            if (errno != EAGAIN && errno != EWOULDBLOCK) {
++                rbd_disconnect(rbd, strerror(errno));
++            }
++            return;
++        }
++        if (n == 0) {
++            rbd_disconnect(rbd, "end of stream");
++            return;
++        }
++        if ((size_t)n > sizeof(buf)) {
++            warn_report_once("retroboot: ignoring oversized presenter message");
++            continue;
++        }
++        rbd_handle_message(rbd, buf, n);
++    }
++}
++
++/* Connection ------------------------------------------------------------- */
++
++static void rbd_connected(RetroBootDisplay *rbd)
++{
++    RBDHello hello = {
++        .version = RBD_PROTOCOL_VERSION,
++        .qemu_pid = getpid(),
++    };
++    const char *session = g_getenv("RETROBOOT_SESSION");
++
++    if (session) {
++        pstrcpy(hello.session, sizeof(hello.session), session);
++    }
++    rbd->interval_ms = RBD_REFRESH_CONNECTED_MS;
++    rbd->surface_pending = true;
++    rbd->full_damage_pending = false;
++    pixman_region32_clear(&rbd->damage);
++    if (rbd_send(rbd, RBD_MSG_HELLO, &hello, sizeof(hello), -1) <= 0) {
++        if (rbd->fd >= 0) {
++            rbd_disconnect(rbd, "HELLO not accepted");
++        }
++        return;
++    }
++    rbd_set_interval(rbd);
++    /* Bring the console surface up to date, then publish the whole frame. */
++    graphic_hw_update(rbd->dcl.con);
++    rbd_flush(rbd);
++    if (rbd->fd >= 0) {
++        rbd_send_clock_event(rbd);
++    }
++    if (rbd->handoff_event_pending) {
++        /* Already reported through the clock event's handoff field. */
++        rbd->handoff_event_pending = false;
++    }
++}
++
++static void rbd_try_connect(void *opaque)
++{
++    RetroBootDisplay *rbd = opaque;
++    struct sockaddr_un addr = { .sun_family = AF_UNIX };
++    int fd;
++
++    if (rbd->fd >= 0) {
++        return;
++    }
++    fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
++    if (fd < 0) {
++        error_report("retroboot: socket: %s", strerror(errno));
++        goto retry;
++    }
++    pstrcpy(addr.sun_path, sizeof(addr.sun_path), rbd->socket_path);
++    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++        if (!rbd->waiting_logged) {
++            info_report("retroboot: waiting for presenter at %s (%s)",
++                        rbd->socket_path, strerror(errno));
++            rbd->waiting_logged = true;
++        }
++        close(fd);
++        goto retry;
++    }
++
++    rbd->fd = fd;
++    rbd->waiting_logged = false;
++    rbd->connections++;
++    qemu_set_fd_handler(fd, rbd_read, NULL, rbd);
++    info_report("retroboot: connected to presenter at %s (connection %"
++                PRIu64 ")", rbd->socket_path, rbd->connections);
++    rbd_connected(rbd);
++    return;
++
++retry:
++    timer_mod(rbd->connect_timer,
++              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + RBD_CONNECT_RETRY_MS);
++}
++
++static void rbd_disconnect(RetroBootDisplay *rbd, const char *reason)
++{
++    if (rbd->fd < 0) {
++        return;
++    }
++    qemu_set_fd_handler(rbd->fd, NULL, NULL, NULL);
++    close(rbd->fd);
++    rbd->fd = -1;
++    info_report("retroboot: presenter disconnected (%s); damage sent %"
++                PRIu64 ", dropped %" PRIu64 "; reconnecting", reason,
++                rbd->damage_sent, rbd->damage_dropped);
++    /* A presenter that vanished cannot release what it pressed. */
++    rbd_release_all(rbd);
++    pixman_region32_clear(&rbd->damage);
++    rbd->surface_pending = true;
++    rbd->full_damage_pending = false;
++    rbd_set_interval(rbd);
++    timer_mod(rbd->connect_timer,
++              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + RBD_CONNECT_RETRY_MS);
++}
++
++/* DisplayChangeListener -------------------------------------------------- */
++
++static void rbd_refresh(DisplayChangeListener *dcl)
++{
++    RetroBootDisplay *rbd = container_of(dcl, RetroBootDisplay, dcl);
++
++    graphic_hw_update(dcl->con);
++    rbd_check_clock(rbd);
++    rbd_flush(rbd);
++}
++
++static void rbd_gfx_update(DisplayChangeListener *dcl,
++                           int x, int y, int w, int h)
++{
++    RetroBootDisplay *rbd = container_of(dcl, RetroBootDisplay, dcl);
++
++    if (rbd->fd < 0 || rbd->surface_pending) {
++        return;
++    }
++    pixman_region32_union_rect(&rbd->damage, &rbd->damage, x, y, w, h);
++}
++
++static void rbd_gfx_switch(DisplayChangeListener *dcl,
++                           DisplaySurface *new_surface)
++{
++    RetroBootDisplay *rbd = container_of(dcl, RetroBootDisplay, dcl);
++
++    rbd->surface = new_surface;
++    pixman_region32_clear(&rbd->damage);
++    if (!new_surface) {
++        return;
++    }
++    if (rbd->mem && rbd->mem_width == surface_width(new_surface) &&
++        rbd->mem_height == surface_height(new_surface) &&
++        !rbd->surface_pending) {
++        /* Same geometry (page flip, depth change): resend the whole frame. */
++        pixman_region32_union_rect(&rbd->damage, &rbd->damage, 0, 0,
++                                   rbd->mem_width, rbd->mem_height);
++        return;
++    }
++    /*
++     * The device draws into a new surface after switching, so publish it
++     * from the next refresh rather than from here.
++     */
++    rbd->surface_pending = true;
++}
++
++static bool rbd_check_format(DisplayChangeListener *dcl,
++                             pixman_format_code_t format)
++{
++    /* Every console format is converted to XRGB8888 with pixman. */
++    return true;
++}
++
++static const DisplayChangeListenerOps rbd_dcl_ops = {
++    .dpy_name             = "retroboot",
++    .dpy_refresh          = rbd_refresh,
++    .dpy_gfx_update       = rbd_gfx_update,
++    .dpy_gfx_switch       = rbd_gfx_switch,
++    .dpy_gfx_check_format = rbd_check_format,
++};
++
++static void rbd_display_init(DisplayState *ds, DisplayOptions *opts)
++{
++    RetroBootDisplay *rbd;
++    const char *path = opts->u.retroboot.socket;
++    QemuConsole *con;
++
++    if (!path || !*path) {
++        error_report("-display retroboot requires socket=PATH");
++        exit(1);
++    }
++    if (strlen(path) >= sizeof(((struct sockaddr_un *)NULL)->sun_path)) {
++        error_report("retroboot: socket path is too long: %s", path);
++        exit(1);
++    }
++    con = qemu_console_lookup_default();
++    if (!con || !qemu_console_is_graphic(con)) {
++        error_report("retroboot: no graphical console to present");
++        exit(1);
++    }
++
++    rbd = g_new0(RetroBootDisplay, 1);
++    rbd->fd = -1;
++    rbd->mem_fd = -1;
++    rbd->socket_path = g_strdup(path);
++    rbd->interval_ms = RBD_REFRESH_CONNECTED_MS;
++    rbd->start_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++    pixman_region32_init(&rbd->damage);
++#ifdef CONFIG_TCG
++    rbd->icount_at_start = icount_enabled();
++#endif
++    rbd->kbd = qkbd_state_init(con);
++    rbd->dcl.ops = &rbd_dcl_ops;
++    rbd->dcl.con = con;
++    register_displaychangelistener(&rbd->dcl);
++    rbd_set_interval(rbd);
++
++    rbd->connect_timer = timer_new_ms(QEMU_CLOCK_REALTIME, rbd_try_connect,
++                                      rbd);
++    rbd_try_connect(rbd);
++}
++
++static QemuDisplay qemu_display_retroboot = {
++    .type = DISPLAY_TYPE_RETROBOOT,
++    .init = rbd_display_init,
++    /* No text consoles: default serial/parallel/monitor go nowhere. */
++    .vc   = "null",
++};
++
++static void register_retroboot(void)
++{
++    qemu_display_register(&qemu_display_retroboot);
++}
++
++type_init(register_retroboot);

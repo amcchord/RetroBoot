@@ -1,0 +1,15 @@
+{
+  "id": "erase-confirm",
+  "kind": "alert",
+  "alert_icon": "caution",
+  "width": 440,
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "Erase “Samsung SSD 980” and install RetroBoot?"},
+    {"type": "text", "style": "small", "text": "Everything on this 500 GB disk will be permanently erased, including all of its partitions and any other operating system. This cannot be undone."},
+    {"type": "text", "style": "small", "text": "Disk: nvme0n1, Samsung SSD 980 500GB, serial S64DNX0R1234"},
+    {"type": "buttons", "items": [
+      {"id": "erase", "label": "Erase Disk"},
+      {"id": "cancel", "label": "Cancel", "default": true}
+    ]}
+  ]
+}

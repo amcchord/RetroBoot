@@ -1,0 +1,9 @@
+# Additional packages for the debug flavor only (Raspberry Pi).
+openssh-server
+iproute2
+less
+strace
+pciutils
+usbutils
+iw
+ethtool

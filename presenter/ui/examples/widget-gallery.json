@@ -1,0 +1,337 @@
+{
+  "id": "widget-gallery",
+  "kind": "window",
+  "title": "Widget Gallery",
+  "width": 700,
+  "items": [
+    {
+      "type": "columns",
+      "items": [
+        {
+          "type": "stack",
+          "items": [
+            {
+              "type": "text",
+              "style": "emphasis",
+              "text": "Emphasis: the system font"
+            },
+            {
+              "type": "text",
+              "text": "Normal: body text in the regular face, wrapping across lines as needed."
+            },
+            {
+              "type": "text",
+              "style": "small",
+              "text": "Small: secondary text. Disabled text is gray:"
+            },
+            {
+              "type": "text",
+              "style": "small",
+              "disabled": true,
+              "text": "This text item is disabled."
+            },
+            {
+              "type": "text",
+              "style": "large",
+              "align": "center",
+              "text": "Large 123"
+            },
+            {
+              "type": "separator"
+            },
+            {
+              "type": "field",
+              "id": "f1",
+              "label": "Name:",
+              "value": "Macintosh HD"
+            },
+            {
+              "type": "field",
+              "id": "f2",
+              "label": "Hint:",
+              "placeholder": "Placeholder text"
+            },
+            {
+              "type": "field",
+              "id": "f3",
+              "label": "Disabled:",
+              "value": "Can't edit",
+              "disabled": true
+            },
+            {
+              "type": "popup",
+              "id": "p1",
+              "label": "Popup:",
+              "value": "b",
+              "options": [
+                {
+                  "id": "a",
+                  "label": "First"
+                },
+                {
+                  "id": "b",
+                  "label": "Second choice"
+                }
+              ]
+            },
+            {
+              "type": "popup",
+              "id": "p2",
+              "label": "Disabled:",
+              "disabled": true,
+              "options": [
+                {
+                  "id": "a",
+                  "label": "Unavailable"
+                }
+              ]
+            },
+            {
+              "type": "checkbox",
+              "id": "c1",
+              "label": "Checked",
+              "value": true
+            },
+            {
+              "type": "checkbox",
+              "id": "c2",
+              "label": "Unchecked",
+              "value": false
+            },
+            {
+              "type": "checkbox",
+              "id": "c3",
+              "label": "Disabled",
+              "value": true,
+              "disabled": true
+            },
+            {
+              "type": "radio",
+              "id": "r1",
+              "label": "Radio:",
+              "value": "x",
+              "options": [
+                {
+                  "id": "x",
+                  "label": "Selected"
+                },
+                {
+                  "id": "y",
+                  "label": "Not selected"
+                },
+                {
+                  "id": "z",
+                  "label": "Disabled option",
+                  "disabled": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "stack",
+          "items": [
+            {
+              "type": "list",
+              "id": "icons",
+              "label": "Icons:",
+              "rows": 6,
+              "value": "disk",
+              "items": [
+                {
+                  "id": "mac",
+                  "label": "Mac",
+                  "detail": "16 \u00d7 16",
+                  "icon": "mac"
+                },
+                {
+                  "id": "disk",
+                  "label": "Disk",
+                  "detail": "16 \u00d7 16",
+                  "icon": "disk"
+                },
+                {
+                  "id": "cd",
+                  "label": "Cd",
+                  "detail": "16 \u00d7 16",
+                  "icon": "cd"
+                },
+                {
+                  "id": "folder",
+                  "label": "Folder",
+                  "detail": "16 \u00d7 16",
+                  "icon": "folder"
+                },
+                {
+                  "id": "network",
+                  "label": "Network",
+                  "detail": "16 \u00d7 16",
+                  "icon": "network"
+                },
+                {
+                  "id": "wifi",
+                  "label": "Wifi",
+                  "detail": "16 \u00d7 16",
+                  "icon": "wifi"
+                },
+                {
+                  "id": "web",
+                  "label": "Web",
+                  "detail": "16 \u00d7 16",
+                  "icon": "web"
+                },
+                {
+                  "id": "wrench",
+                  "label": "Wrench",
+                  "detail": "16 \u00d7 16",
+                  "icon": "wrench"
+                },
+                {
+                  "id": "stop",
+                  "label": "Stop",
+                  "detail": "16 \u00d7 16",
+                  "icon": "stop"
+                },
+                {
+                  "id": "caution",
+                  "label": "Caution",
+                  "detail": "16 \u00d7 16",
+                  "icon": "caution"
+                },
+                {
+                  "id": "note",
+                  "label": "Note",
+                  "detail": "16 \u00d7 16",
+                  "icon": "note"
+                },
+                {
+                  "id": "display",
+                  "label": "Display",
+                  "detail": "16 \u00d7 16",
+                  "icon": "display"
+                },
+                {
+                  "id": "sound",
+                  "label": "Sound",
+                  "detail": "16 \u00d7 16",
+                  "icon": "sound"
+                },
+                {
+                  "id": "power",
+                  "label": "Power",
+                  "detail": "16 \u00d7 16",
+                  "icon": "power"
+                },
+                {
+                  "id": "usb",
+                  "label": "Usb",
+                  "detail": "16 \u00d7 16",
+                  "icon": "usb"
+                }
+              ]
+            },
+            {
+              "type": "group",
+              "label": "Progress",
+              "items": [
+                {
+                  "type": "progress",
+                  "value": 0.66
+                },
+                {
+                  "type": "progress",
+                  "indeterminate": true
+                },
+                {
+                  "type": "progress",
+                  "value": 0.3,
+                  "disabled": true
+                }
+              ]
+            },
+            {
+              "type": "columns",
+              "items": [
+                {
+                  "type": "icon",
+                  "icon": "stop",
+                  "size": 32,
+                  "width": 32
+                },
+                {
+                  "type": "icon",
+                  "icon": "caution",
+                  "size": 32,
+                  "width": 32
+                },
+                {
+                  "type": "icon",
+                  "icon": "note",
+                  "size": 32,
+                  "width": 32
+                },
+                {
+                  "type": "icon",
+                  "icon": "mac",
+                  "size": 32,
+                  "width": 32
+                },
+                {
+                  "type": "qr",
+                  "module": 2,
+                  "matrix": [
+            "111111101010001111111",
+            "100000101100101000001",
+            "101110100101101011101",
+            "101110101101101011101",
+            "101110100101001011101",
+            "100000100101101000001",
+            "111111101010101111111",
+            "000000001111100000000",
+            "101101110001101001011",
+            "100111011001111111101",
+            "101011111001010100011",
+            "101101011101000101011",
+            "101111110110111011000",
+            "000000001001011010011",
+            "111111101001110110000",
+            "100000101110000111110",
+            "101110100110101000100",
+            "101110101101001010010",
+            "101110101000101000000",
+            "100000100100010110001",
+            "111111101100010100100"
+          ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "buttons",
+      "items": [
+        {
+          "id": "help",
+          "label": "Help",
+          "align": "left"
+        },
+        {
+          "id": "off",
+          "label": "Disabled",
+          "disabled": true
+        },
+        {
+          "id": "cancel",
+          "label": "Cancel"
+        },
+        {
+          "id": "ok",
+          "label": "OK",
+          "default": true
+        }
+      ]
+    }
+  ]
+}

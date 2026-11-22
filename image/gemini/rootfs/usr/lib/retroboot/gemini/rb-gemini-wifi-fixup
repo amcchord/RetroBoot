@@ -1,0 +1,27 @@
+#!/bin/sh
+# rb-gemini-wifi-fixup: make saved Wi-Fi profiles usable by the Gemini's wlan_gen3 driver.
+#
+# The driver cannot do WPA3 (SAE). A WPA2/WPA3 mixed ("transition mode") network saved
+# as WPA3 (key-mgmt=sae) therefore never connects, although the same network accepts
+# WPA2-PSK. This rewrites every sae profile to wpa-psk with PMF off and, while wlan0 is
+# not connected, retries it. A WPA3-only network cannot work on this driver either way.
+# (Behaviour of gemini-debian's gemini-wifi-fixup, reimplemented.) Profile names and
+# secrets are never printed. Run by retroboot-gemini-wifi-fixup.path whenever a profile
+# changes, and once at boot after NetworkManager.
+set -u
+command -v nmcli >/dev/null || exit 0
+nmcli -t general status >/dev/null 2>&1 || exit 0     # NetworkManager not running
+n=0
+for u in $(nmcli -t -f UUID,TYPE connection show | awk -F: '$2 == "802-11-wireless" {print $1}'); do
+  [ "$(nmcli -g 802-11-wireless-security.key-mgmt connection show "$u" 2>/dev/null)" = sae ] || continue
+  if nmcli connection modify "$u" 802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.pmf disable; then
+    n=$((n + 1))
+    if [ "$(nmcli -g GENERAL.STATE device show wlan0 2>/dev/null | cut -d' ' -f1)" != 100 ]; then
+      nmcli -w 0 connection up "$u" >/dev/null 2>&1 || true
+    fi
+  else
+    echo "rb-gemini-wifi-fixup: could not rewrite a WPA3 profile ($u)" >&2
+  fi
+done
+[ "$n" = 0 ] || echo "rb-gemini-wifi-fixup: $n WPA3 (sae) profile(s) changed to WPA2 (wpa-psk, PMF off)"
+exit 0

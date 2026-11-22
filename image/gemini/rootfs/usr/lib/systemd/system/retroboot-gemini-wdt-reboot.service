@@ -1,0 +1,10 @@
+# RetroBoot on the Gemini PDA: watchdog self-reboot in 20 s (escape hatch; see
+# rb-gemini-wdt-reboot). Start by hand only: never enable it.
+[Unit]
+Description=Gemini watchdog self-reboot (20 s)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=40
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-wdt-reboot 20

@@ -1,0 +1,153 @@
+#!/usr/bin/python3 -I
+"""Print the disks RetroBoot could be installed on, as a JSON array.
+
+Contract (hostd installer panel): every element has
+  path, model, size_bytes, removable, transport, is_boot_medium
+plus advisory fields (name, eligible, reason, serial, contents) that hostd may
+show. contents describes what is on the disk now, from partition metadata only
+(nothing is mounted): {partitions, os, labels, summary}, so two disks of the
+same model and size can be told apart before one is erased.
+The disk holding the running system (the installer medium in live mode, the
+root filesystem otherwise) is reported with is_boot_medium=true and
+eligible=false; hostd never offers it and install-to-disk refuses it.
+
+The installer medium's record also carries free_space (rpi_layout.plan_free_space):
+the space after the installer on its own disk (a universal SD card or USB stick:
+FAT RBINSTEFI first, then the payload partition), which a Raspberry Pi installation
+can use without erasing the installer (install-to-disk --board rpi --mode free-space):
+{eligible, reason, message, bytes, start, end, table, existing, remove, numbers,
+boot_partition}. Reading it only looks at sysfs and partition metadata.
+"""
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import rpi_layout  # noqa: E402
+
+MIN_BYTES = 8 * 1024 ** 3          # ESP + BIOS boot + 2 x 3 GiB roots + >= 1.7 GiB data
+LIVE_MEDIUM_FILE = '/run/retroboot/live/medium-device'
+SKIP_PREFIXES = ('loop', 'ram', 'zram', 'sr', 'fd', 'md', 'dm-', 'nbd', 'mtdblock')
+
+
+def lsblk():
+    out = subprocess.run(['lsblk', '-J', '-b', '-p', '-o',
+                          'NAME,KNAME,PKNAME,TYPE,SIZE,MODEL,VENDOR,SERIAL,RM,HOTPLUG,RO,TRAN,MOUNTPOINTS,'
+                          'FSTYPE,LABEL,PARTLABEL,PARTTYPE,PTTYPE'],
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)['blockdevices']
+
+
+def walk(devs, parent=None):
+    for d in devs:
+        yield d, parent
+        yield from walk(d.get('children') or [], d)
+
+
+def live_medium():
+    """The device the installer's payload was found on (retroboot-live), or None."""
+    try:
+        with open(LIVE_MEDIUM_FILE) as f:
+            return os.path.realpath(f.read().strip()) or None
+    except OSError:
+        return None
+
+
+def boot_disks(devs):
+    """Whole disks that back the running system."""
+    disks = set()
+    targets = []
+    medium = live_medium()
+    if medium:
+        targets.append(medium)
+    for dev, _ in walk(devs):
+        mps = [m for m in (dev.get('mountpoints') or []) if m]
+        if any(m in ('/', '/boot/efi', '/var/lib/retroboot', '/run/retroboot/live/medium') for m in mps):
+            targets.append(dev['name'])
+    for target in targets:
+        for dev, _ in walk(devs):
+            if dev['name'] == target or dev.get('kname') == target:
+                disks.add(top_disk(devs, dev))
+    return disks
+
+
+def top_disk(devs, node):
+    by_name = {d['name']: d for d, _ in walk(devs)}
+    cur = node
+    while cur.get('pkname') and cur['pkname'] in by_name:
+        cur = by_name[cur['pkname']]
+    return cur['name']
+
+
+ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
+MSR_TYPE = 'e3c9e316-0b5c-4db8-817d-f92df00215ae'
+
+
+def contents(dev):
+    """What is on a disk now, from partition table and filesystem metadata."""
+    parts = [c for c in (dev.get('children') or []) if c.get('type') == 'part']
+    types = {(c.get('parttype') or '').lower() for c in parts}
+    fstypes = {(c.get('fstype') or '').lower() for c in parts}
+    partlabels = {c.get('partlabel') or '' for c in parts}
+    labels = [c['label'] for c in parts if c.get('label')]
+    os_name = None
+    if 'RBROOT_A' in partlabels:
+        os_name = 'RetroBoot'
+    elif ESP_TYPE in types and 'ntfs' in fstypes:
+        os_name = 'Windows'
+    elif fstypes & {'hfs', 'hfsplus', 'apfs'}:
+        os_name = 'Mac OS'
+    elif ESP_TYPE in types and fstypes & {'ext4', 'xfs', 'btrfs', 'ext3'}:
+        os_name = 'Linux'
+    if not parts and not dev.get('fstype'):
+        summary = 'Empty'
+    elif os_name:
+        summary = os_name
+    elif labels:
+        summary = ', '.join(labels[:3]) + (' …' if len(labels) > 3 else '')
+    else:
+        summary = f"{len(parts)} partition{'s' if len(parts) != 1 else ''}"
+    return {'partitions': len(parts), 'os': os_name, 'labels': labels[:8], 'summary': summary[:60]}
+
+
+def main():
+    devs = lsblk()
+    booted = boot_disks(devs)
+    result = []
+    for dev in devs:
+        name = os.path.basename(dev['name'])
+        if dev.get('type') != 'disk' or name.startswith(SKIP_PREFIXES):
+            continue
+        size = int(dev.get('size') or 0)
+        if size <= 0:
+            continue
+        model = ' '.join(x for x in ((dev.get('vendor') or '').strip(), (dev.get('model') or '').strip()) if x) or name
+        removable = bool(dev.get('rm')) or bool(dev.get('hotplug'))
+        is_boot = dev['name'] in booted
+        reason = None
+        if is_boot:
+            reason = 'boot-medium'
+        elif dev.get('ro'):
+            reason = 'read-only'
+        elif size < MIN_BYTES:
+            reason = 'too-small'
+        rec = {'path': dev['name'], 'model': model, 'size_bytes': size, 'removable': removable,
+               'transport': dev.get('tran') or ('virtio' if name.startswith('vd') else None),
+               'is_boot_medium': is_boot, 'name': name, 'eligible': reason is None, 'reason': reason,
+               'serial': (dev.get('serial') or '').strip() or None, 'contents': contents(dev)}
+        medium = live_medium()
+        if is_boot and medium and os.path.realpath(dev['name']) != medium:
+            try:
+                rec['free_space'] = rpi_layout.describe(dev['name'], dev.get('pttype'), medium,
+                                                        dev.get('children') or [])
+            except (OSError, ValueError, rpi_layout.LayoutError) as error:
+                sys.stderr.write(f'list-disks: free space on {dev["name"]}: {error}\n')
+        result.append(rec)
+    json.dump(result, sys.stdout)
+    sys.stdout.write('\n')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

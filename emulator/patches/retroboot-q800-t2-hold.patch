@@ -1,0 +1,362 @@
+RetroBoot: the Quadra ROM's delay-loop calibration safe under TCG (VIA1 timer 2 held while the vCPU translates; m68k series).
+
+At power-on the Quadra 800 ROM times four delay loops (TimeDBRA $0D00,
+TimeSCCDB $0D02, $0B24, $0CEA) against VIA1 timer 2: it loads about 1 ms,
+enables the interrupt and counts a DBRA loop; the level-1 handler discards
+its frame and jumps to the code after the loop, which stores the count and
+moves a table pointer on to the next loop, whose first instructions load
+timer 2 again.  Under TCG those first-time instructions are translated block
+by block while guest time follows the host clock, so the 1 ms deadline can
+land among them: the handler then runs the store a second time with the
+pointer already advanced (lab: $FFFE over the high word of the address-error
+vector at $0C, TimeDBRA 0) and the ROM jumps into unrelated code.  Lab,
+rb-lab: 5 of 452 cold starts never left the startup gray (the ROM's test
+manager), ran wild in low RAM or aborted QEMU (insn_opsize), with and
+without the other RetroBoot patches and on every disk.  This is the
+PowerPC package's retroboot-via-t2-hold.patch (Mac OS 9's ROM runs the same
+68k code) for the generic 6522 without the Cuda/PMU coherent-timer series:
+while timer 2's interrupt is enabled, an interrupt that falls due while
+the vCPU is translating waits until the vCPU has not translated for
+x-t2-hold-quiet-us (100), at most x-t2-hold-max-us (4000).
+mos6522-q800-via1.t2-hold (default on; off is QEMU's behaviour).  The
+translation bookkeeping (system/cpu-timers.c, around tb_gen_code) is the
+PowerPC patch's, switched on only by a VIA that asks for it, with one vCPU
+under TCG without icount.
+
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index ad94f96b25..a000a6bf77 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -44,6 +44,9 @@
+ #include "tb-jmp-cache.h"
+ #include "tb-hash.h"
+ #include "tb-context.h"
++#ifndef CONFIG_USER_ONLY
++#include "system/cpu-timers.h"
++#endif
+ #include "tb-internal.h"
+ #include "internal-common.h"
+ 
+@@ -520,6 +523,8 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
+         mmap_unlock();
+     }
+ #else
++    /* RetroBoot: a translation abandoned by a longjmp ends here too */
++    cpu_translation_end();
+     /*
+      * For softmmu, a tlb_fill fault during translation will land here,
+      * and we need to release any page locks held.  In system mode we
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+index fba4e9dc21..2bb08fcfb9 100644
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -37,6 +37,9 @@
+ #include "internal-common.h"
+ #include "tcg/perf.h"
+ #include "tcg/insn-start-words.h"
++#ifndef CONFIG_USER_ONLY
++#include "system/cpu-timers.h"
++#endif
+ 
+ TBContext tb_ctx;
+ 
+@@ -257,8 +260,29 @@ static int setjmp_gen_code(CPUArchState *env, TranslationBlock *tb,
+     return tcg_gen_code(tcg_ctx, tb, pc);
+ }
+ 
++static TranslationBlock *tb_gen_code_body(CPUState *cpu, TCGTBCPUState s);
++
+ /* Called with mmap_lock held for user mode emulation.  */
+ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
++{
++#ifndef CONFIG_USER_ONLY
++    TranslationBlock *tb;
++
++    /*
++     * RetroBoot: note when the vCPU translates (cpu_translation_quiet_ns()).
++     * A longjmp out of the translation (a fault while fetching code, a
++     * full code buffer) ends the interval in cpu_exec_longjmp_cleanup().
++     */
++    cpu_translation_begin();
++    tb = tb_gen_code_body(cpu, s);
++    cpu_translation_end();
++    return tb;
++#else
++    return tb_gen_code_body(cpu, s);
++#endif
++}
++
++static TranslationBlock *tb_gen_code_body(CPUState *cpu, TCGTBCPUState s)
+ {
+     CPUArchState *env = cpu_env(cpu);
+     TranslationBlock *tb, *existing_tb;
+diff --git a/hw/misc/mac_via.c b/hw/misc/mac_via.c
+index 650ed459f1..d9705a2fd6 100644
+--- a/hw/misc/mac_via.c
++++ b/hw/misc/mac_via.c
+@@ -1351,6 +1351,15 @@ static const Property mos6522_q800_via1_properties[] = {
+     DEFINE_PROP_UINT8("adb-poll-ms", MOS6522Q800VIA1State, adb_poll_ms, 11),
+     DEFINE_PROP_UINT32("adb-idle-after-ms", MOS6522Q800VIA1State,
+                        adb_idle_after_ms, 1000),
++    /*
++     * RetroBoot: the ROM's delay-loop calibration against timer 2; see
++     * mos6522_t2_hold() in hw/misc/mos6522.c.  t2-hold=off is QEMU's.
++     */
++    DEFINE_PROP_BOOL("t2-hold", MOS6522Q800VIA1State, parent_obj.t2_hold, true),
++    DEFINE_PROP_UINT32("x-t2-hold-quiet-us", MOS6522Q800VIA1State,
++                       parent_obj.t2_hold_quiet_us, 100),
++    DEFINE_PROP_UINT32("x-t2-hold-max-us", MOS6522Q800VIA1State,
++                       parent_obj.t2_hold_max_us, 4000),
+ };
+ 
+ static void mos6522_q800_via1_class_init(ObjectClass *oc, const void *data)
+diff --git a/hw/misc/mos6522.c b/hw/misc/mos6522.c
+index bae766ef17..5933805604 100644
+--- a/hw/misc/mos6522.c
++++ b/hw/misc/mos6522.c
+@@ -36,6 +36,7 @@
+ #include "qemu/cutils.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
++#include "system/cpu-timers.h"
+ #include "trace.h"
+ 
+ 
+@@ -173,6 +174,13 @@ static unsigned int get_counter(MOS6522State *s, MOS6522Timer *ti)
+ static void set_counter(MOS6522State *s, MOS6522Timer *ti, unsigned int val)
+ {
+     trace_mos6522_set_counter(1 + ti->index, val);
++    if (ti->index == 1) {
++        s->t2_held_since = 0;
++        if (s->t2_hold && !s->t2_watch) {
++            s->t2_watch = cpu_translation_watch();
++            s->t2_hold = s->t2_watch;   /* SMP, icount or no TCG: off */
++        }
++    }
+     ti->load_time = get_load_time(s, ti);
+     ti->counter_value = val;
+     if (ti->index == 0) {
+@@ -260,11 +268,64 @@ static void mos6522_timer1(void *opaque)
+     mos6522_update_irq(s);
+ }
+ 
++/*
++ * RetroBoot (t2_hold): should a timer-2 interrupt that is due now wait?
++ *
++ * At startup the Macintosh ROM (the Quadra's, and the 68k code of the Power
++ * Macintosh ROMs) times its delay loops against timer 2: it loads about
++ * 1 ms, enables the interrupt and counts a DBRA loop of at most 65536
++ * iterations; the level-1 handler discards its frame and jumps to the code
++ * after the loop, which stores the count and moves a table pointer on to
++ * the next loop, whose first instructions load timer 2 again.  An interrupt
++ * that arrives in the dozen instructions between the pointer's advance and
++ * that load makes the handler run the store a second time with the pointer
++ * already advanced: the ROM writes a count into low memory (exception
++ * vectors) and later runs wild.  On hardware those instructions take about
++ * a microsecond.  Under TCG they run for the first time when a loop runs
++ * out and are translated block by block, and guest time follows the host
++ * clock, so a deadline a little after the end of a loop can land among
++ * them; more often on a busy or slow host.
++ *
++ * So, while timer 2's interrupt is enabled, an interrupt that falls due
++ * while the vCPU is translating waits until the vCPU has not translated for
++ * t2_hold_quiet_us (hot code: a timing loop), at most t2_hold_max_us.  A
++ * loop that is still running takes its interrupt as before; one that has
++ * run out reaches the next load of timer 2, which cancels the interrupt as
++ * on hardware.  The counter keeps host time.  (The PowerPC package's
++ * retroboot-via-t2-hold.patch, for mos6522-cuda/pmu.)
++ */
++static bool mos6522_t2_hold(MOS6522State *s, int64_t now)
++{
++    int64_t quiet;
++
++    if (!s->t2_hold || !(s->ier & T2_INT)) {
++        return false;
++    }
++    if (!s->t2_held_since) {
++        s->t2_held_since = now;
++    }
++    if (now - s->t2_held_since >= (int64_t)s->t2_hold_max_us * SCALE_US) {
++        return false;
++    }
++    quiet = cpu_translation_quiet_ns(now);
++    if (quiet >= (int64_t)s->t2_hold_quiet_us * SCALE_US) {
++        return false;
++    }
++    /* look again when the vCPU could have been quiet long enough */
++    timer_mod(s->timers[1].timer,
++              now + (int64_t)s->t2_hold_quiet_us * SCALE_US - quiet);
++    return true;
++}
++
+ static void mos6522_timer2(void *opaque)
+ {
+     MOS6522State *s = opaque;
+     MOS6522Timer *ti = &s->timers[1];
+ 
++    if (mos6522_t2_hold(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL))) {
++        return;
++    }
++    s->t2_held_since = 0;
+     mos6522_timer2_update(s, ti, ti->next_irq_time);
+     s->ifr |= T2_INT;
+     mos6522_update_irq(s);
+@@ -304,7 +365,8 @@ uint64_t mos6522_read(void *opaque, hwaddr addr, unsigned size)
+         mos6522_timer1_update(s, &s->timers[0], now);
+         s->ifr |= T1_INT;
+     }
+-    if (now >= s->timers[1].next_irq_time) {
++    if (now >= s->timers[1].next_irq_time && !mos6522_t2_hold(s, now)) {
++        s->t2_held_since = 0;
+         mos6522_timer2_update(s, &s->timers[1], now);
+         s->ifr |= T2_INT;
+     }
+@@ -664,6 +726,7 @@ static void mos6522_reset_hold(Object *obj, ResetType type)
+ 
+     s->timers[1].frequency = s->frequency;
+     s->timers[1].latch = 0xffff;
++    s->t2_held_since = 0;
+     timer_del(s->timers[1].timer);
+ }
+ 
+diff --git a/include/hw/misc/mos6522.h b/include/hw/misc/mos6522.h
+index 82838d0910..395ceec4d6 100644
+--- a/include/hw/misc/mos6522.h
++++ b/include/hw/misc/mos6522.h
+@@ -148,6 +148,18 @@ struct MOS6522State {
+ 
+     qemu_irq irq;
+     uint8_t last_irq_levels;
++
++    /*
++     * RetroBoot (t2_hold, q800 VIA1): a timer-2 interrupt that falls due
++     * while the vCPU is translating code waits until it has not translated
++     * for t2_hold_quiet_us, at most t2_hold_max_us.  See mos6522_t2_hold()
++     * in hw/misc/mos6522.c.
++     */
++    bool t2_hold;
++    uint32_t t2_hold_quiet_us;
++    uint32_t t2_hold_max_us;
++    bool t2_watch;              /* translation bookkeeping is on */
++    int64_t t2_held_since;      /* T2 due but held since (0: not held) */
+ };
+ 
+ #define TYPE_MOS6522 "mos6522"
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index a1abed0d7a..dabb6387ae 100644
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -43,4 +43,25 @@ int64_t cpus_get_virtual_clock(void);
+ void cpus_set_virtual_clock(int64_t new_time);
+ int64_t cpus_get_elapsed_ticks(void);
+ 
++/*
++ * RetroBoot: when the vCPU translates guest code
++ * (emulator/reports/viacal-20261013.md).
++ *
++ * Guest time follows the host clock, so code that runs for the first time is
++ * one to two orders of magnitude slower in guest time than the same code
++ * later: TCG translates it block by block on the spot.  A device can ask
++ * whether the vCPU is in such a stretch.
++ *
++ * cpu_translation_watch() switches the bookkeeping on, with one vCPU under
++ * TCG without icount only (it returns false otherwise).
++ * cpu_translation_begin()/end() bracket a translation (end is also called
++ * when a translation is abandoned by a longjmp).  cpu_translation_quiet_ns()
++ * is how long, in QEMU_CLOCK_VIRTUAL ns up to @now, the vCPU has not
++ * translated: 0 during a translation, INT64_MAX when not watching.
++ */
++bool cpu_translation_watch(void);
++void cpu_translation_begin(void);
++void cpu_translation_end(void);
++int64_t cpu_translation_quiet_ns(int64_t now);
++
+ #endif /* SYSTEM_CPU_TIMERS_H */
+diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+index 9919b46230..51a553978f 100644
+--- a/system/cpu-timers.c
++++ b/system/cpu-timers.c
+@@ -37,6 +37,7 @@
+ #include "system/cpu-timers.h"
+ #include "system/cpu-timers-internal.h"
+ #include "exec/icount.h"
++#include "system/tcg.h"
+ 
+ /* clock and ticks */
+ 
+@@ -267,8 +268,75 @@ void qemu_timer_notify_cb(void *opaque, QEMUClockType type)
+ TimersState timers_state;
+ 
+ /* initialize timers state and the cpu throttle for convenience */
++/*
++ * RetroBoot: when the vCPU translates (see include/system/cpu-timers.h).
++ * The only writer is the vCPU thread (one vCPU); readers use the seqlock.
++ */
++static struct {
++    bool enabled;
++    QemuSeqLock seq;
++    int64_t start;              /* current translation's start, 0 = none */
++    int64_t last_end;           /* end of the last one */
++} xlate;
++
++bool cpu_translation_watch(void)
++{
++    if (!tcg_enabled() || icount_enabled() || qemu_get_cpu(1)) {
++        return false;
++    }
++    qatomic_store_release(&xlate.enabled, true);
++    return true;
++}
++
++void cpu_translation_begin(void)
++{
++    int64_t now;
++
++    if (!qatomic_load_acquire(&xlate.enabled)) {
++        return;
++    }
++    now = MAX(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), 1);
++    seqlock_write_begin(&xlate.seq);
++    xlate.start = now;
++    seqlock_write_end(&xlate.seq);
++}
++
++void cpu_translation_end(void)
++{
++    int64_t now;
++
++    if (!xlate.start) {         /* written by this thread only */
++        return;
++    }
++    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    seqlock_write_begin(&xlate.seq);
++    xlate.last_end = now;
++    xlate.start = 0;
++    seqlock_write_end(&xlate.seq);
++}
++
++int64_t cpu_translation_quiet_ns(int64_t now)
++{
++    int64_t start, last_end;
++    unsigned v;
++
++    if (!qatomic_load_acquire(&xlate.enabled)) {
++        return INT64_MAX;
++    }
++    do {
++        v = seqlock_read_begin(&xlate.seq);
++        start = xlate.start;
++        last_end = xlate.last_end;
++    } while (seqlock_read_retry(&xlate.seq, v));
++    if (start) {
++        return 0;
++    }
++    return now > last_end ? now - last_end : 0;
++}
++
+ void cpu_timers_init(void)
+ {
++    seqlock_init(&xlate.seq);
+     seqlock_init(&timers_state.vm_clock_seqlock);
+     qemu_spin_init(&timers_state.vm_clock_lock);
+     vmstate_register(NULL, 0, &vmstate_timers, &timers_state);

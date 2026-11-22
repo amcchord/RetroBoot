@@ -1,0 +1,13 @@
+[Unit]
+Description=Record the boot framebuffer mode for GRUB's checkerboard
+After=multi-user.target
+ConditionPathExists=/sys/kernel/boot_params/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/retroboot/image/rb-bootdisplay
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+RetroBoot backport of upstream QEMU commit ddf5738503e2ba6adb74359abf3b6e7aa81af420
+("chardev: Don't unregister yank upon async path connection failure",
+Fabiano Rosas, Cc: qemu-stable; Fixes: 5c102ac9 "chardev: Consolidate yank
+registration"; Resolves: https://gitlab.com/qemu-project/qemu/-/work_items/3528).
+The upstream hunk applies unchanged to v11.0.2.
+
+QEMU 11.0 registers a socket chardev's yank function only once a connection
+is established (tcp_chr_new_client), but the asynchronous connect path still
+unregisters it when the connect attempt fails.  yank_unregister_function()
+then finds no entry and calls abort() without printing anything.  Every
+failed attempt of a "reconnect-ms" client therefore kills QEMU: the AirPort
+card's bridge chardev (-chardev socket,...,reconnect-ms=1000) aborts QEMU
+about one second after hostd removes /run/retroboot/airport.sock (hostd
+stopped or restarted), and at launch when the socket does not exist yet
+(research/airport/reports/airport-reconnect-20261011.md).
+
+diff --git a/chardev/char-socket.c b/chardev/char-socket.c
+--- a/chardev/char-socket.c
++++ b/chardev/char-socket.c
+@@ -1128,11 +1128,6 @@ static void qemu_chr_socket_connected(QIOTask *task, void *opaque)
+
+     if (qio_task_propagate_error(task, &err)) {
+         tcp_chr_change_state(s, TCP_CHARDEV_STATE_DISCONNECTED);
+-        if (s->registered_yank) {
+-            yank_unregister_function(CHARDEV_YANK_INSTANCE(chr->label),
+-                                     char_socket_yank_iochannel,
+-                                     QIO_CHANNEL(sioc));
+-        }
+         check_report_connect_error(chr, err);
+         goto cleanup;
+     }

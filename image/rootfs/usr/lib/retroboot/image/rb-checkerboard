@@ -1,0 +1,54 @@
+#!/usr/bin/python3 -I
+"""Write the ARCHITECTURE.md section 4.4 checkerboard as an 8-bit two-colour palette PNG.
+
+Fallback generator for GRUB's background image. When the real presenter is
+installed, its own pattern code (`rb-presenter --write-checkerboard`) is used
+instead and this file is only a cross-check (and the image's
+checker-default.png). The presenter anchors the pattern at Mac OS's picture,
+black at its top-left (ARCHITECTURE 4.4); without the guest layout this
+anchors it at the screen origin, which is that picture's origin for the auto
+guest size whenever W/s is a multiple of 8: pixel (X, Y) is black when
+(X // s + Y // s) is even. GRUB's PNG reader
+accepts only RGB/RGBA or palette images (not grayscale); a palette keeps the
+decoded size at one byte per pixel.
+
+usage: rb-checkerboard WIDTH HEIGHT SCALE OUT.png
+"""
+import struct
+import sys
+import zlib
+
+
+def rows(width, height, scale):
+    even = bytes(0 if (x // scale) % 2 == 0 else 1 for x in range(width))   # palette index 1 = white
+    odd = bytes(1 if (x // scale) % 2 == 0 else 0 for x in range(width))
+    for y in range(height):
+        yield b'\x00' + (even if (y // scale) % 2 == 0 else odd)
+
+
+def png(width, height, scale, style='classic'):
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    raw = b''.join(rows(width, height, scale)) if style == 'classic' else bytes((width + 1) * height)
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 3, 0, 0, 0)  # 8-bit palette, no interlace
+    plte = bytes([0, 0, 0, 255, 255, 255]) if style == 'classic' else bytes([192, 192, 192, 192, 192, 192])
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'PLTE', plte) +
+            chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b''))
+
+
+def main(argv):
+    if len(argv) not in (5, 7) or (len(argv) == 7 and argv[5:] != ['--style', 'macosx']):
+        sys.exit(__doc__)
+    width, height, scale = (int(v) for v in argv[1:4])
+    if not (1 <= width <= 8192 and 1 <= height <= 8192 and 1 <= scale <= 16):
+        sys.exit('rb-checkerboard: dimensions out of range')
+    data = png(width, height, scale, 'macosx' if len(argv) == 7 else 'classic')
+    tmp = argv[4] + '.tmp'
+    with open(tmp, 'wb') as out:
+        out.write(data)
+    import os
+    os.replace(tmp, argv[4])
+
+
+if __name__ == '__main__':
+    main(sys.argv)

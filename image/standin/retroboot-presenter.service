@@ -1,0 +1,19 @@
+# IMAGE STAND-IN for retroboot-presenter.service (presenter-core owns the real
+# unit). Installed only when no presenter artifact is staged; it draws the
+# checkerboard in the inherited mode and holds it until the final shutdown kill.
+[Unit]
+Description=RetroBoot presenter (image stand-in, checkerboard only)
+DefaultDependencies=no
+After=systemd-udevd.service systemd-tmpfiles-setup-dev.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/retroboot/bin/rb-standin-presenter
+Restart=on-failure
+RestartSec=200ms
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

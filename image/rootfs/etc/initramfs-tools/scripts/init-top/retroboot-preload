@@ -1,0 +1,25 @@
+#!/bin/sh
+# Load xfs in the background while udev settles and the root file system is
+# mounted, so systemd mounts the RetroBoot data partition (RBDATA, XFS) without
+# first loading the module: that took 0.9 s on a Celeron N4100 and 0.4 s on an
+# N5105, on the way to hostd (image/reports/hostboot-2026-10-12.md). If it is
+# still running at switch_root it either finishes or fails harmlessly, and the
+# mount loads the module from the root file system as before.
+# vfat and its code pages (fstab: codepage 437, iocharset ascii) likewise, for
+# the EFI system partition that hostd reads at start. A module loaded later
+# waits for every asynchronous device probe still running, and a slow USB card
+# reader's lasted until 11.3 s on a ThinkPad X1 Carbon (image/reports/lenovo-2026-10-15.md).
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+case " $(cat /proc/cmdline) " in
+*" boot=retroboot-live "*) exit 0 ;;   # the installer has no data partition
+esac
+(modprobe -q xfs; modprobe -q vfat; modprobe -q nls_cp437; modprobe -q nls_ascii) </dev/null >/dev/null 2>&1 &
+exit 0

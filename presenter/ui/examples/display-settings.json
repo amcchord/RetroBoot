@@ -1,0 +1,54 @@
+{"id": "display-settings", "kind": "window", "title": "Display & Sound", "width": 507, "height": 409, "items": [
+  {"type": "band", "height": 76, "rule": "bottom", "items": [
+    {"type": "icon", "icon": "display", "size": 64, "width": 64, "x": 10, "y": 4},
+    {"type": "bevels", "id": "page", "value": "monitor", "x": 89, "y": 10, "items": [
+      {"id": "monitor", "label": "Monitor", "icon": "monitor_page"},
+      {"id": "sound", "label": "Sound", "icon": "sound_page"},
+      {"id": "keyboard", "label": "Keyboard", "icon": "keyboard"}
+    ]}
+  ]},
+  {"type": "columns", "items": [
+    {"type": "group", "label": "Pixel Size", "items": [
+      {"type": "columns", "items": [
+        {"type": "radio", "id": "display.scaling", "label": "", "options": [{"id": "integer", "label": "Sharp"}, {"id": "fit", "label": "Smooth"}], "value": "integer", "width": 84},
+        {"type": "list", "id": "display.pixel_scale", "rows": 5, "value": "auto", "scrollbar": false, "items": [
+          {"id": "auto", "label": "Automatic"},
+          {"id": "1", "label": "1×  1024 × 768"},
+          {"id": "2", "label": "2×", "disabled": true},
+          {"id": "3", "label": "3×", "disabled": true},
+          {"id": "4", "label": "4×", "disabled": true}
+        ]}
+      ]},
+      {"type": "text", "text": "Automatic: 1× — 1024 × 768", "style": "small"}
+    ]},
+    {"type": "group", "label": "Resolution", "items": [
+      {"type": "popup", "id": "display.host_mode", "label": "Display:", "options": [{"id": "auto", "label": "Automatic"}, {"id": "1024x768@60", "label": "1024 × 768 @ 60 Hz"}, {"id": "1280x800@60", "label": "1280 × 800 @ 60 Hz"}, {"id": "1920x1080@60", "label": "1920 × 1080 @ 60 Hz"}], "value": "auto"},
+      {"type": "list", "id": "display.guest_size", "rows": 6, "value": "auto", "scrollbar": false, "items": [
+        {"id": "auto", "label": "Best for this display"},
+        {"id": "640x480", "label": "640 × 480"},
+        {"id": "800x600", "label": "800 × 600"},
+        {"id": "1024x768", "label": "1024 × 768"},
+        {"id": "1152x870", "label": "1152 × 870"},
+        {"id": "1280x1024", "label": "1280 × 1024"}
+      ]}
+    ]}
+  ]},
+  {"type": "columns", "items": [
+    {"type": "stack", "items": [
+      {"type": "popup", "id": "display.rotation", "label": "Rotation:", "options": [{"id": "auto", "label": "Automatic"}, {"id": "0", "label": "Standard"}, {"id": "90", "label": "90° clockwise"}, {"id": "180", "label": "180°"}, {"id": "270", "label": "90° counterclockwise"}], "value": "auto"}
+    ]},
+    {"type": "stack", "items": [
+      {"type": "checkbox", "id": "display.graphics", "label": "3D acceleration (ATI Radeon)", "value": false, "disabled": true},
+      {"type": "text", "text": "This version of RetroBoot's emulator does not include the ATI Radeon.", "style": "small"}
+    ]}
+  ]},
+  {"type": "band", "height": 33, "rule": "top", "pin": true, "items": [
+    {"type": "slider", "id": "audio.volume", "label": "Main Volume:", "value": 70, "min": 0, "max": 100, "step": 1, "icons": ["speaker_low", "speaker_high"], "x": 13, "y": 10},
+    {"type": "checkbox", "id": "audio.mute", "label": "Mute", "value": false, "x": 318, "y": 9}
+  ]},
+  {"type": "buttons", "items": [
+    {"id": "cancel", "label": "Cancel"},
+    {"id": "restart", "label": "Apply and Restart", "disabled": true},
+    {"id": "apply", "label": "Apply", "default": true}
+  ]}
+]}

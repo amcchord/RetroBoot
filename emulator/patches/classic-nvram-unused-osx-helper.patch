@@ -1,0 +1,33 @@
+--- a/hw/nvram/mac_nvram.c
++++ b/hw/nvram/mac_nvram.c
+@@ -195,30 +195,6 @@
+     chrp_nvram_create_free_partition(&nvr->data[sysp_end], len - sysp_end);
+ }
+ 
+-#define OSX_NVRAM_SIGNATURE     (0x5A)
+-
+-/* Set up a Mac OS X NVRAM partition */
+-static void pmac_format_nvram_partition_osx(MacIONVRAMState *nvr, int off,
+-                                            int len)
+-{
+-    uint32_t start = off;
+-    ChrpNvramPartHdr *part_header;
+-    unsigned char *data = &nvr->data[start];
+-
+-    /* empty partition */
+-    part_header = (ChrpNvramPartHdr *)data;
+-    part_header->signature = OSX_NVRAM_SIGNATURE;
+-    pstrcpy(part_header->name, sizeof(part_header->name), "wwwwwwwwwwww");
+-
+-    chrp_nvram_finish_partition(part_header, len);
+-
+-    /* Generation */
+-    stl_be_p(&data[20], 2);
+-
+-    /* Adler32 checksum */
+-    stl_be_p(&data[16], adler32(0, &data[20], len - 20));
+-}
+-
+ /* Set up NVRAM with OF and OSX partitions */
+ void pmac_format_nvram_partition(MacIONVRAMState *nvr, int len)
+ {

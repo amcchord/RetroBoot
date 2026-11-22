@@ -1,0 +1,34 @@
+{
+  "id": "recovery-main",
+  "kind": "window",
+  "title": "RetroBoot",
+  "width": 540,
+  "focus": "pane",
+  "items": [
+    {"type": "list", "id": "pane", "view": "icons", "columns": 4, "header": "8 items, Mac OS is running",
+     "value": null, "items": [
+      {"id": "disk", "label": "Startup Disk", "detail": "Mac OS 9.2.2 (v5)", "icon": "startup"},
+      {"id": "download", "label": "Download a Mac", "detail": "From RetroBoot downloads", "icon": "mac"},
+      {"id": "update", "label": "Software Update", "detail": "RetroBoot 1.7.6 is available", "icon": "update"},
+      {"id": "network", "label": "Network & Web Access", "detail": "192.168.1.86", "icon": "network"},
+      {"id": "display", "label": "Display & Sound", "detail": "1280 × 720", "icon": "display"},
+      {"id": "bluetooth", "label": "Bluetooth", "detail": "1 device connected", "icon": "bluetooth"},
+      {"id": "timezone", "label": "Date & Time", "detail": "New York", "icon": "clock"},
+      {"id": "diagnostics", "label": "Diagnostics", "detail": "Mac OS started in 46 s", "icon": "profiler"}
+    ]},
+    {"type": "facts", "items": [
+      {"label": "Computer:", "value": "GPD MicroPC"},
+      {"label": "Processor:", "value": "Intel Pentium Silver N4100, 4 cores"},
+      {"label": "Built-in Memory:", "value": "8 GB"}
+    ]},
+    {"type": "meters", "items": [
+      {"icon": "mac", "label": "Mac OS 9.2.2 (v5)", "value": "23%", "share": 0.23},
+      {"icon": "chip", "label": "All 4 processors", "value": "41%", "share": 0.41}
+    ]},
+    {"type": "text", "style": "small", "text": "RetroBoot 1.7.6 is available: open Software Update."},
+    {"type": "buttons", "items": [
+      {"id": "power", "label": "Shut Down…", "align": "left"},
+      {"id": "cancel", "label": "Return to Mac OS", "default": true}
+    ]}
+  ]
+}

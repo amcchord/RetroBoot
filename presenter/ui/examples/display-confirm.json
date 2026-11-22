@@ -1,0 +1,14 @@
+{
+  "id": "display-confirm",
+  "kind": "alert",
+  "alert_icon": "caution",
+  "width": 400,
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "Keep this display setting?"},
+    {"type": "text", "style": "small", "text": "The display returns to its previous setting in 15 seconds unless you click Keep."},
+    {"type": "buttons", "items": [
+      {"id": "keep", "label": "Keep"},
+      {"id": "cancel", "label": "Revert", "default": true}
+    ]}
+  ]
+}

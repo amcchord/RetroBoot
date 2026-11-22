@@ -1,0 +1,51 @@
+diff --git a/hw/display/vga-pci.c b/hw/display/vga-pci.c
+index 5e14116..8125397 100644
+--- a/hw/display/vga-pci.c
++++ b/hw/display/vga-pci.c
+@@ -65,6 +65,14 @@ struct PCIVGAState {
+     uint32_t host_req_serial;
+     GraphicHwOps host_resize_ops;
+ 
++    /*
++     * RetroBoot (builtin-panel=on, with host-resize): the features register
++     * says this display is a laptop's built-in LCD; RetroBoot's video driver
++     * variant (emulator/ndrv) then reports a built-in generic LCD, so Mac OS
++     * offers its own brightness control for it (a PMU backlight drives it).
++     */
++    bool builtin_panel;
++
+     /* Optional QEXT hardware cursor, composited by the display frontend. */
+     bool hardware_cursor;
+     uint32_t cursor_width;
+@@ -210,7 +218,9 @@ static uint64_t pci_vga_qext_resize_read(void *ptr, hwaddr addr,
+     case PCI_VGA_QEXT_REG_FEATURES:
+         return (s->packed_lowbpp ? PCI_VGA_QEXT_FEATURE_PACKED_LOWBPP : 0) |
+                (d->hardware_cursor ?
+-                    PCI_VGA_QEXT_FEATURE_HARDWARE_CURSOR : 0);
++                    PCI_VGA_QEXT_FEATURE_HARDWARE_CURSOR : 0) |
++               (d->builtin_panel ?
++                    PCI_VGA_QEXT_FEATURE_RETROBOOT_BUILTIN_PANEL : 0);
+     default:
+         return pci_vga_qext_read(ptr, addr, size);
+     }
+@@ -569,6 +579,7 @@ static const Property vga_pci_properties[] = {
+     DEFINE_PROP_BOOL("classicmac-boot-handoff", PCIVGAState,
+                      vga.classicmac_boot_handoff, false),
+     DEFINE_PROP_BOOL("hardware-cursor", PCIVGAState, hardware_cursor, false),
++    DEFINE_PROP_BOOL("builtin-panel", PCIVGAState, builtin_panel, false),
+     DEFINE_EDID_PROPERTIES(PCIVGAState, edid_info),
+ };
+ 
+diff --git a/include/hw/display/bochs-vbe.h b/include/hw/display/bochs-vbe.h
+index 6f43e28..e02c8bc 100644
+--- a/include/hw/display/bochs-vbe.h
++++ b/include/hw/display/bochs-vbe.h
+@@ -90,6 +90,8 @@
+ #define  PCI_VGA_QEXT_FEATURE_PACKED_LOWBPP  0x1
+ /* host-composited 16x16 ARGB cursor (hardware-cursor=on) */
+ #define  PCI_VGA_QEXT_FEATURE_HARDWARE_CURSOR 0x2
++/* RetroBoot (VGA.builtin-panel): the display is a laptop's built-in LCD */
++#define  PCI_VGA_QEXT_FEATURE_RETROBOOT_BUILTIN_PANEL  0x10000
+ 
+ /*
+  * Hardware cursor registers and sprite memory. The guest stages a 16x16

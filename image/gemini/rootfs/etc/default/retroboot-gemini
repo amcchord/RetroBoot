@@ -1,0 +1,3 @@
+# RetroBoot on the Gemini PDA: device defaults read by /usr/lib/retroboot/gemini/rb-gemini-*.
+# Panel backlight at boot, percent (retroboot-gemini-backlight.service).
+BACKLIGHT_PERCENT=40

@@ -1,0 +1,464 @@
+#!/usr/bin/python3 -I
+"""Keep GRUB's checkerboard (and startup indicator) matched to this machine's boot framebuffer.
+
+GRUB cannot query the video mode from its scripting language, so the image
+records it here: the kernel's boot screen_info (/sys/kernel/boot_params) holds
+the mode the firmware (UEFI GOP) or GRUB (BIOS VBE) handed to Linux, which is
+also the mode rb-presenter keeps (ARCHITECTURE 4.5). This writes, on the ESP:
+
+  grub/retroboot/display.cfg     rb_width/rb_height/rb_scale/rb_pixel_scale/rb_checker[/rb_gfxmode]
+                                 rb_checker_scale/rb_progress/rb_guest_size/rb_startup_ms/rb_rotation
+                                 [/rb_startup_initrd]
+  grub/retroboot/checker-WxH-sS.png
+  grub/retroboot/startup-HASH.cpio  (only with the Platinum bundle's art)
+
+Only when something changed. On UEFI GRUB keeps the firmware mode (gfxmode=auto);
+on BIOS the recorded mode is requested explicitly so it stays stable.
+
+The checkerboard scale follows the configured pixel size (hostd setting
+display.pixel_scale, from the applied settings; hostd runs this service again
+whenever the setting changes): rb_scale is the scale in effect for this mode,
+rb_pixel_scale the configured value, which GRUB passes to Linux as
+retroboot.pixel_scale so the initramfs splash and rb-presenter draw the same
+checkerboard (ARCHITECTURE 4.4).
+
+The startup indicator (ARCHITECTURE 4.4.1; hostd setting startup.progress_indicator,
+default on): GRUB's background includes the Happy Mac with an empty progress
+bar for a face, drawn by rb-presenter's own code at the guest layout
+(display.guest_size) so the splash and the presenter take over bit-identically. The checkerboard's
+pattern scale follows the display's physical size (DPI-aware, 4.4), which only
+the running presenter knows (EDID or a panel quirk): it publishes it in
+/run/retroboot/display.json, together with the panel rotation and the user
+rotation (display.rotation, or the tilt sensor's orientation with "auto";
+ARCHITECTURE 4.5): the background is drawn turned the same way, and GRUB passes
+retroboot.rotation so the splash and the presenter start turned. GRUB passes
+retroboot.progress, retroboot.guest_size, retroboot.checker_scale and the
+learned kernel time of the cut-over (retroboot.startup_ms, from hostd's
+state/startup-timing.json, rewritten only when it moved by more than
+max(1.5 s, 15 %)) to Linux.  With the ATI Radeon (hostd's state/graphics.json says
+the next launch uses it) the guest layout is ATI's startup size, 640x480, the size
+Mac OS's startup screen has with that card (ARCHITECTURE 4.9). The icon is Mac OS's own (captured by the
+presenter from the guest's startup screen into state/startup-icon.rbi, else
+the Platinum bundle's identical icon; both private, D012), and the same icon
+file reaches the initramfs splash as an extra initrd (a tiny cpio on the ESP).
+Before any copy exists, RetroBoot's fallback art with the same geometry.
+The pattern is anchored at Mac OS's picture (black at its top-left, 4.4), so
+the guest layout decides it too; PATTERN_VERSION is part of the recorded
+inputs, so a new anchoring rule regenerates the background of an installed
+ESP at its next run.
+ESP writes are atomic (temp file, fsync, rename, directory fsync); an ESP that
+cannot be written leaves the previous files and never fails the boot.
+
+usage: rb-bootdisplay [--esp DIR] [--dry-run] [--settings FILE] [--pixel-scale auto|1-4]
+                      [--boot-params FILE] [--display FILE] [--timing FILE|none] [--art FILE|none]
+                      [--graphics FILE]
+                      [--initial]  selected Mac's first boot, before a framebuffer is known
+"""
+import hashlib
+import json
+import os
+import re
+import struct
+import subprocess
+import sys
+
+VLFB, EFI = 0x23, 0x70
+PRESENTER = '/usr/lib/retroboot/bin/rb-presenter'
+# The checkerboard's anchoring (ARCHITECTURE 4.4): 1 = white at the screen origin
+# (until October 2026), 2 = black at Mac OS's picture (the guest layout's top-left).
+PATTERN_VERSION = 2
+FALLBACK = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rb-checkerboard')
+SETTINGS = '/var/lib/retroboot/config/settings.json'
+MACHINES = '/var/lib/retroboot/machines'
+DISPLAY = '/run/retroboot/display.json'
+TIMING = '/var/lib/retroboot/state/startup-timing.json'
+# hostd's graphics.py: the card of the next launch.  With the ATI Radeon Mac OS starts
+# at ATI's own 640x480, so the startup indicator and the anchor use that size.
+GRAPHICS = '/var/lib/retroboot/state/graphics.json'
+# Mac OS's own Happy Mac (captured by the presenter), else the Platinum bundle's.
+ARTS = ('/var/lib/retroboot/state/startup-icon.rbi', '/var/lib/retroboot/assets/platinum/icons/overview-32.rbi')
+GUEST_SIZES = ('auto', '640x480', '800x600', '1024x768', '1152x870', '1280x1024')
+# ARCHITECTURE 4.5, the same rule as presenter/src/scale.c and hostd/retroboot/display.py
+GUEST_MIN = (640, 480)
+GUEST_MAX = (3840, 2160)
+# a portrait (rotated) display: the same range on its side, 512 wide at least
+GUEST_PMIN = (512, 640)
+GUEST_PMAX = (2160, 3840)
+PIXEL_SCALES = ('auto', '1', '2', '3', '4')
+
+
+def boot_framebuffer(path='/sys/kernel/boot_params/data'):
+    with open(path, 'rb') as f:
+        data = f.read(0x26)
+    kind = data[0x0f]
+    width, height, depth = struct.unpack_from('<HHH', data, 0x12)
+    if kind not in (VLFB, EFI) or not width or not height:
+        return None
+    return {'type': 'efi' if kind == EFI else 'vesa', 'width': width, 'height': height, 'depth': depth}
+
+
+def suggested_scale(width, height):
+    long, short = max(width, height), min(width, height)
+    scale = 1
+    while long // (scale + 1) >= 720 and short // (scale + 1) >= 540:
+        scale += 1
+    return scale
+
+
+def pixel_scale_valid(width, height, scale):
+    gw, gh = (width // scale // 8) * 8, height // scale
+    lo, hi = (GUEST_PMIN, GUEST_PMAX) if height > width else (GUEST_MIN, GUEST_MAX)
+    return lo[0] <= gw <= hi[0] and lo[1] <= gh <= hi[1]
+
+
+def effective_scale(width, height, pixel_scale='auto'):
+    """The scale in effect for a configured pixel size: auto = suggested; else
+    the request when the display can use it, else the nearest size it can
+    (smaller first)."""
+    if pixel_scale == 'auto':
+        return suggested_scale(width, height)
+    req = int(pixel_scale)
+    for scale in list(range(req, 0, -1)) + list(range(req + 1, 5)):
+        if pixel_scale_valid(width, height, scale):
+            return scale
+    return suggested_scale(width, height)
+
+
+def configured_pixel_scale(path=SETTINGS):
+    """display.pixel_scale from hostd's settings store (applied values) or an
+    installer seed ({"settings": {...}}); auto when missing or invalid."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        values = data.get('applied') or data.get('settings') or {}
+        value = str(values.get('display.pixel_scale', 'auto'))
+    except (OSError, ValueError, AttributeError):
+        return 'auto'
+    return value if value in PIXEL_SCALES else 'auto'
+
+
+def configured_startup(path=SETTINGS):
+    """startup.progress_indicator (default on) and display.guest_size from the
+    same store as configured_pixel_scale."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        values = data.get('applied') or data.get('settings') or {}
+        progress = values.get('startup.progress_indicator', True)
+        guest = str(values.get('display.guest_size', 'auto'))
+    except (OSError, ValueError, AttributeError):
+        return True, 'auto'
+    return progress is not False, guest if guest in GUEST_SIZES else 'auto'
+
+
+def configured_style(path=SETTINGS, machines=MACHINES):
+    """The selected Mac owns its preboot style; absent/invalid profiles stay classic."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        values = data.get('desired') or data.get('applied') or data.get('settings') or {}
+        mid = values.get('machine.active')
+        if not isinstance(mid, str) or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,99}', mid):
+            return 'classic'
+        with open(os.path.join(machines, mid, 'machine.json')) as f:
+            meta = json.load(f)
+        profile = (meta.get('template') or {}).get('guestOS')
+        if meta.get('schema_version') == 3 and meta.get('family', 'powermac') == 'powermac' and \
+                (meta.get('template') or {}).get('machineFamily') == 'powerMacOSX' and \
+                profile in ('macosx-10.2', 'macosx-10.3', 'macosx-10.4') and meta.get('guest_os') == profile:
+            return 'macosx'
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return 'classic'
+
+
+def startup_card_size(path=GRAPHICS, settings=SETTINGS):
+    """ATI's startup size ('640x480') when hostd recorded the ATI Radeon for the next
+    launch and the applied settings still ask for it; None otherwise."""
+    try:
+        with open(path) as f:
+            hint = json.load(f)
+        with open(settings) as f:
+            data = json.load(f)
+        values = data.get('applied') or data.get('settings') or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(hint, dict) or hint.get('card') != 'ati-radeon' or \
+            values.get('display.graphics') != 'ati-radeon':
+        return None
+    size = hint.get('startup_guest_size')
+    return size if size in GUEST_SIZES and size != 'auto' else None
+
+
+def presenter_display(path, fb):
+    """Physical size, rotation (panel orientation plus user rotation) and user
+    rotation of the boot display from the presenter's /run/retroboot/display.json
+    (only when it describes this scanout)."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if list(data.get('scanout') or []) != [fb['width'], fb['height']]:
+            return None, 0, 0
+        mm = data.get('physical_mm') or [0, 0]
+        mm = (int(mm[0]), int(mm[1])) if data.get('physical_mm_source') and mm[0] > 0 and mm[1] > 0 else None
+        rot = int(data.get('rotation') or 0)
+        user = int(data.get('user_rotation') or 0)
+        if rot not in (0, 90, 180, 270) or user not in (0, 90, 180, 270):
+            return mm, 0, 0
+        return mm, rot, user
+    except (OSError, ValueError, TypeError, AttributeError, IndexError):
+        return None, 0, 0
+
+
+def learned_startup_ms(path, current):
+    """hostd's learned kernel time of the cut-over, on a 250 ms grid; the value
+    already in display.cfg is kept unless it moved by more than max(1.5 s, 15 %),
+    so the ESP is rarely rewritten."""
+    if not path or path == 'none':
+        return current
+    try:
+        with open(path) as f:
+            cold = json.load(f).get('cold_ms')
+    except (OSError, ValueError, AttributeError):
+        return current
+    if not isinstance(cold, (int, float)) or not 1000 <= cold <= 600000:
+        return current
+    value = int(round(cold / 250.0)) * 250
+    if current and abs(value - current) <= max(1500, 0.15 * current):
+        return current
+    return value
+
+
+def cfg_value(config, name):
+    for line in (config or '').splitlines():
+        if line.startswith(f'set {name}='):
+            return line.split('=', 1)[1]
+    return None
+
+
+def newc(entries):
+    """A tiny uncompressed newc cpio archive (the kernel unpacks concatenated
+    initrds): entries are (name, mode, data)."""
+    out = bytearray()
+    for ino, (name, mode, data) in enumerate(list(entries) + [('TRAILER!!!', 0, b'')], 1):
+        nb = name.encode() + b'\0'
+        fields = (ino if mode else 0, mode, 0, 0, 2 if mode & 0o040000 else 1, 0, len(data), 0, 0, 0, 0, len(nb), 0)
+        out += b'070701' + ''.join('%08X' % v for v in fields).encode() + nb
+        out += b'\0' * (-len(out) % 4) + data
+        out += b'\0' * (-len(out) % 4)
+    return bytes(out)
+
+
+def fsync_path(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_atomic(path, data):
+    with open(path + '.new', 'wb') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(path + '.new', path)
+
+
+def grub_readable_png(path):
+    """GRUB 2.12 reads 8-bit RGB (2), palette (3) or RGBA (6) PNGs only, non-interlaced."""
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(29)
+    except OSError:
+        return False
+    return (len(head) == 29 and head[:8] == b'\x89PNG\r\n\x1a\n' and head[12:16] == b'IHDR'
+            and head[24] == 8 and head[25] in (2, 3, 6) and head[28] == 0)
+
+
+def write_checker(width, height, scale, out, extra=None):
+    """GRUB's background; returns (generator, info). info is rb-presenter's
+    report (checker_scale, art, indicator) or None for the fallback writer,
+    which draws the plain checkerboard."""
+    tmp = out + '.new'
+    if os.access(PRESENTER, os.X_OK):
+        result = subprocess.run([PRESENTER, '--write-checkerboard', str(width), str(height), str(scale), tmp]
+                                + list(extra or []),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if result.returncode == 0 and grub_readable_png(tmp):
+            info = None
+            for line in result.stdout.decode(errors='replace').splitlines():
+                if line.startswith('{'):
+                    try:
+                        info = json.loads(line)
+                    except ValueError:
+                        info = None
+            fsync_path(tmp)
+            os.replace(tmp, out)
+            return 'rb-presenter', info
+    style = option(list(extra or []), '--style', 'classic')
+    subprocess.run([FALLBACK, str(width), str(height), str(scale), tmp]
+                   + (['--style', 'macosx'] if style == 'macosx' else []), check=True, timeout=120)
+    fsync_path(tmp)
+    os.replace(tmp, out)
+    return 'rb-checkerboard', None
+
+
+def option(argv, name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+def initial_background(esp, style):
+    """A fresh ESP cannot borrow the builder's framebuffer or learned progress.
+
+    Cover the same default area as make-boot; GRUB keeps automatic mode selection
+    and passes only the selected profile's appearance to the first splash.
+    """
+    rbdir = os.path.join(esp, 'grub', 'retroboot')
+    os.makedirs(rbdir, exist_ok=True)
+    png = os.path.join(rbdir, 'checker-default.png')
+    subprocess.run([sys.executable, FALLBACK, '2560', '1600', '2', png + '.new'] +
+                   (['--style', 'macosx'] if style == 'macosx' else []),
+                   check=True, timeout=120)
+    fsync_path(png + '.new')
+    os.replace(png + '.new', png)
+    write_atomic(os.path.join(rbdir, 'display.cfg'),
+                 ('# Initial selected Mac; display geometry is learned on first boot.\n'
+                  f'set rb_startup_style={style}\nset rb_progress=off\n'
+                  'set rb_checker=/grub/retroboot/checker-default.png\n').encode())
+    fsync_path(rbdir)
+
+
+def main(argv):
+    esp = option(argv, '--esp', '/boot/efi')
+    dry = '--dry-run' in argv
+    settings = option(argv, '--settings', SETTINGS)
+    pixel_scale = option(argv, '--pixel-scale') or configured_pixel_scale(settings)
+    if pixel_scale not in PIXEL_SCALES:
+        print(f'rb-bootdisplay: invalid pixel scale {pixel_scale!r}', file=sys.stderr)
+        return 2
+    progress, guest_size = configured_startup(settings)
+    style = configured_style(settings, option(argv, '--machines', MACHINES))
+    if style == 'macosx':
+        progress = False
+    if '--initial' in argv:
+        if not dry:
+            initial_background(esp, style)
+        print(json.dumps({'changed': True, 'initial': True, 'style': style, 'dry_run': dry}))
+        return 0
+    guest_size = startup_card_size(option(argv, '--graphics', GRAPHICS), settings) or guest_size
+    fb = boot_framebuffer(option(argv, '--boot-params', '/sys/kernel/boot_params/data'))
+    if fb is None:
+        print('rb-bootdisplay: no linear boot framebuffer; leaving GRUB defaults')
+        return 0
+    mm, rot, user_rot = presenter_display(option(argv, '--display', DISPLAY), fb)
+    # The pixel scale belongs to the logical (rotated) frame the guest sees.
+    lw, lh = (fb['height'], fb['width']) if rot in (90, 270) else (fb['width'], fb['height'])
+    scale = effective_scale(lw, lh, pixel_scale)
+    art = option(argv, '--art')
+    if art is None:
+        art = next((a for a in ARTS if os.path.isfile(a)), None)
+    art = art if art and art != 'none' and os.path.isfile(art) else None
+    rbdir = os.path.join(esp, 'grub', 'retroboot')
+    cfg_path = os.path.join(rbdir, 'display.cfg')
+    try:
+        with open(cfg_path) as f:
+            current = f.read()
+    except OSError:
+        current = None
+    try:
+        recorded_ms = int(cfg_value(current, 'rb_startup_ms') or 0)
+    except ValueError:
+        recorded_ms = 0
+    startup_ms = learned_startup_ms(option(argv, '--timing', TIMING), recorded_ms)
+    art_data = None
+    if art:
+        with open(art, 'rb') as f:
+            art_data = f.read(65536)
+    art_hash = hashlib.sha256(art_data).hexdigest()[:12] if art_data else None
+    name = f"checker-{fb['width']}x{fb['height']}-s{scale}.png"
+    extra = ['--pixel-scale', pixel_scale, '--checker', 'auto', '--rotation', str(rot),
+             '--progress', 'on' if progress else 'off', '--guest-size', guest_size]
+    if style != 'classic':
+        extra += ['--style', style]
+    if mm:
+        extra += ['--mm', f'{mm[0]}x{mm[1]}']
+    if art and progress:
+        extra += ['--art', art]
+    # What the background depends on is part of display.cfg, so any change rewrites it.
+    inputs = {'mm': mm, 'rotation': rot, 'art': art_hash if progress else None, 'pattern': PATTERN_VERSION,
+              'style': style}
+
+    def config_text(checker_scale, indicator, initrd):
+        lines = ['# Written by rb-bootdisplay from the boot framebuffer; do not edit.',
+                 f"set rb_width={fb['width']}", f"set rb_height={fb['height']}",
+                 f'set rb_scale={scale}', f'set rb_pixel_scale={pixel_scale}',
+                 f'set rb_checker=/grub/retroboot/{name}',
+                 f'set rb_checker_scale={checker_scale}',
+                 f"set rb_progress={'on' if indicator else 'off'}",
+                 f'set rb_guest_size={guest_size}',
+                 f'set rb_startup_style={style}',
+                 f'set rb_startup_ms={startup_ms or 0}',
+                 f'set rb_rotation={user_rot}',
+                 f'# inputs {json.dumps(inputs, sort_keys=True)}']
+        if initrd:
+            lines.append(f'set rb_startup_initrd=/grub/retroboot/{initrd}')
+        if fb['type'] == 'vesa':
+            lines.append(f"set rb_gfxmode={fb['width']}x{fb['height']}")
+        return '\n'.join(lines) + '\n'
+
+    summary = {**fb, 'scale': scale, 'pixel_scale': pixel_scale, 'progress': progress, 'style': style,
+               'guest_size': guest_size, 'rotation': rot, 'user_rotation': user_rot, 'physical_mm': mm,
+               'startup_ms': startup_ms or None}
+    png_path = os.path.join(rbdir, name)
+    # Unchanged inputs: nothing to write (the checker scale and art come out of
+    # rb-presenter, so compare everything else).
+    if current is not None and os.path.exists(png_path) and all(
+            cfg_value(current, k) == v for k, v in (
+                ('rb_width', str(fb['width'])), ('rb_height', str(fb['height'])), ('rb_scale', str(scale)),
+                ('rb_pixel_scale', pixel_scale), ('rb_checker', f'/grub/retroboot/{name}'),
+                ('rb_progress', 'on' if progress else 'off'), ('rb_guest_size', guest_size),
+                ('rb_startup_style', style),
+                ('rb_startup_ms', str(startup_ms or 0)), ('rb_rotation', str(user_rot)))) and \
+            f'# inputs {json.dumps(inputs, sort_keys=True)}' in current and \
+            (not cfg_value(current, 'rb_startup_initrd') or
+             os.path.exists(os.path.join(esp, cfg_value(current, 'rb_startup_initrd').lstrip('/')))):
+        print(json.dumps({'changed': False, **summary}))
+        return 0
+    if dry:
+        print(json.dumps({'changed': True, 'dry_run': True, **summary}))
+        return 0
+    try:
+        os.makedirs(rbdir, exist_ok=True)
+        generator, info = write_checker(fb['width'], fb['height'], scale, png_path, extra)
+        info = info or {}
+        checker_scale = int(info.get('checker_scale') or scale)
+        indicator = info.get('progress') == 'on'
+        initrd = None
+        if indicator and info.get('art') == 'macos' and art:
+            # The splash (initramfs) draws the same art: the icon file as an extra initrd.
+            initrd = f'startup-{art_hash}.cpio'
+            write_atomic(os.path.join(rbdir, initrd), newc([
+                ('retroboot', 0o040755, b''), ('retroboot/startup-icon.rbi', 0o100644, art_data)]))
+        write_atomic(cfg_path, config_text(checker_scale, indicator, initrd).encode())
+        for old in os.listdir(rbdir):
+            if (old.startswith('checker-') and old != name and old != 'checker-default.png') or \
+                    (old.startswith('startup-') and old.endswith('.cpio') and old != initrd):
+                os.unlink(os.path.join(rbdir, old))
+        dirfd = os.open(rbdir, os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # A read-only or missing ESP: GRUB keeps what it had; never fail the boot over it.
+        print(json.dumps({'changed': False, 'error': str(exc), **summary}))
+        return 0
+    print(json.dumps({'changed': True, **summary, 'generator': generator, 'checker_scale': checker_scale,
+                      'indicator': info.get('indicator') if indicator else None,
+                      'art': info.get('art') if indicator else None, 'initrd': initrd}))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

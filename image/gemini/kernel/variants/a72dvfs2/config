@@ -1,0 +1,2 @@
+# a72dvfs2: /proc/asound/card*/pcm*/sub*/status for rb-gemini-audio (precise stream state).
+CONFIG_SND_VERBOSE_PROCFS=y

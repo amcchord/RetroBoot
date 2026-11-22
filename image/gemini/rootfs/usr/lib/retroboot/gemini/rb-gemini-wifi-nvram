@@ -1,0 +1,87 @@
+#!/bin/sh
+# rb-gemini-wifi-nvram: give the internal Wi-Fi driver THIS Gemini's own NVRAM record
+# (Wi-Fi MAC address and factory TX-power calibration).
+#
+# wlan_gen3 reads its record from /data/nvram/APCFG/APRDEB/WIFI when Wi-Fi powers on
+# (retroboot-gemini-wifi.service runs after this). The factory wrote each unit's record
+# into the Android nvdata partition (ext4), which RetroBoot never writes: debugfs opens
+# it read-only and nothing is mounted. RetroBoot never ships a record: another unit's
+# would give every Gemini the same MAC and the wrong radio calibration. Without a valid
+# record the driver makes up a MAC at each power-on; Wi-Fi then still works, but the
+# address changes (and so does the DHCP lease). This tool says so in the journal.
+#
+#   rb-gemini-wifi-nvram           copy the record (what the unit runs; never fails the boot)
+#   rb-gemini-wifi-nvram status    source, record MAC, wlan0 MAC, nvdata record
+set -u
+. /usr/lib/retroboot/gemini/gemini-part.sh
+DIR=/data/nvram/APCFG/APRDEB
+DST=$DIR/WIFI
+MARK=$DIR/WIFI.source
+REC=/APCFG/APRDEB/WIFI          # inside the nvdata file system
+
+say() { echo "rb-gemini-wifi-nvram: $*"; }
+mac_of() { od -An -tx1 -j4 -N6 "$1" 2>/dev/null | tr -s ' \n' ' ' | sed 's/^ //; s/ $//; s/ /:/g'; }
+
+# Why a file is not a plausible record (WIFI_CFG_PARAM_STRUCT): size, version, MAC at 4.
+invalid() {
+  [ -s "$1" ] || { echo "empty"; return; }
+  _size=$(stat -c %s "$1")
+  if [ "$_size" -lt 256 ] || [ "$_size" -gt 4096 ]; then echo "size $_size"; return; fi
+  _ver=$(od -An -tu2 -N2 "$1" | tr -d ' ')
+  [ "${_ver:-0}" -gt 0 ] || { echo "version 0"; return; }
+  _mac=$(mac_of "$1")
+  case "$_mac" in 00:00:00:00:00:00|ff:ff:ff:ff:ff:ff|'') echo "MAC '$_mac'"; return ;; esac
+  [ $((0x${_mac%%:*} & 1)) -eq 0 ] || echo "multicast MAC $_mac"
+}
+
+# Copy the record out of nvdata into $1; prints the partition, or the reason it failed.
+from_nvdata() {
+  _part=
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    _part=$(rbg_part nvdata 2>/dev/null) && break
+    sleep 1
+  done
+  [ -n "$_part" ] || { echo "no nvdata partition"; return 1; }
+  rm -f "$1"
+  debugfs -R "dump $REC $1" "$_part" >/dev/null 2>&1
+  _why=$(invalid "$1")
+  [ -z "$_why" ] || { echo "$_part: no valid $REC ($_why)"; return 1; }
+  echo "$_part"
+}
+
+case "${1:-}" in
+status)
+  echo "record:  $DST ($( [ -f "$DST" ] && { w=$(invalid "$DST"); echo "${w:-valid}, MAC $(mac_of "$DST")"; } || echo missing))"
+  echo "source:  $(cat "$MARK" 2>/dev/null || echo unknown)"
+  echo "wlan0:   $(cat /sys/class/net/wlan0/address 2>/dev/null || echo 'not up')"
+  t=$(mktemp)
+  if r=$(from_nvdata "$t"); then
+    echo "nvdata:  $r, MAC $(mac_of "$t") $(cmp -s "$t" "$DST" && echo '(the record in use)' || echo '(DIFFERS from the record in use)')"
+  else
+    echo "nvdata:  $r"
+  fi
+  rm -f "$t"
+  exit 0 ;;
+"") ;;
+*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
+
+mkdir -p "$DIR"
+t=$(mktemp)
+trap 'rm -f "$t"' EXIT
+if r=$(from_nvdata "$t"); then
+  if ! cmp -s "$t" "$DST" 2>/dev/null; then
+    install -m 0644 "$t" "$DST"
+  fi
+  echo "nvdata $r $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARK"
+  say "this unit's record from $r is in place (MAC $(mac_of "$DST"))"
+  exit 0
+fi
+say "WARNING: could not read this unit's Wi-Fi record: $r"
+if [ -f "$DST" ] && [ -z "$(invalid "$DST")" ] && grep -q '^nvdata ' "$MARK" 2>/dev/null; then
+  say "keeping the record copied from nvdata earlier (MAC $(mac_of "$DST"))"
+else
+  rm -f "$DST" "$MARK"
+  say "WARNING: no record; the Wi-Fi driver will make up a MAC address at each power-on"
+fi
+exit 0

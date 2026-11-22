@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "flavor": "macosx-qemu10",
+  "qemu": {
+    "version": "10.0.13",
+    "tag": "v10.0.13",
+    "commit": "98f88efe8f07067667b8d9b1a5ce9551d34036c1",
+    "debian_version": "1:10.0.13+ds-0+deb13u1",
+    "debian_dsc_sha256": "a426c892e5369058c3423816c8625bc8010bb5a58ece57261f62b64ee4d765ad",
+    "debian_orig_sha256": "6a0888e806c2ffc0c5f0733e974f9aea55491950d3c47c98669c8b236dde59ae",
+    "debian_patch_sha256": "da73c092f5684c551b0334d675eb16a3dec91e1edea94759cfb1102fa4a0364e",
+    "archives": [
+      {
+        "file": "qemu_10.0.13+ds-0+deb13u1.dsc",
+        "sha256": "a426c892e5369058c3423816c8625bc8010bb5a58ece57261f62b64ee4d765ad",
+        "bytes": 12462,
+        "url": "https://deb.debian.org/debian/pool/main/q/qemu/qemu_10.0.13+ds-0+deb13u1.dsc"
+      },
+      {
+        "file": "qemu_10.0.13+ds.orig.tar.xz",
+        "sha256": "6a0888e806c2ffc0c5f0733e974f9aea55491950d3c47c98669c8b236dde59ae",
+        "bytes": 40010016,
+        "url": "https://deb.debian.org/debian/pool/main/q/qemu/qemu_10.0.13+ds.orig.tar.xz"
+      },
+      {
+        "file": "qemu_10.0.13+ds-0+deb13u1.debian.tar.xz",
+        "sha256": "da73c092f5684c551b0334d675eb16a3dec91e1edea94759cfb1102fa4a0364e",
+        "bytes": 156096,
+        "url": "https://deb.debian.org/debian/pool/main/q/qemu/qemu_10.0.13+ds-0+deb13u1.debian.tar.xz"
+      }
+    ]
+  },
+  "classicmac": {
+    "url": "https://github.com/amcchord/ClassicMac.git",
+    "commit": "3e245943fba0d18af875a8a3a50a148a6d865535"
+  },
+  "port": {
+    "path": "emulator/osx/retroboot-qemu10.patch",
+    "sha256": "46f87c4a24260c5d9684e5cd296ede3ad8ddf52109fdbbde4a7cc458a69fdadf",
+    "files": [
+      "hw/audio/Kconfig",
+      "hw/audio/meson.build",
+      "hw/audio/screamer.c",
+      "hw/audio/trace-events",
+      "hw/display/ati.c",
+      "hw/display/ati_2d.c",
+      "hw/display/ati_3d.c",
+      "hw/display/ati_3d.h",
+      "hw/display/ati_cp.c",
+      "hw/display/ati_gl.c",
+      "hw/display/ati_gl.h",
+      "hw/display/ati_glr.c",
+      "hw/display/ati_int.h",
+      "hw/display/ati_regs.h",
+      "hw/display/meson.build",
+      "hw/display/trace-events",
+      "hw/input/hid.c",
+      "hw/misc/macio/mac_dbdma.c",
+      "hw/misc/macio/macio.c",
+      "hw/misc/macio/pmu.c",
+      "hw/misc/macio/trace-events",
+      "hw/nvram/mac_nvram.c",
+      "hw/pci-host/uninorth.c",
+      "hw/ppc/Kconfig",
+      "hw/ppc/mac_newworld.c",
+      "hw/ppc/mac_oldworld.c",
+      "hw/usb/dev-hid.c",
+      "include/hw/audio/screamer.h",
+      "include/hw/input/hid.h",
+      "include/hw/misc/macio/macio.h",
+      "include/hw/misc/macio/pmu.h",
+      "include/hw/nvram/mac_nvram.h",
+      "include/hw/pci-host/uninorth.h",
+      "include/hw/ppc/mac_dbdma.h",
+      "meson.build",
+      "qapi/ui.json",
+      "target/ppc/cpu_init.c",
+      "target/ppc/fpu_helper.c",
+      "target/ppc/spr_common.h",
+      "target/ppc/translate.c",
+      "ui/meson.build",
+      "ui/retroboot.c"
+    ]
+  },
+  "firmware": {
+    "source_lock": "emulator/manifests/sources.lock.json:firmware_build.openbios.osx",
+    "sha256": "a942695593d47a82e20455dceaf91b2f6a03f881633a4cceef3d7f326f02b73d"
+  },
+  "assets": [
+    {
+      "path": "ppcvid/qemu_vga.ndrv",
+      "destination": "pc-bios/qemu_vga.ndrv",
+      "sha256": "3b687b15b4ed321eaee6822438be5bba55a5ab1d8a3ef948fe8f63996a7c5722",
+      "bytes": 19811,
+      "binary_private_input": true
+    }
+  ],
+  "features": [
+    "macosx-runtime-1",
+    "macosx-qemu-10.0-1",
+    "display-retroboot",
+    "display-relative-pointer",
+    "display-idle-refresh",
+    "macosx-firmware-1",
+    "macosx-nvram-flash-1",
+    "ati-r100-1",
+    "ati-edid-modes",
+    "macosx-agp-1",
+    "macosx-vga-edid-1",
+    "macosx-ati-r100-1",
+    "macosx-tablet-compat-1",
+    "ati-egl-render-node-1",
+    "macosx-ati-coherent-vram-1",
+    "macosx-ppc-fp-fex-1",
+    "macosx-ati-i8-byte-order-1",
+    "macosx-ati-texture-sampling-1",
+    "macosx-pmu-sleep-1",
+    "macosx-7400-dl1hwf-1",
+    "macosx-screamer-codec-1",
+    "macosx-pmu-hid-wake-1",
+    "macosx-ati-yuv16-view-1",
+    "macosx-ati-depth-memory-1",
+    "macosx-ati-microtile-mips-1",
+    "macosx-ati-texture-page-coherence-1",
+    "macosx-ati-selective-2d-1",
+    "macosx-ati-target-lifetime-1",
+    "macosx-ati-zmask-extent-1",
+    "macosx-ati-ram-source-sync-1",
+    "macosx-ati-yuv-ram-byte-order-1"
+  ],
+  "policy": "Dedicated OS X runtime; no ClassicMac CPU, TCG, FPU, IDE or virtual-time optimizations. Two exact hash-pinned architectural correctness exceptions only: existing PPC floating exception summary fix, and MPC7400 MSSCR0 DL1HWF hardware completion (three exact files, other SPR bits/CPU families unchanged). PMU wake requires actual POW/HID0 SLEEP and vector0x100. Native per-version acceptance remains separate from build capabilities. PMU wake observes the original input event; opt-in USB keyboard physical held state survives protocol reset. This capability requires the observer and physical-state implementation together. Packed YUV row decoding follows the R100 chip formats; default-off YUV16 CPU-view compatibility normalizes only packed component pairs in the legacy backing representation. It does not emulate distinct hardware aperture views. R100 X2 microtile mip rows use the architectural 16-byte minimum across supported texel widths; linear and NPOT explicit-pitch rules remain separate. ATI texture cache invalidation accounts for every cached image on shared dirty pages and the normal linear VBE display consumer; indexed ATI VRAM writes mark the dirty log. Unknown legacy/wrapped display layouts fail closed to content comparison. Selective 2D synchronization is default off and requires Radeon coherent VRAM; it preserves all pending display handoffs and falls back to the full barrier for unknown or external ownership. Timing acceptance and full native application qualification are separate. R100 Z-mask origin clears derive complete eight-row bands from packet count independently of the draw scissor, retain full-origin/pattern/mapping guards, and preserve larger retained depth/stencil tails; arbitrary partial cache layouts remain unsupported. RAM-source selective 2D synchronization is default off and requires Radeon coherent/selective 2D. It classifies the complete source envelope as ordinary RAM without invoking unknown IOMMU or MMIO callbacks; only the exact owned UniNorth mapper is inspected directly, with RAM-proven page tables and physical pages. All GPU owners must be local VRAM, and mapping/owner proofs are repeated after pending waits. Unknown or changed state retains the global barrier; destination/depth/flip ordering and pixel operations remain unchanged. The private research environment switch is absent. Packed-YUV ordinary-RAM byte order is default off and requires Radeon coherent VRAM with the existing YUV16 CPU-view conversion. After producer and depth waits, the BQL-held complete-envelope ordinary-RAM proof removes only the VRAM CPU-aperture XOR for qualified external RAM; explicit format/offset endian settings remain authoritative. Swap, texture key and cache bucket are selected together after the proof. VRAM, non-YUV and rejected mappings retain prior behavior. No app, size or byte-content heuristic is used. Radeon monochrome cursor clipping retains the driver-selected first visible row and shifts both bit planes by the clipped horizontal origin; it never subtracts pixel origins from the VRAM byte address. ARGB rendering retains its existing path.",
+  "ndrv_build": {
+    "license": "GPL-2.0",
+    "retro68_commit": "335fa54f6d8ad1360840f08a067ffede7f554300",
+    "patch": {
+      "path": "emulator/ndrv/retroboot-osx-edid.patch",
+      "sha256": "a6b205da974afc51efa30e09ed7ac3ba730bb19be63d78ff78a60b27192aa118",
+      "files": [
+        "ppcvid/driver/src/QemuEdid.c"
+      ]
+    },
+    "sha256": "9071b3ed97c9316aa2f70fa4b08eb69bf672aa0fc8ceb2ce2b421047bc82a409",
+    "bytes": 23929
+  },
+  "egl_render_node": {
+    "environment": "RETROBOOT_EGL_RENDER_NODE",
+    "selection": "exact EGL DRM render node; no default or software fallback when set",
+    "device_identity": "EGL_DEVICE_EXT queried from the initialized display must match the selected EGLDeviceEXT"
+  },
+  "ppc_fex_fix": {
+    "path": "target/ppc/fpu_helper.c",
+    "patch_path": "emulator/osx/ppc-fp-fex.patch",
+    "patch_sha256": "67043accb2bb3d488c2fa4f32ab8689a256b28b8aca75478d19a0be94662eedf",
+    "before_sha256": "5364f28390699607f81a7ca1ccb796f4839a0729e92b767ec73244f4b3574326",
+    "after_sha256": "6edce85bc843c8107e834102ecb160bc1ee88c3bffc2026c063e9bbdf71eba2e"
+  },
+  "ppc_7400_dl1hwf_fix": {
+    "patch_path": "emulator/osx/ppc-7400-dl1hwf.patch",
+    "patch_sha256": "a751a50f4e40f9f744cb510356411bf81e238d5b94e49d2670b7628901392ae3",
+    "files": {
+      "target/ppc/cpu_init.c": {
+        "before": "c6767b9494c48b29b8aa1f466c37ad2b976dfb3688b0815d5145960403ff516d",
+        "after": "fe4d0830cec6883a4d59dc4b9986d51092924f19a01ef96dcf8a05a61f50b021"
+      },
+      "target/ppc/spr_common.h": {
+        "before": "238d8400d7fc1024bc80e8ffad342b8cab00c7094b494f34119ad2b36b36e41f",
+        "after": "4152204793ace891852cecd0e2f84b4ce2b29f81c1e4f6af566c460cbabae712"
+      },
+      "target/ppc/translate.c": {
+        "before": "a26645144f097651ac5eb54f3dee960abdc2e54e024fb433805933b0b60a3068",
+        "after": "1a01b84e4ae3de1570edc53a16c31f044ecf84376a2ea3ca8f130ef2dce3bcc8"
+      }
+    }
+  }
+}

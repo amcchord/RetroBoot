@@ -1,0 +1,33 @@
+[Unit]
+Description=RetroBoot presenter (display and input owner)
+# Starts as early as possible after udev so the checkerboard handoff from the
+# initramfs splash happens before anything else could reach the screen.
+DefaultDependencies=no
+Wants=systemd-udevd.service
+After=systemd-udevd.service systemd-journald.socket systemd-vconsole-setup.service
+# Not Before=retroboot-hostd.service: hostd starts in parallel and waits for
+# presenter.sock and the display report itself (image/reports/hostboot-2026-10-12.md).
+# No Conflicts= with getty@tty1: conflicts are symmetric, and starting a getty
+# must never stop the display owner. The image masks getty@tty1 instead.
+# Never stopped by isolate or the shutdown transaction: the presenter keeps
+# the classic presentation (black scene) until the machine powers off.
+IgnoreOnIsolate=yes
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/lib/retroboot/bin/rb-presenter --survive-shutdown
+Restart=always
+RestartSec=200ms
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+OOMScoreAdjust=-900
+Nice=-5
+# Release DRM master/VT only through the process exiting; no stop signal
+# escalation surprises during shutdown.
+KillMode=process
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=sysinit.target

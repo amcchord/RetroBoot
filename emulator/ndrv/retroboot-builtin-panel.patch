@@ -1,0 +1,65 @@
+diff --git a/ppcvid/driver/src/DriverQDCalls.c b/ppcvid/driver/src/DriverQDCalls.c
+--- a/ppcvid/driver/src/DriverQDCalls.c
++++ b/ppcvid/driver/src/DriverQDCalls.c
+@@ -484,6 +484,15 @@
+ 
+ 	connectInfo->csConnectFlags		=
+ 		(1 << kTaggingInfoNonStandard) | (1 << kUncertainConnection);
++#ifdef RETROBOOT_BUILTIN_PANEL
++	/* A PowerBook's own screen: a generic LCD on a built-in connection
++	 * (Monitors then calls it "Color LCD" and offers its Brightness). */
++	if (GLOBAL.builtinPanel) {
++		connectInfo->csDisplayType	= kGenericLCD;
++		connectInfo->csConnectFlags	=
++			(1 << kTaggingInfoNonStandard) | (1 << kBuiltInConnection);
++	}
++#endif
+ 
+ 	/* Host-resize: we report connection changes through the VSL connect
+ 	 * service so the Display Manager re-probes us when the QEMU window is
+diff --git a/ppcvid/driver/src/QemuVga.c b/ppcvid/driver/src/QemuVga.c
+--- a/ppcvid/driver/src/QemuVga.c
++++ b/ppcvid/driver/src/QemuVga.c
+@@ -453,6 +453,18 @@
+ 		(GLOBAL.boardRegMappedSize >= 0x600 + QEMU_EXT_SIZE_CURSOR) &&
+ 		(ExtReadL(QEMU_EXT_REG_SIZE) >= QEMU_EXT_SIZE_CURSOR) &&
+ 		((ExtReadL(QEMU_EXT_REG_FEATURES) & QEMU_EXT_FEATURE_GAMMA_LUT) != 0);
++#ifdef RETROBOOT_BUILTIN_PANEL
++	/* RetroBoot: a laptop's screen is reported as the machine's built-in
++	 * LCD, so Mac OS's LCD brightness engine (System Monitor Plugins), the
++	 * Monitors "Brightness" slider and the Button Manager's "Brightness"
++	 * window drive its backlight driver. */
++	GLOBAL.builtinPanel =
++		(GLOBAL.boardRegMappedSize >= 0x600 + QEMU_EXT_SIZE_FEATURES) &&
++		(ExtReadL(QEMU_EXT_REG_SIZE) >= QEMU_EXT_SIZE_FEATURES) &&
++		((ExtReadL(QEMU_EXT_REG_FEATURES) & QEMU_EXT_FEATURE_RETROBOOT_BUILTIN_PANEL) != 0);
++	if (GLOBAL.builtinPanel)
++		lprintf("RetroBoot built-in panel\n");
++#endif
+ 	GLOBAL.cursorSet = false;
+ 	GLOBAL.cursorVisible = false;
+ 	GLOBAL.cursorX = 0;
+diff --git a/ppcvid/driver/src/QemuVga.h b/ppcvid/driver/src/QemuVga.h
+--- a/ppcvid/driver/src/QemuVga.h
++++ b/ppcvid/driver/src/QemuVga.h
+@@ -66,6 +66,9 @@
+ #define QEMU_EXT_FEATURE_PACKED_LOWBPP   0x1
+ #define QEMU_EXT_FEATURE_HARDWARE_CURSOR 0x2
+ #define QEMU_EXT_FEATURE_GAMMA_LUT       0x4
++/* RetroBoot (VGA.builtin-panel=on, emulator/ndrv): this display is the
++ * built-in LCD of a PowerBook-style machine with a PMU-controlled backlight. */
++#define QEMU_EXT_FEATURE_RETROBOOT_BUILTIN_PANEL 0x10000
+ 
+ /* Host-composited 16x16 ARGB cursor registers. */
+ #define QEMU_EXT_REG_CURSOR_WIDTH        0x6
+diff --git a/ppcvid/driver/src/VideoDriverPrivate.h b/ppcvid/driver/src/VideoDriverPrivate.h
+--- a/ppcvid/driver/src/VideoDriverPrivate.h
++++ b/ppcvid/driver/src/VideoDriverPrivate.h
+@@ -92,6 +92,7 @@
+ 	 * composition so cursor movement no longer dirties the framebuffer. */
+ 	Boolean				hardwareCursorAvail;
+ 	Boolean				gammaLUTAvail;
++	Boolean				builtinPanel;		/* RetroBoot: report a built-in LCD */
+ 	Boolean				cursorSet;
+ 	Boolean				cursorVisible;
+ 	SInt32				cursorX;

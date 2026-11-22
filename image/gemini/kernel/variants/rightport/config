@@ -1,0 +1,3 @@
+# rightport: the right USB-C port's VBUS policy (drivers/usb/typec/gemini-right-port.c),
+# built in so it runs before userspace.
+CONFIG_TYPEC_GEMINI_RIGHT_PORT=y

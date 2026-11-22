@@ -1,0 +1,31 @@
+#!/bin/sh
+# Grow the mounted Pi data volume after flashing an image to a larger SD card.
+# Pi 4/5 use GPT; Zero 2 W uses MBR and therefore has no PARTLABEL links.
+set -eu
+part=$(findmnt -nro SOURCE --mountpoint /var/lib/retroboot 2>/dev/null) || exit 0
+part=$(readlink -f "$part")
+[ -b "$part" ] || exit 0
+[ "$(findmnt -nro FSTYPE --mountpoint /var/lib/retroboot)" = xfs ] || exit 0
+disk=/dev/$(lsblk -no PKNAME "$part" | head -n1)
+num=$(cat "/sys/class/block/$(basename "$part")/partition")
+[ -b "$disk" ] || exit 0
+marker=/var/lib/retroboot/state/growdata.done
+size=$(cat "/sys/class/block/$(basename "$disk")/size")
+if [ "$(cat "$marker" 2>/dev/null || true)" = "$disk $size" ]; then exit 0; fi
+trap 'if [ $? -eq 0 ]; then printf "%s %s\n" "$disk" "$size" > "$marker.tmp" 2>/dev/null && mv -f "$marker.tmp" "$marker" 2>/dev/null || true; fi' EXIT
+table=$(lsblk -dnro PTTYPE "$disk")
+case "$table" in
+gpt) sgdisk -e "$disk" >/dev/null; reserve=33 ;;
+dos) reserve=0 ;;
+*) exit 1 ;;
+esac
+start=$(cat "/sys/class/block/$(basename "$part")/start")
+length=$(cat "/sys/class/block/$(basename "$part")/size")
+end=$((start + length - 1))
+last=$((size - reserve - 1))
+[ $((last - end)) -ge 131072 ] || exit 0
+echo "rb-growdata: growing data partition $num on $disk"
+growpart "$disk" "$num"
+partx -u -n "$num" "$disk" 2>/dev/null || true
+udevadm settle --timeout=10 || true
+xfs_growfs /var/lib/retroboot

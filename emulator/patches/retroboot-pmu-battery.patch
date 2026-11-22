@@ -1,0 +1,746 @@
+diff --git a/hw/misc/macio/pmu.c b/hw/misc/macio/pmu.c
+--- a/hw/misc/macio/pmu.c
++++ b/hw/misc/macio/pmu.c
+@@ -30,6 +30,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "hw/core/qdev-properties.h"
++#include "hw/core/qdev-properties-system.h"
+ #include "migration/vmstate.h"
+ #include "hw/core/irq.h"
+ #include "hw/misc/macio/pmu.h"
+@@ -40,6 +41,14 @@
+ #include "qemu/cutils.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
++#include "qemu/error-report.h"
++#include "qobject/qdict.h"
++#include "qobject/qjson.h"
++#include "qobject/qnum.h"
++#include "qobject/qbool.h"
++#include "ui/input.h"
++#include "qemu/aio.h"
++#include "qemu/main-loop.h"
+ #include "trace.h"
+ 
+ 
+@@ -102,6 +111,294 @@ static void pmu_one_sec_timer(void *opaque)
+     timer_mod(s->one_sec_timer, s->one_sec_target);
+ }
+ 
++/*
++ * Battery (RetroBoot).  With battery=on the PMU behaves like the PMU99 of a
++ * NewWorld PowerBook with one smart battery, so Mac OS's own Power Manager
++ * (the "via-pmu-99" PowerMgrPlugin in the Mac OS ROM file) drives the Control
++ * Strip Battery Monitor, the menu-bar battery, Energy Saver and the
++ * low-battery warnings with no guest software installed.  The firmware
++ * advertises the battery bay: QEMU publishes fw_cfg etc/retroboot/battery
++ * and OpenBIOS sets the battery count in power-mgt's prim-info (byte 25).
++ *
++ * What Mac OS 9.2.1 uses (research/battery/reports):
++ *  - PMU_SMART_BATTERY_STATE (0x6f) with the battery number (1) returns
++ *    10 bytes: format (5), flags (0x01 external power, 0x04 battery present),
++ *    charge, full charge, current (signed; negative while discharging) and
++ *    voltage, each 16 bits big-endian.  Mac OS derives "charging" from
++ *    external power with a positive current, and the time remaining from
++ *    charge * 3600 / -current seconds.
++ *  - PMU_GET_COVER (0xdc) bit 0x04: the power adapter is connected.  Bit
++ *    0x01 (lid closed) is never reported: the host owns the lid.
++ *  - An environment interrupt (0x40, followed by the same environment byte)
++ *    makes Mac OS read the power sources again.  Mac OS never sets the
++ *    interrupt mask on this machine, so it is part of the reset mask.
++ *
++ * The state comes from the host (RetroBoot hostd) over a chardev bridge:
++ * newline-delimited JSON, normally a reconnecting client socket to
++ * /run/retroboot/power.sock (docs/ARCHITECTURE.md "Power bridge").  Until the
++ * host reports, the battery is absent and the adapter connected; the last
++ * report is kept while the host is away.  The handlers run in QEMU's main
++ * loop with the BQL held.
++ */
++#define PMU_RB_BRIDGE_VERSION   1
++#define PMU_RB_RX_LINE_MAX      4096
++#define PMU_RB_CAPACITY_MAH     4400    /* reported full charge */
++#define PMU_RB_VOLTAGE_MV       11400   /* when the host has no reading */
++#define PMU_RB_CURRENT_MAX_MA   12000
++
++#define PMU_SB_FLAG_EXTERNAL    0x01
++#define PMU_SB_FLAG_PRESENT     0x04
++#define PMU_ENV_ADAPTER         0x04
++
++static void G_GNUC_PRINTF(2, 3) pmu_bat_trace(PMUState *s, const char *fmt, ...)
++{
++    va_list ap;
++    g_autofree char *msg = NULL;
++
++    if (!s->battery_trace) {
++        return;
++    }
++    va_start(ap, fmt);
++    msg = g_strdup_vprintf(fmt, ap);
++    va_end(ap);
++    info_report("retroboot-pmu: %s", msg);
++}
++
++static uint8_t pmu_battery_env(PMUState *s)
++{
++    return s->bat_ac ? PMU_ENV_ADAPTER : 0;
++}
++
++static uint8_t pmu_battery_flags(PMUState *s)
++{
++    return (s->bat_ac ? PMU_SB_FLAG_EXTERNAL : 0) |
++           (s->bat_present ? PMU_SB_FLAG_PRESENT : 0);
++}
++
++static void pmu_battery_defaults(PMUState *s)
++{
++    s->bat_present = false;
++    s->bat_ac = true;
++    s->bat_charging = false;
++    s->bat_charge = 0;
++    s->bat_max = PMU_RB_CAPACITY_MAH;
++    s->bat_current = 0;
++    s->bat_voltage = PMU_RB_VOLTAGE_MV;
++}
++
++static int64_t qdict_num(QDict *d, const char *key, int64_t dflt)
++{
++    QNum *n = qobject_to(QNum, qdict_get(d, key));
++    double v;
++    int64_t i;
++
++    if (!n) {
++        return dflt;
++    }
++    if (qnum_get_try_int(n, &i)) {
++        return i;
++    }
++    v = qnum_get_double(n);
++    return (int64_t)(v + (v < 0 ? -0.5 : 0.5));
++}
++
++static bool qdict_flag(QDict *d, const char *key, bool dflt)
++{
++    QBool *b = qobject_to(QBool, qdict_get(d, key));
++
++    return b ? qbool_get_bool(b) : dflt;
++}
++
++/*
++ * {"type":"battery","present":bool,"ac":bool,"charging":bool,"percent":n,
++ *  "time_to_empty_min":n|null,"time_to_full_min":n|null,"voltage_mv":n|null}
++ * becomes the smart battery's registers.  The current is chosen so that Mac
++ * OS's own time estimate (charge / current) matches the host's.
++ */
++static void pmu_battery_report(PMUState *s, QDict *d)
++{
++    bool present = qdict_flag(d, "present", false);
++    bool ac = qdict_flag(d, "ac", true);
++    bool charging = ac && present && qdict_flag(d, "charging", false);
++    int64_t pct = qdict_num(d, "percent", -1);
++    int64_t tte = qdict_num(d, "time_to_empty_min", -1);
++    int64_t ttf = qdict_num(d, "time_to_full_min", -1);
++    int64_t mv = qdict_num(d, "voltage_mv", -1);
++    uint16_t max = PMU_RB_CAPACITY_MAH, charge = 0, voltage = PMU_RB_VOLTAGE_MV;
++    int64_t current = 0;
++    bool changed;
++
++    if (pct < 0 || pct > 100) {
++        present = false;
++        charging = false;
++    }
++    if (present) {
++        charge = (uint16_t)((pct * max + 50) / 100);
++        if (mv >= 6000 && mv <= 20000) {
++            voltage = mv;
++        }
++        if (!ac) {
++            /* discharging: unknown time -> a modest 10 W draw */
++            current = tte > 0 ? -(int64_t)charge * 60 / tte : -(10000000 / voltage);
++            current = MIN(current, -1);
++        } else if (charging) {
++            current = ttf > 0 ? (int64_t)(max - charge) * 60 / ttf : max / 2;
++            current = MAX(current, 1);
++        }
++        current = MAX(MIN(current, PMU_RB_CURRENT_MAX_MA), -PMU_RB_CURRENT_MAX_MA);
++    }
++
++    changed = present != s->bat_present || ac != s->bat_ac ||
++              charging != s->bat_charging || charge != s->bat_charge ||
++              current != s->bat_current;
++    s->bat_present = present;
++    s->bat_ac = ac;
++    s->bat_charging = charging;
++    s->bat_charge = charge;
++    s->bat_max = max;
++    s->bat_current = current;
++    s->bat_voltage = voltage;
++    s->bat_updates++;
++    pmu_bat_trace(s, "host battery: present=%d ac=%d charging=%d %u/%u mAh "
++                  "%d mA %u mV%s", present, ac, charging, charge, max,
++                  (int)current, voltage, changed ? " (changed)" : "");
++    if (changed) {
++        /* Mac OS reads the power sources again on an environment interrupt */
++        s->intbits |= PMU_INT_ENVIRONMENT;
++        s->env_interrupts++;
++        pmu_update_extirq(s);
++    }
++}
++
++static void pmu_bridge_send(PMUState *s, const char *line)
++{
++    if (!s->bridge_open) {
++        return;
++    }
++    /* best effort: one short line; a full socket drops it */
++    qemu_chr_fe_write(&s->chr, (const uint8_t *)line, strlen(line));
++}
++
++static void pmu_wake(PMUState *s, const char *why);
++
++static void pmu_bridge_message(PMUState *s, const char *line)
++{
++    Error *err = NULL;
++    QObject *obj = qobject_from_json(line, &err);
++    QDict *d = qobject_to(QDict, obj);
++    const char *type;
++
++    if (!d) {
++        pmu_bat_trace(s, "bridge: malformed message ignored");
++        error_free(err);
++        qobject_unref(obj);
++        return;
++    }
++    type = qdict_get_try_str(d, "type");
++    if (type && !strcmp(type, "battery")) {
++        pmu_battery_report(s, d);
++    } else if (type && !strcmp(type, "wake")) {
++        pmu_wake(s, "host");
++    } else if (type && !strcmp(type, "hello")) {
++        pmu_bat_trace(s, "bridge: host hello version %" PRId64,
++                      qdict_get_try_int(d, "version", 0));
++    }
++    qobject_unref(obj);
++}
++
++static int pmu_bridge_can_read(void *opaque)
++{
++    return 4096;
++}
++
++static void pmu_bridge_read(void *opaque, const uint8_t *buf, int size)
++{
++    PMUState *s = opaque;
++
++    for (int i = 0; i < size; i++) {
++        if (buf[i] != '\n') {
++            if (s->rx_discard) {
++                continue;
++            }
++            if (s->rxline->len >= PMU_RB_RX_LINE_MAX) {
++                pmu_bat_trace(s, "bridge: oversized message discarded");
++                s->rx_discard = true;
++                g_string_truncate(s->rxline, 0);
++                continue;
++            }
++            g_string_append_c(s->rxline, buf[i]);
++            continue;
++        }
++        if (!s->rx_discard && s->rxline->len) {
++            pmu_bridge_message(s, s->rxline->str);
++        }
++        s->rx_discard = false;
++        g_string_truncate(s->rxline, 0);
++    }
++}
++
++static void pmu_bridge_event(void *opaque, QEMUChrEvent event)
++{
++    PMUState *s = opaque;
++    char hello[128];
++
++    switch (event) {
++    case CHR_EVENT_OPENED:
++        s->bridge_open = true;
++        s->bridge_opens++;
++        g_string_truncate(s->rxline, 0);
++        s->rx_discard = false;
++        pmu_bat_trace(s, "bridge connected (connection %u)", s->bridge_opens);
++        snprintf(hello, sizeof(hello),
++                 "{\"type\":\"hello\",\"version\":%d,\"battery\":%s,"
++                 "\"sleeping\":%s}\n", PMU_RB_BRIDGE_VERSION,
++                 s->battery ? "true" : "false", s->sleeping ? "true" : "false");
++        pmu_bridge_send(s, hello);
++        break;
++    case CHR_EVENT_CLOSED:
++        /* nothing here may write: CLOSED can come from inside a write */
++        if (s->bridge_open) {
++            pmu_bat_trace(s, "bridge disconnected; last battery state kept");
++        }
++        s->bridge_open = false;
++        g_string_truncate(s->rxline, 0);
++        s->rx_discard = false;
++        break;
++    default:
++        break;
++    }
++}
++
++static void pmu_cmd_smart_battery(PMUState *s,
++                                  const uint8_t *in_data, uint8_t in_len,
++                                  uint8_t *out_data, uint8_t *out_len)
++{
++    bool ours = in_len >= 1 && in_data[0] == 1;
++    uint8_t flags = s->bat_ac ? PMU_SB_FLAG_EXTERNAL : 0;
++
++    if (!s->battery) {
++        /* as before: no reply (Mac OS asks only when prim-info has a bay) */
++        *out_len = 0;
++        return;
++    }
++    if (ours) {
++        flags = pmu_battery_flags(s);
++    }
++    out_data[0] = 5;            /* format: 16-bit fields */
++    out_data[1] = flags;
++    memset(out_data + 2, 0, 8);
++    if (ours && s->bat_present) {
++        stw_be_p(out_data + 2, s->bat_charge);
++        stw_be_p(out_data + 4, s->bat_max);
++        stw_be_p(out_data + 6, (uint16_t)s->bat_current);
++        stw_be_p(out_data + 8, s->bat_voltage);
++    }
++    *out_len = 10;
++    trace_pmu_cmd_smart_battery(in_len ? in_data[0] : 0, flags,
++                                ours ? s->bat_charge : 0,
++                                ours ? s->bat_current : 0);
++}
++
+ static void pmu_cmd_int_ack(PMUState *s,
+                             const uint8_t *in_data, uint8_t in_len,
+                             uint8_t *out_data, uint8_t *out_len)
+@@ -114,7 +411,20 @@ static void pmu_cmd_int_ack(PMUState *s,
+     }
+ 
+     /* Make appropriate reply packet */
+-    if (s->intbits & PMU_INT_ADB) {
++    if (s->battery && (s->intbits & PMU_INT_ENVIRONMENT) &&
++        !(s->intbits & PMU_INT_ADB)) {
++        /*
++         * Battery: the environment interrupt is reported on its own with the
++         * environment byte; Mac OS then re-reads the power sources (see
++         * "Battery" below).  Mac OS dispatches on the interrupt byte and
++         * would treat 0xc0 (with a pending tick) as a tick, so the tick
++         * stays pending for the next acknowledgement.
++         */
++        out_data[0] = PMU_INT_ENVIRONMENT;
++        out_data[1] = pmu_battery_env(s);
++        *out_len = 2;
++        s->intbits &= ~PMU_INT_ENVIRONMENT;
++    } else if (s->intbits & PMU_INT_ADB) {
+         if (!s->adb_reply_size) {
+             qemu_log_mask(LOG_GUEST_ERROR,
+                           "Odd, PMU_INT_ADB set with no reply in buffer\n");
+@@ -410,9 +720,10 @@ static void pmu_cmd_get_cover(PMUState *s,
+ {
+     /* Not 100% sure here, will have to check what a real Mac
+      * returns other than byte 0 bit 0 is LID closed on laptops
++     * (RetroBoot battery: bit 2 is the power adapter, see "Battery")
+      */
+     *out_len = 1;
+-    *out_data = 0x00;
++    *out_data = s->battery ? pmu_battery_env(s) : 0x00;
+ }
+ 
+ static void pmu_cmd_download_status(PMUState *s,
+@@ -445,6 +756,132 @@ static void pmu_cmd_read_pmu_ram(PMUState *s,
+     *out_len = 0;
+ }
+ 
++/*
++ * Sleep (RetroBoot).  A NewWorld PowerBook sleeps with PMU_SLEEP ("MATT"):
++ * Mac OS has saved its state, stored its wake vector at physical 0x80 (and
++ * a parameter at 0x84), and then stops the processor (HID0[SLEEP] with
++ * MSR[POW]); the PMU cuts the power and, on a wake event, powers the
++ * processor up again, whose firmware jumps to the wake vector.  Here the
++ * processor halts, and on a wake event the machine (mac_newworld.c, gpio
++ * "wake") resumes it at the wake vector with translation off, as the
++ * firmware would.  The rest of the machine was never powered down; Mac OS
++ * re-initialises its devices as it does after a real wake.
++ *
++ * Wake events: a key or a pointer button (an input handler that exists only
++ * while asleep; the ADB keyboard is also polled; the press is consumed, as
++ * on a PowerBook) or the host ("wake" over the power bridge,
++ * e.g. the host's power button).  The host is told "sleep" and "wake".
++ * sleep=off keeps QEMU's behaviour (the processor stays halted).
++ */
++#define PMU_RB_SLEEP_POLL_MS    100
++
++/* Runs after the input event that woke the machine has been delivered. */
++static void pmu_wake_input_remove(void *opaque)
++{
++    PMUState *s = opaque;
++
++    if (!s->sleeping && s->wake_input) {
++        qemu_input_handler_unregister(s->wake_input);
++        s->wake_input = NULL;
++    }
++}
++
++static void pmu_wake(PMUState *s, const char *why)
++{
++    char msg[80];
++
++    if (!s->sleeping) {
++        return;
++    }
++    s->sleeping = false;
++    timer_del(s->sleep_poll_timer);
++    if (s->wake_input) {
++        /* not now: this may be the handler's own event callback */
++        aio_bh_schedule_oneshot(qemu_get_aio_context(), pmu_wake_input_remove, s);
++    }
++    pmu_bat_trace(s, "wake (%s)", why);
++    trace_pmu_rb_wake(why);
++    snprintf(msg, sizeof(msg), "{\"type\":\"wake\",\"reason\":\"%s\"}\n", why);
++    pmu_bridge_send(s, msg);
++    qemu_irq_pulse(s->wake_irq);
++}
++
++/*
++ * While asleep a key or a pointer button wakes the machine: this handler
++ * exists only then (registered and put first in line on sleep, removed on
++ * wake, so awake it never sees an event), and it consumes the press that
++ * wakes, as a PowerBook's PMU does.
++ */
++static void pmu_wake_input_event(DeviceState *dev, QemuConsole *src, InputEvent *evt)
++{
++    PMUState *s = VIA_PMU(dev);
++
++    if (!s->sleeping) {
++        return;
++    }
++    if ((evt->type == INPUT_EVENT_KIND_KEY && evt->u.key.data->down) ||
++        (evt->type == INPUT_EVENT_KIND_BTN && evt->u.btn.data->down)) {
++        pmu_wake(s, evt->type == INPUT_EVENT_KIND_KEY ? "key" : "button");
++    }
++}
++
++static const QemuInputHandler pmu_wake_input = {
++    .name  = "RetroBoot PMU wake",
++    .mask  = INPUT_EVENT_MASK_KEY | INPUT_EVENT_MASK_BTN,
++    .event = pmu_wake_input_event,
++};
++
++static void pmu_sleep_poll(void *opaque)
++{
++    PMUState *s = opaque;
++    uint8_t buf[ADB_MAX_OUT_LEN];
++
++    if (!s->sleeping) {
++        return;
++    }
++    if (s->has_adb && adb_poll(&s->adb_bus, buf, 0xffff) > 0) {
++        pmu_wake(s, "key");
++        return;
++    }
++    timer_mod(s->sleep_poll_timer,
++              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + PMU_RB_SLEEP_POLL_MS);
++}
++
++static void pmu_cmd_sleep(PMUState *s,
++                          const uint8_t *in_data, uint8_t in_len,
++                          uint8_t *out_data, uint8_t *out_len)
++{
++    char msg[64];
++
++    *out_len = 1;
++    out_data[0] = 0;
++    /*
++     * Mac OS 9.2.1 signs a sleep it was asked for "MATT" and the sleep it
++     * forces when no reserve battery power remains "BORG"; both stop the
++     * processor the same way.
++     */
++    if (in_len != 4 || (memcmp(in_data, "MATT", 4) && memcmp(in_data, "BORG", 4))) {
++        qemu_log_mask(LOG_GUEST_ERROR, "PMU: SLEEP command, unknown signature\n");
++        return;
++    }
++    if (!s->sleep_wake) {
++        return;
++    }
++    s->sleeping = true;
++    s->sleeps++;
++    pmu_bat_trace(s, "guest sleeping (%u, %.4s)", s->sleeps, (const char *)in_data);
++    trace_pmu_rb_sleep(s->sleeps);
++    snprintf(msg, sizeof(msg), "{\"type\":\"sleep\",\"low_battery\":%s}\n",
++             memcmp(in_data, "BORG", 4) ? "false" : "true");
++    pmu_bridge_send(s, msg);
++    if (!s->wake_input) {
++        s->wake_input = qemu_input_handler_register(DEVICE(s), &pmu_wake_input);
++        qemu_input_handler_activate(s->wake_input);
++    }
++    timer_mod(s->sleep_poll_timer,
++              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + PMU_RB_SLEEP_POLL_MS);
++}
++
+ /* description of commands */
+ typedef struct PMUCmdHandler {
+     uint8_t command;
+@@ -469,6 +906,8 @@ static const PMUCmdHandler PMUCmdHandlers[] = {
+     { PMU_GET_COVER, "GET_COVER", pmu_cmd_get_cover },
+     { PMU_DOWNLOAD_STATUS, "DOWNLOAD STATUS", pmu_cmd_download_status },
+     { PMU_READ_PMU_RAM, "READ PMGR RAM", pmu_cmd_read_pmu_ram },
++    { PMU_SMART_BATTERY_STATE, "SMART BATTERY", pmu_cmd_smart_battery },
++    { PMU_SLEEP, "SLEEP", pmu_cmd_sleep },
+ };
+ 
+ static void pmu_dispatch_cmd(PMUState *s)
+@@ -689,6 +1128,30 @@ static const VMStateDescription vmstate_pmu_adb = {
+     }
+ };
+ 
++static bool pmu_battery_state_needed(void *opaque)
++{
++    PMUState *s = opaque;
++
++    return s->battery;
++}
++
++static const VMStateDescription vmstate_pmu_battery = {
++    .name = "pmu/retroboot-battery",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pmu_battery_state_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_BOOL(bat_present, PMUState),
++        VMSTATE_BOOL(bat_ac, PMUState),
++        VMSTATE_BOOL(bat_charging, PMUState),
++        VMSTATE_UINT16(bat_charge, PMUState),
++        VMSTATE_UINT16(bat_max, PMUState),
++        VMSTATE_INT16(bat_current, PMUState),
++        VMSTATE_UINT16(bat_voltage, PMUState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_pmu = {
+     .name = "pmu",
+     .version_id = 1,
+@@ -714,6 +1177,7 @@ static const VMStateDescription vmstate_pmu = {
+     },
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_pmu_adb,
++        &vmstate_pmu_battery,
+         NULL
+     }
+ };
+@@ -724,9 +1188,21 @@ static void pmu_reset(DeviceState *dev)
+ 
+     /* OpenBIOS needs to do this? MacOS 9 needs it */
+     s->intmask = PMU_INT_ADB | PMU_INT_TICK;
++    if (s->battery) {
++        /* Mac OS never sets the mask: power source changes must get through */
++        s->intmask |= PMU_INT_ENVIRONMENT;
++    }
+     s->intbits = 0;
+ 
+     s->cmd_state = pmu_state_idle;
++    if (s->wake_input) {
++        qemu_input_handler_unregister(s->wake_input);
++        s->wake_input = NULL;
++    }
++    s->sleeping = false;
++    if (s->sleep_poll_timer) {
++        timer_del(s->sleep_poll_timer);
++    }
+ }
+ 
+ static void pmu_realize(DeviceState *dev, Error **errp)
+@@ -754,6 +1230,18 @@ static void pmu_realize(DeviceState *dev, Error **errp)
+         qbus_init(adb_bus, sizeof(*adb_bus), TYPE_ADB_BUS, dev, "adb.0");
+         adb_register_autopoll_callback(adb_bus, pmu_adb_poll, s);
+     }
++
++    s->sleep_poll_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, pmu_sleep_poll, s);
++
++    /* RetroBoot battery: the host's state is kept across guest resets */
++    s->rxline = g_string_new(NULL);
++    pmu_battery_defaults(s);
++    if (qemu_chr_fe_backend_connected(&s->chr)) {
++        qemu_chr_fe_set_handlers(&s->chr, pmu_bridge_can_read, pmu_bridge_read,
++                                 pmu_bridge_event, NULL, s, NULL, true);
++    }
++    pmu_bat_trace(s, "realize battery=%d bridge=%s", s->battery,
++                  qemu_chr_fe_backend_connected(&s->chr) ? "yes" : "no");
+ }
+ 
+ static void pmu_init(Object *obj)
+@@ -766,6 +1254,9 @@ static void pmu_init(Object *obj)
+                              qdev_prop_allow_set_link_before_realize,
+                              0);
+ 
++    /* RetroBoot sleep: the machine resumes the processor (see "Sleep") */
++    qdev_init_gpio_out_named(DEVICE(obj), &s->wake_irq, "wake", 1);
++
+     object_initialize_child(obj, "mos6522-pmu", &s->mos6522_pmu,
+                             TYPE_MOS6522_PMU);
+ 
+@@ -778,6 +1269,11 @@ static const Property pmu_properties[] = {
+     DEFINE_PROP_BOOL("has-adb", PMUState, has_adb, true),
+     /* RetroBoot: ADB command replies as command byte + data (see pmu_cmd_adb) */
+     DEFINE_PROP_BOOL("adb-reply-cmd", PMUState, adb_reply_cmd, true),
++    /* RetroBoot: smart battery fed by the host (see "Battery") */
++    DEFINE_PROP_BOOL("battery", PMUState, battery, false),
++    DEFINE_PROP_BOOL("battery-trace", PMUState, battery_trace, false),
++    DEFINE_PROP_CHR("chardev", PMUState, chr),
++    DEFINE_PROP_BOOL("sleep", PMUState, sleep_wake, true),
+ };
+ 
+ static void pmu_class_init(ObjectClass *oc, const void *data)
+diff --git a/hw/misc/macio/trace-events b/hw/misc/macio/trace-events
+--- a/hw/misc/macio/trace-events
++++ b/hw/misc/macio/trace-events
+@@ -50,3 +50,6 @@ pmu_debug_protocol_cmd_toobig(int len) "command too big (%d bytes)"
+ pmu_debug_protocol_cmd_send_resp_size(int len) "sending length byte: %d"
+ pmu_debug_protocol_cmd_send_resp(int pos, int len) "sending byte: %d/%d"
+ pmu_debug_protocol_cmd_resp_complete(int ier) "Response send complete. IER=0x%02x"
++pmu_cmd_smart_battery(int bat, int flags, int charge, int current) "battery %d flags 0x%02x charge %d mAh current %d mA"
++pmu_rb_sleep(unsigned n) "guest sleep %u"
++pmu_rb_wake(const char *why) "wake: %s"
+diff --git a/hw/ppc/mac_newworld.c b/hw/ppc/mac_newworld.c
+--- a/hw/ppc/mac_newworld.c
++++ b/hw/ppc/mac_newworld.c
+@@ -75,6 +75,10 @@
+ #include "hw/usb/usb.h"
+ #include "hw/core/sysbus.h"
+ #include "trace.h"
++#include "hw/core/irq.h"
++#include "hw/core/cpu.h"
++#include "system/address-spaces.h"
++#include "exec/cputlb.h"
+ 
+ #define MAX_IDE_BUS 2
+ #define CFG_ADDR 0xf0000510
+@@ -129,6 +133,44 @@ static void ppc_core99_reset(void *opaque)
+     cpu->env.nip = PROM_BASE + 0x100;
+ }
+ 
++/*
++ * RetroBoot sleep (hw/misc/macio/pmu.c "Sleep"): resume a sleeping
++ * processor at the wake vector Mac OS stored at physical 0x80, with
++ * translation and interrupts off, as the firmware does after the PMU powers
++ * a PowerBook's processor up again.  The doze/nap/sleep bits are cleared;
++ * Mac OS's wake code restores HID0, the BATs and the rest of its state.
++ */
++#define CORE99_WAKE_VECTOR      0x80
++#define CORE99_HID0_SLEEP       (1 << 21)
++
++static void core99_wake_cpu(CPUState *cs, run_on_cpu_data data)
++{
++    PowerPCCPU *cpu = POWERPC_CPU(cs);
++    CPUPPCState *env = &cpu->env;
++    uint32_t vector = address_space_ldl_be(&address_space_memory,
++                                           CORE99_WAKE_VECTOR,
++                                           MEMTXATTRS_UNSPECIFIED, NULL);
++
++    if (!vector) {
++        error_report("retroboot: wake requested but no wake vector at 0x%x",
++                     CORE99_WAKE_VECTOR);
++        return;
++    }
++    env->spr[SPR_HID0] &= ~(target_ulong)(HID0_DOZE | HID0_NAP |
++                                          CORE99_HID0_SLEEP);
++    ppc_store_msr(env, (target_ulong)1 << MSR_ME);
++    env->nip = vector;
++    tlb_flush(cs);
++    cs->halted = 0;
++}
++
++static void core99_pmu_wake(void *opaque, int n, int level)
++{
++    if (level) {
++        async_safe_run_on_cpu(CPU(opaque), core99_wake_cpu, RUN_ON_CPU_NULL);
++    }
++}
++
+ /* PowerPC Mac99 hardware initialisation */
+ static void ppc_core99_init(MachineState *machine)
+ {
+@@ -366,6 +408,12 @@ static void ppc_core99_init(MachineState *machine)
+     pci_realize_and_unref(PCI_DEVICE(macio), pci_bus, &error_fatal);
+ 
+     pic_dev = DEVICE(object_resolve_path_component(macio, "pic"));
++    if (has_pmu) {
++        /* RetroBoot sleep: the PMU's wake event resumes the processor */
++        qdev_connect_gpio_out_named(
++            DEVICE(object_resolve_path_component(macio, "pmu")), "wake", 0,
++            qemu_allocate_irq(core99_pmu_wake, cpu, 0));
++    }
+     for (i = 0; i < 4; i++) {
+         qdev_connect_gpio_out(uninorth_pci_dev, i,
+                               qdev_get_gpio_in(pic_dev, 0x1b + i));
+@@ -535,6 +583,17 @@ static void ppc_core99_init(MachineState *machine)
+         fw_cfg_add_file(fw_cfg, "etc/retroboot/airport", g_strdup("1"), 1);
+     }
+ 
++    /*
++     * RetroBoot battery (-global via-pmu.battery=on, PMU machines only):
++     * OpenBIOS gives power-mgt's prim-info one battery bay only when this
++     * file exists, so other machines keep their device tree.
++     */
++    if (has_pmu &&
++        object_property_get_bool(object_resolve_path_component(macio, "pmu"),
++                                 "battery", NULL)) {
++        fw_cfg_add_file(fw_cfg, "etc/retroboot/battery", g_strdup("1"), 1);
++    }
++
+     qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
+ }
+ 
+diff --git a/include/hw/misc/macio/pmu.h b/include/hw/misc/macio/pmu.h
+--- a/include/hw/misc/macio/pmu.h
++++ b/include/hw/misc/macio/pmu.h
+@@ -13,6 +13,7 @@
+ #include "hw/input/adb.h"
+ #include "hw/misc/mos6522.h"
+ #include "hw/misc/macio/gpio.h"
++#include "chardev/char-fe.h"
+ #include "qom/object.h"
+ 
+ /*
+@@ -228,6 +229,35 @@ struct PMUState {
+ 
+     /* GPIO */
+     MacIOGPIOState *gpio;
++
++    /*
++     * RetroBoot battery (hw/misc/macio/pmu.c, "Battery"): smart battery
++     * replies fed by the host over a chardev bridge.
++     */
++    bool battery;               /* property: the machine has a battery bay */
++    bool battery_trace;         /* property: log bridge and battery events */
++    CharFrontend chr;           /* property "chardev": power bridge to hostd */
++    bool bridge_open;
++    bool rx_discard;
++    GString *rxline;
++    uint32_t bridge_opens;
++    bool bat_present;           /* last host report */
++    bool bat_ac;
++    bool bat_charging;
++    uint16_t bat_charge;        /* mAh */
++    uint16_t bat_max;           /* mAh */
++    int16_t bat_current;        /* mA, negative while discharging */
++    uint16_t bat_voltage;       /* mV */
++    uint32_t bat_updates;
++    uint32_t env_interrupts;
++
++    /* RetroBoot sleep (pmu.c "Sleep") */
++    bool sleep_wake;            /* property "sleep" */
++    bool sleeping;
++    uint32_t sleeps;
++    QEMUTimer *sleep_poll_timer;
++    qemu_irq wake_irq;          /* gpio out "wake": the machine resumes the CPU */
++    struct QemuInputHandlerState *wake_input;   /* exists only while asleep */
+ };
+ 
+ #define TYPE_VIA_PMU "via-pmu"

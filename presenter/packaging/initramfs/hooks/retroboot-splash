@@ -1,0 +1,65 @@
+#!/bin/sh
+# initramfs-tools hook: RetroBoot early checkerboard splash (rb-splash).
+# Copies the splash binary (libdrm + libudev only) and the KMS drivers it
+# should draw on as soon as they bind. Firmware listed by the modules is
+# copied by manual_add_modules when present.
+set -e
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+RB_SPLASH=/usr/lib/retroboot/bin/rb-splash
+if [ ! -x "$RB_SPLASH" ]; then
+    echo "retroboot-splash: $RB_SPLASH missing; splash not included" >&2
+    exit 0
+fi
+copy_exec "$RB_SPLASH" /usr/lib/retroboot/bin/rb-splash
+
+# Virtual (Proxmox std VGA, virtio-gpu, QXL), Intel N150 (i915/xe) and AMD
+# APU (amdgpu, e.g. Radeon 890M) KMS.
+# Debian 13's kernel has no simpledrm/efidrm, and the image disables
+# efifb/vesafb (fbcon would take them over), so there is no display device
+# until one of these binds; until then GRUB's checkerboard simply stays on
+# screen. rb-splash draws on the KMS device as soon as it appears, keeping the
+# firmware/GRUB mode recorded in /sys/kernel/boot_params.
+for module in bochs virtio-gpu qxl i915 xe amdgpu; do
+    if modinfo -k "${version}" "$module" >/dev/null 2>&1; then
+        manual_add_modules "$module"
+    fi
+done
+
+# Raspberry Pi 4/5 (Raspberry Pi kernel, dtoverlay=vc4-kms-v3d): vc4 is the KMS
+# device (HDMI-A-1/2; DSI and composite on a Pi 4), v3d the render-only GPU
+# (no connectors; never drawn on). HDMI reads the display's EDID over the BSC
+# I2C controller (i2c-brcmstb), so without it vc4's HDMI probe defers until the
+# root file system's udev loads it. A Pi 5's DSI/DPI/composite outputs are RP1
+# devices with their own DRM drivers. Each is copied only when this kernel has
+# it as a module (built-in drivers need nothing); manual_add_modules brings
+# their dependencies (drm helpers, cec, the ASoC core for HDMI audio). Clocks and
+# the firmware interface (clk-raspberrypi, raspberrypi-firmware) are built into
+# the Raspberry Pi kernel. vc4 and v3d load no firmware files.
+for module in vc4 v3d i2c-brcmstb drm-rp1-dsi drm-rp1-dpi drm-rp1-vec \
+    panel-raspberrypi-touchscreen rpi-panel-attiny-regulator tc358762 panel-ilitek-ili9881c; do
+    if modinfo -k "${version}" "$module" >/dev/null 2>&1; then
+        manual_add_modules "$module"
+    fi
+done
+
+# Planet Computers Gemini PDA (gemini-nixos 6.6 kernel): geminipda-drm exposes the
+# LK bootloader's framebuffer as a KMS device (DSI-1, 1080x2160, panel orientation
+# Left Side Up); it never initialises the panel, so the splash only redraws what LK
+# left lit. Copied when it is a module (the gemini kernel builds it as one).
+for module in geminipda-drm geminipda_drm; do
+    if modinfo -k "${version}" "$module" >/dev/null 2>&1; then
+        manual_add_modules "$module"
+        break
+    fi
+done

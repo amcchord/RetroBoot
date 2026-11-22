@@ -1,0 +1,42 @@
+diff --git a/ppcvid/driver/src/QemuVga.h b/ppcvid/driver/src/QemuVga.h
+--- a/ppcvid/driver/src/QemuVga.h
++++ b/ppcvid/driver/src/QemuVga.h
+@@ -7,7 +7,18 @@
+ #define USE_DSL_TIMER
+ 
+ /* Pseudo VBL timer duration in ms */
++#ifdef RETROBOOT_VBL_60HZ
++/* RetroBoot: about 60 Hz instead of about 33 Hz. Mac OS draws the software
++ * cursor and runs the screen's VBL tasks at this interrupt, so 30 ms made the
++ * pointer and VBL-paced animation move at half the rate of the screen. The
++ * timer stays relative (next tick = now + 16 ms, plus the interrupt's own
++ * time): a fixed 60 Hz phase could hand SetInterruptTimer a deadline already
++ * past when Mac OS was slow, suspected in two NanoKernel freezes (RetroBoot
++ * 1.6.2/1.6.3, emulator/reports/vbl-60hz-2026-10-22.md). */
++#define TIMER_DURATION	16
++#else
+ #define TIMER_DURATION	30
++#endif
+ 
+ /* Enable use of the PCI IRQ as VBL using non-upstream QEMU VGA
+  * extensions
+@@ -98,11 +109,19 @@
+ 
+ /* Ticks of the pseudo-VBL timer a request must hold steady before we act
+  * (debounce, mirroring the 68k qfb driver's accRun debounce). */
++#ifdef RETROBOOT_VBL_60HZ
++#define HOST_RESIZE_DEBOUNCE_TICKS       4	/* the same ~60 ms at 16 ms ticks */
++#else
+ #define HOST_RESIZE_DEBOUNCE_TICKS       2
++#endif
+ 
+ /* Ticks (~30 ms each) before an un-adopted pending host-resize mode is
+  * abandoned, restoring normal mode reporting (about 10 seconds). */
++#ifdef RETROBOOT_VBL_60HZ
++#define HOST_RESIZE_PENDING_TIMEOUT_TICKS 600	/* the same ~10 s at 16 ms ticks */
++#else
+ #define HOST_RESIZE_PENDING_TIMEOUT_TICKS 333
++#endif
+ 
+ /* --- VModes */
+ 

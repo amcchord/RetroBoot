@@ -1,0 +1,40 @@
+{
+ "name": "RetroBoot",
+ "description": "Extensions Manager set for Mac OS 9.2.1 on RetroBoot's emulated Power Mac (mac99, Cuda on desktops, PMU on laptops). Everything the user sees stays on (QuickTime, the browsers, AirPort, sound, CD, file sharing, Web Sharing, text-to-speech, AppleScript, Remote Access, the portable control panels); off are drivers for hardware the emulator does not have, schedulers for services that no longer exist or that the host owns, desktop printing (no printer can be attached to the emulated Mac), and CloseView, whose screen hook makes all QuickDraw drawing about a third slower in the emulator (Speedometer 4.02 Graphics 31-37 with it while the old fixture scored 51-55 in the same paired runs; 51.5 against 54.1 without it); it is one checkbox away in Extensions Manager for anyone who needs the magnifier; and speech recognition (Speech Recognition, SpeakableItems and its strip module), which keeps the guest busy at the idle Finder even when Speakable Items is off: QEMU's idle CPU drops from about 19 % to 10 % of a core without it (rbd_idle, r12). Text-to-speech (Speech Manager, MacinTalk, voices) stays on. Time Synchronizer is on from os922-full-v4: Date & Time needs it to open without its \"Time Synchronizer is not in the Extensions folder\" alert. Its automatic daylight saving and network time stay off; RetroBoot sets the clock, the zone and daylight saving itself. It needs hostd's macclock to seed one of Date & Time's cities (wave4/tz2): with any other location Time Synchronizer reports \"Your Macintosh's time zone is not valid\" and holds every Restart and Shut Down for about 100 s (research/gfx/reports/gfxopt-2026-10-12.md). With the ATI software add-on (rbguestprep.ati) OpenGLRendererATI is on.",
+ "off": {
+  "hardware the emulator does not have": [
+   "Extensions:Apple QD3D HW Driver",
+   "Extensions:Apple QD3D HW Plug-In",
+   "Extensions:OpenGLRendererATI",
+   "Extensions:PowerBook G3 Series Modem",
+   "Extensions:PowerBook Internal Modem",
+   "Extensions:PowerMac G3 Modem",
+   "Extensions:iMac Modem Extension",
+   "Extensions:Internal V.90 Modem",
+   "Extensions:QuickTime FireWire DV Enabler",
+   "Extensions:QuickTime FireWire DV Support",
+   "Extensions:USBAppleMonitorModule",
+   "Control Strip Modules:Media Bay",
+   "Control Strip Modules:TV Mirroring",
+   "Control Strip Modules:Video Mirroring"
+  ],
+  "schedulers for services that are gone or owned by the host": [
+   "Extensions:Software Update Scheduler",
+   "Extensions:FBC Indexing Scheduler"
+  ],
+  "desktop printing (no printer can be attached to the emulated Mac)": [
+   "Extensions:Desktop Printer Menu",
+   "Extensions:Desktop Printer Spooler",
+   "Extensions:Desktop PrintMonitor",
+   "Control Strip Modules:Printer Selector"
+  ],
+  "screen magnifier (patches every QuickDraw drawing call; on demand in Extensions Manager)": [
+   "Control Panels:CloseView"
+  ],
+  "speech recognition (polls at idle even with Speakable Items off: about 10 % of a host core under QEMU; on demand in Extensions Manager)": [
+   "Extensions:Speech Recognition",
+   "Extensions:SpeakableItems",
+   "Control Strip Modules:SpeakableItems Strip"
+  ]
+ }
+}

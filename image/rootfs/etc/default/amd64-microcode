@@ -1,0 +1,5 @@
+# RetroBoot: no early microcode inside the initramfs; every AMD CPU's updates go to
+# /boot/microcode.cpio, its own initrd, and rb-microcode puts this CPU's updates on
+# the ESP for GRUB (image/scripts/customize-rootfs.sh). The package default
+# ("auto") would also look at the build host's CPU.
+AMD64UCODE_INITRAMFS=no

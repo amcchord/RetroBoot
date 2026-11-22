@@ -1,0 +1,12 @@
+# RetroBoot on the Gemini PDA: WPA3 (sae) Wi-Fi profiles -> WPA2 (the driver has no SAE).
+[Unit]
+Description=Gemini Wi-Fi profile fix-up
+After=NetworkManager.service
+Requisite=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-wifi-fixup
+
+[Install]
+WantedBy=multi-user.target

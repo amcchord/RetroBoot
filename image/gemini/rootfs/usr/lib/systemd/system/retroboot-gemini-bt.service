@@ -1,0 +1,15 @@
+# RetroBoot on the Gemini PDA: the MT6630's Bluetooth controller (hci0 through hci_stp)
+# once the Wi-Fi bring-up has powered the CONSYS chip. bluetoothd picks hci0 up when it
+# appears, so bluetooth.service (and hostd) never wait for this.
+[Unit]
+Description=Gemini Bluetooth controller (hci_stp)
+After=retroboot-gemini-wifi.service systemd-modules-load.service
+Wants=retroboot-gemini-wifi.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/modprobe hci_stp
+
+[Install]
+WantedBy=multi-user.target

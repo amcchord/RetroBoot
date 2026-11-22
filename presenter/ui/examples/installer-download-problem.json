@@ -1,0 +1,16 @@
+{
+  "id": "installer-download-problem",
+  "kind": "alert",
+  "alert_icon": "caution",
+  "width": 460,
+  "items": [
+    {"type": "text", "text": "“Mac OS 9.2.1 (v4)” could not be installed.", "style": "emphasis"},
+    {"type": "text", "text": "RetroBoot is installed with “Mac OS 9.2.2 Deluxe v4” and “Mac OS 9.2.2 (v5)”. Try again, or skip it and add it later in RetroBoot Setup."},
+    {"type": "text", "text": "Mac OS 9.2.1 (v4): The download could not finish. Check the network connection.", "style": "small"},
+    {"type": "buttons", "items": [
+      {"id": "wifi", "label": "Wi-Fi…", "align": "left"},
+      {"id": "skip", "label": "Skip"},
+      {"id": "retry", "label": "Try Again", "default": true}
+    ]}
+  ]
+}

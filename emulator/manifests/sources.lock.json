@@ -1,0 +1,1204 @@
+{
+  "schema_version": 1,
+  "classicmac": {
+    "url": "https://github.com/amcchord/ClassicMac.git",
+    "commit": "3e245943fba0d18af875a8a3a50a148a6d865535"
+  },
+  "qemu": {
+    "url": "https://gitlab.com/qemu-project/qemu.git",
+    "tag": "v11.0.2",
+    "commit": "e545d8bb9d63e9dd61542b88463183314cff9482"
+  },
+  "guest_source_provenance": {
+    "openbios": {
+      "url": "https://github.com/openbios/openbios.git",
+      "commit": "e1e703ac0ad615ab0d7edea54db600aaa629bf07",
+      "patch": "powermac/openbios-classic-macos-8.patch"
+    },
+    "classicvirtio": {
+      "url": "https://github.com/elliotnunn/classicvirtio.git",
+      "commit": "fc401b4c731027cb4068f3415def7fe79f6659da",
+      "patches": [
+        "classicvirtio/floppy-driver.patch",
+        "classicvirtio/powermac-boot.patch",
+        "classicvirtio/tools-mount.patch",
+        "classicvirtio/display-aware-input.patch"
+      ]
+    },
+    "ppcvid": "ClassicMac ppcvid/driver source at pinned revision; source build uses private Apple Universal Interfaces, not reproduced by this host build"
+  },
+  "patch_order": [
+    "screamer/integration.patch",
+    "powermac/classic-macos-8.patch",
+    "powermac/tcg-graphics-fast-path.patch",
+    "powermac/tcg-ppc-bat-range-flush.patch",
+    "powermac/os9-boot-runtime.patch",
+    "powermac/os9-boot-handoff-metrics.patch",
+    "ide/macio-ide-dma-race.patch",
+    "ppcvid/vga-host-resize.patch",
+    "ppcvid/vga-packed-depths.patch",
+    "ppcvid/vga-hardware-cursor.patch",
+    "ppcvid/vga-fast-scanout.patch",
+    "powermac/classicmac-boot-handoff-display.patch"
+  ],
+  "patch_application": {
+    "powermac/classicmac-boot-handoff-display.patch": {
+      "exclude": [
+        "hw/display/vga-pci.c"
+      ],
+      "replacement": "emulator/patches/finder-handoff-without-gxmetal.patch"
+    }
+  },
+  "retroboot_patches": [
+    {
+      "path": "emulator/patches/retroboot-display.patch",
+      "sha256": "ee5e86de25b212a5b08be2bcf97b5591178596a412a0e3215bf7470f1d2d03ae",
+      "purpose": "QEMU UI backend -display retroboot,socket=PATH (docs/ARCHITECTURE.md section 3)",
+      "files": [
+        "meson.build",
+        "qapi/ui.json",
+        "ui/meson.build",
+        "ui/retroboot.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-macio-ide-pio-status-drain.patch",
+      "sha256": "4bba6c711800b4eeae305c8f4c71f53b2157824480a89e31863d9df350381f89",
+      "purpose": "opt-in macio-ide.pio-status-drain: complete in-flight PIO READ SECTORS before Status polls (OpenBIOS 1 ms BSY waits); DMA/ATAPI/writes/flushes unaffected",
+      "files": [
+        "hw/ide/macio.c",
+        "hw/ide/trace-events",
+        "include/hw/misc/macio/macio.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-cuda-idle-interrupt.patch",
+      "sha256": "b750178c474c1aa5f29442e26fa53609682904f0f999aac0fe547185baf1fd31",
+      "purpose": "cuda.idle-irq-ms (default 50): an empty Cuda interrupt every 50 ms while Cuda is idle and the guest has enabled its shift-register interrupt, so Mac OS 9's lost blue-task wakeup ends at once instead of at the next USB frame-number overflow (startup stall, emulator/reports/startup-stall-20261011.md); 0 = QEMU behaviour",
+      "files": [
+        "hw/misc/macio/cuda.c",
+        "hw/misc/macio/trace-events",
+        "include/hw/misc/macio/cuda.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-cuda-shift-interrupt-timing.patch",
+      "sha256": "151e07ab3023d4dc44bf3df0a0e2b5bd6d828f8d9fef2843a033d7d0f3f499d2",
+      "purpose": "pre-gray hang (Cuda sync): the shift interrupt answering a Cuda sync step survives one SR read made before the host saw it in IFR (cuda.sync-sr-hold), and a due shift interrupt is delivered on the guest's next VIA read (cuda.sr-int-on-access); the Mac OS ROM's polled sync no longer halts in its 'Cuda not responding' loop when the vCPU is slow or the main loop late (emulator/reports/pregray-hang-20261011.md); both default on",
+      "files": [
+        "hw/misc/macio/cuda.c",
+        "hw/misc/macio/trace-events",
+        "include/hw/misc/macio/cuda.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-cuda-via-timers.patch",
+      "sha256": "ab7be6ebc2c0b3df550c16b4b5fb1264a1fde19a885c5bd8e158d2930c5d07cd",
+      "purpose": "pre-gray hang (VIA timer 2): mos6522-cuda.coherent-timers (default on) raises VIA timer interrupts when the guest-visible, timebase-derived counter passes zero instead of at a random point of the period, and makes timer 2 one-shot as on the 6522; QEMU's early, re-firing timer 2 broke the Mac OS ROM's timer calibration (nanokernel debugger loop)",
+      "files": [
+        "hw/misc/macio/cuda.c",
+        "hw/misc/mos6522.c",
+        "include/hw/misc/mos6522.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-macio-ide-srst-complete.patch",
+      "sha256": "5a77ed4c49f84975f0cc92e95877fa955cee82d950c73be58542bc24d320071d",
+      "purpose": "pre-gray hang (OpenBIOS prompt): macio-ide.srst-complete-on-access (default on) carries out a pending ATA software reset on the guest's next controller access instead of waiting for the main-loop bottom half, so OpenBIOS's IDE probe finds the hard disk on a busy host; DMA-in-flight resets keep the bottom half",
+      "files": [
+        "hw/ide/core.c",
+        "hw/ide/macio.c",
+        "include/hw/ide/ide-bus.h",
+        "include/hw/misc/macio/macio.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ide-atapi-bcl-abort-irq.patch",
+      "sha256": "901571ab3d72014c3b2e1fe6de16287d765367f762d7ded72cdc11b59b0bf301",
+      "purpose": "boot time: macio-ide.atapi-abort-irq (default on) completes a PACKET command aborted for a zero byte count limit with the ATA error interrupt (interrupt reason C/D+I/O, INTRQ) instead of leaving the guest to time out; Mac OS 9's CD driver sends MODE SENSE page 0x2a with BCL 0 to each empty CD drive before the Finder and waited 1 s per drive (emulator/reports/boottime-20261011.md)",
+      "files": [
+        "hw/ide/atapi.c",
+        "hw/ide/macio.c",
+        "hw/ide/trace-events",
+        "include/hw/ide/ide-bus.h",
+        "include/hw/misc/macio/macio.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/qemu-char-socket-reconnect-yank.patch",
+      "sha256": "b9a1b261da6a51ee6cc5b84024ea8a445a5eda3c7b9d968759cf3c33a26163e1",
+      "purpose": "upstream backport of QEMU ddf5738503e2 (Cc qemu-stable; fixes 5c102ac9): a failed connect attempt of a reconnecting socket chardev no longer aborts QEMU in yank_unregister_function (AirPort bridge chardev when /run/retroboot/airport.sock is absent: hostd stopped or restarting, or not yet listening at launch); drop when the QEMU pin includes the upstream fix",
+      "upstream": {
+        "commit": "ddf5738503e2ba6adb74359abf3b6e7aa81af420",
+        "fixes": "5c102ac9f18b24bf1552bd43ca4864b4ce331a3f",
+        "stable": true
+      },
+      "files": [
+        "chardev/char-socket.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ppc-mmu-contexts.patch",
+      "sha256": "e168e0c1b8f19b2d84cb12d88a39a5ffb999b3e5921d7699a1de70c3ca672f93",
+      "purpose": "idle power (emulator/reports/idle-power-20261011.md): 32-bit hash MMU translation contexts, CPU property mmu-contexts (default on; POWERPC_MMU_32B only). Mac OS 9 switches segment registers and BATs between a few address spaces on every interrupt and QEMU flushed the whole softmmu TLB and jump cache each time (plus eight BAT range flushes over all 22 MMU indexes). Up to 5 address spaces (SR0-15, BATs, SDR1) keep their own translated-mode MMU indexes 4c+{0,1}; switching back to a known one flushes nothing. SR changes still apply at context synchronisation; BAT changes at once in translated mode, at the next sync/mtmsr in real mode. With one CPU, tlbie invalidates its congruence class (EA bits 12-16, a superset of the 64-set 7400 TLB) in every context through the new generic tlb_flush_page_class_by_mmuidx() instead of flushing everything at the next sync; tlbia and SDR1 changes flush all contexts. -cpu 7400,mmu-contexts=off restores the previous behaviour",
+      "files": [
+        "accel/tcg/cputlb.c",
+        "include/exec/cputlb.h",
+        "target/ppc/cpu.h",
+        "target/ppc/cpu_init.c",
+        "target/ppc/helper_regs.c",
+        "target/ppc/machine.c",
+        "target/ppc/misc_helper.c",
+        "target/ppc/mmu_helper.c",
+        "target/ppc/translate.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-display-idle-refresh.patch",
+      "sha256": "caf2b3c89f1e50141aa8c51d6ce81f5d7326083c20ac515f508b89d053c24a3b",
+      "purpose": "idle power: -display retroboot,idle-refresh=MS (default 100): after 1 s in which the guest drew nothing and the presenter sent no input, the backend scans the framebuffer every 100 ms instead of every 16 ms; any drawing or input restores the presenter's rate at once (docs/ARCHITECTURE.md section 3). idle-refresh=0 keeps the presenter's rate",
+      "files": [
+        "qapi/ui.json",
+        "ui/retroboot.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ohci-idle-frames.patch",
+      "sha256": "14768816a016ff4231450cd2d7fb0166795d8d5604e4d194ffb41a1536436918",
+      "purpose": "idle power: pci-ohci.idle-frames (default 8): with no device on the root hub and the SOF interrupt disabled, the OHCI frame timer runs 8 frames per host wakeup instead of one every 1 ms; register accesses first catch up with ended frames, so frame number and interrupts stay current; a device attach or an enabled SOF interrupt returns to one frame per timer. idle-frames=1 restores QEMU's behaviour",
+      "files": [
+        "hw/usb/hcd-ohci-pci.c",
+        "hw/usb/hcd-ohci.c",
+        "hw/usb/hcd-ohci.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ohci-idle-hid.patch",
+      "sha256": "a45a4075f83c9084d5997a4d307088052a638826631989ccdbba590aa54eb585",
+      "purpose": "OHCI idle frame batching also while the only devices are USB HID devices with nothing to report (the usb-mouse for USB Overdrive); input ends the batch through usb_wakeup (apps/reports/mouse-2026-10-11.md)",
+      "files": [
+        "hw/usb/hcd-ohci.c",
+        "hw/usb/hcd-ohci.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-screamer-idle-stop.patch",
+      "sha256": "a332feb7a2531d9d95b8bed3f46689f05a3fdbd61807a79efc749f41bb061529",
+      "purpose": "idle power: screamer.idle-stop-ms (default 1000): Mac OS stops the output DMA when silent; after 1 s without guest output the audio voice is made inactive, which stops QEMU's 100 Hz audio timer and the host (ALSA) stream; the next output DMA starts it again. idle-stop-ms=0 keeps the stream running",
+      "files": [
+        "hw/audio/screamer.c",
+        "include/hw/audio/screamer.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/airport-hermes-card.patch",
+      "sha256": "1028710da861cdec9ed2da99b8d67db1d0c3c270e9ec8536d45b98e3d9526dd0",
+      "purpose": "AirPort (Hermes-I) card for original AirPort 2.0.4, runtime-gated by macio-newworld.airport (default off); host bridge over a chardev (docs/ARCHITECTURE.md section 10); fw_cfg etc/retroboot/airport tells OpenBIOS to add the radio node",
+      "files": [
+        "hw/misc/macio/airport.c",
+        "hw/misc/macio/macio.c",
+        "hw/misc/macio/meson.build",
+        "hw/ppc/mac_newworld.c",
+        "include/hw/misc/macio/airport.h",
+        "include/hw/misc/macio/macio.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-pmu-adb-reply.patch",
+      "sha256": "93aa56931304d3b73bf66b0d7041053a824db684e32a0b7b8e794384fca59c0c",
+      "purpose": "via-pmu.adb-reply-cmd (default on): PMU ADB command replies are the command byte plus register data, as autopoll data and real PMUs (Mac OS 9 took the ADB mouse's address byte for its handler ID; Apple Monitor Plugins error -29208); research/battery/reports",
+      "files": [
+        "hw/misc/macio/pmu.c",
+        "include/hw/misc/macio/pmu.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-pmu-battery.patch",
+      "sha256": "2f51b4d9979e930547bad678d8958e2f2ef389d98fc41b79fa5fad932cfe198a",
+      "purpose": "via-pmu.battery (default off): PowerBook smart battery (SMART_BATTERY_STATE 0x6f, adapter bit in GET_COVER, environment interrupt on change) fed by the host over a chardev power bridge (docs/ARCHITECTURE.md section 12); fw_cfg etc/retroboot/battery gates the firmware's battery bay; via-pmu.sleep (default on): PMU_SLEEP (MATT, or BORG for Mac OS's own no-reserve sleep) halts the processor and a key, a pointer button or the host's wake resumes it at Mac OS's wake vector",
+      "files": [
+        "hw/misc/macio/pmu.c",
+        "hw/misc/macio/trace-events",
+        "hw/ppc/mac_newworld.c",
+        "include/hw/misc/macio/pmu.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ppc-msscr0-flush.patch",
+      "sha256": "eb014d453e23c5d8e56abbc35a08b8c04dbf8b891c9626ded87298bed4dc99c9",
+      "purpose": "74xx MSSCR0[DL1HWF] (L1 data cache hardware flush) completes at once instead of staying set (Mac OS 9's CPU plugin polled it forever before processor cycling on a PMU machine on battery)",
+      "files": [
+        "target/ppc/cpu_init.c",
+        "target/ppc/spr_common.h",
+        "target/ppc/translate.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-pmu-via-timers.patch",
+      "sha256": "f177e9fa53f755630a7916127fd514f9250a51bf5b511da11b782debd1be75ad",
+      "purpose": "mos6522-pmu.coherent-timers (default on), as mos6522-cuda in retroboot-cuda-via-timers.patch: the PMU machine's VIA timer 2 is one-shot like the real 6522 (the Mac OS ROM calibrates against it at startup; pre-gray hang type B, emulator/reports/pregray-hang-20261011.md)",
+      "files": [
+        "hw/misc/macio/pmu.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-hid-wheel-per-report.patch",
+      "sha256": "8bf64de710599b271d4e494e204a6bb445cd257af065bc2c364a67902259dfa2",
+      "purpose": "usb-mouse/usb-tablet wheel-per-report: at most N wheel notches per HID report, the rest queued, so USB Overdrive sees every notch (apps/reports/mouse-2026-10-11.md)",
+      "files": [
+        "hw/input/hid.c",
+        "hw/usb/dev-hid.c",
+        "include/hw/input/hid.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-adb-buttons.patch",
+      "sha256": "5176ed0fa4749835ce00206b11b6e3716aaccc78306ea57a48d9c97d56b32b89",
+      "purpose": "adb-buttons (opt-in -device, ADB address 7): the special-function buttons Mac OS 9's Button Manager takes from Apple keyboards: handler 0x1f PowerBook buttons (brightness, volume, mute, eject) or 0x02 AppleDesign Keyboard buttons (volume, mute); the host presses them with qom-set keys0 press=NAME[:down|:up] (research/keys/reports)",
+      "files": [
+        "hw/input/adb-buttons.c",
+        "hw/input/meson.build",
+        "hw/input/trace-events",
+        "include/hw/input/adb-buttons.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-pmu-backlight.patch",
+      "sha256": "1a0fd2d78125fcdbdde6434c3cf4b8cd5bfd46c7101e1af144659a918be79b5a",
+      "purpose": "via-pmu.backlight (default off): a PowerBook display backlight: PMU_BACKLIGHT_BRIGHT and PMU_POWER_CTRL from Mac OS's backlight driver reported over the power bridge ({\"type\":\"backlight\"}, docs/ARCHITECTURE.md section 12); fw_cfg etc/retroboot/backlight gates the firmware's backlight node and PowerBook-buttons feature bit",
+      "files": [
+        "hw/misc/macio/pmu.c",
+        "hw/misc/macio/trace-events",
+        "hw/ppc/mac_newworld.c",
+        "include/hw/misc/macio/pmu.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-screamer-volume.patch",
+      "sha256": "44d2922fb693f0283797e582c82645cca0f0a87b2307bd2ebe35ca9417f482f6",
+      "purpose": "Screamer applies the mute and attenuation Mac OS has just written (it applied the previous value); trace screamer_volume. Mac OS's volume scales the guest's sound; the host mixer stays at audio.volume",
+      "files": [
+        "hw/audio/screamer.c",
+        "hw/audio/trace-events"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-vga-builtin-panel.patch",
+      "sha256": "975e70882f92eab71627bdabf77e10d4e1967900c8e015a2e968c28b995665bf",
+      "purpose": "VGA.builtin-panel (default off; with host-resize): feature bit 0x10000 in the QEXT features register, so RetroBoot's video driver variant (emulator/ndrv/retroboot-builtin-panel.patch) reports a laptop's built-in LCD and Mac OS offers its own brightness control (Monitors 'Color LCD' Brightness slider, the keys' Brightness window)",
+      "files": [
+        "hw/display/vga-pci.c",
+        "include/hw/display/bochs-vbe.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-screamer-paced-dma.patch",
+      "sha256": "a9f99c44910ef58a9c9019b8791826aae037b60c93db177fbcae723295f1b261",
+      "purpose": "sound (emulator/reports/qtaudio-20261012.md): screamer.paced-dma (default on) completes each output DBDMA command when the codec has played it (virtual clock, selected sample rate) instead of at once while the 16 KB staging buffer had room; Mac OS's double-buffered sound DMA (LOAD_WORD frame counter, half A, STORE_WORD+IRQ, half B, STORE_WORD+IRQ, STOP) ran both halves within microseconds, so its half-done interrupts merged and QuickTime movies with sound stalled at 00:00:00 (silent channel), and the driver's end-of-sound mute (applied at once since the r11 volume fix) cut alerts, the Sound control panel and volume-key feedback. The host stream starts after a 30 ms pre-roll; codec volume/mute changes apply at the stream position where they were written; screamer.frame-count (default on) makes FRAME_CNT_REG count the frames the output DMA has taken (it read a constant). paced-dma=off restores QEMU's behaviour",
+      "files": [
+        "hw/audio/screamer.c",
+        "include/hw/audio/screamer.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-pmu-sleep-irq.patch",
+      "sha256": "b4be20d18e0ad6b81b1b1af4fb340ea7584bdb75052a4f9e4801742d1b3601c1",
+      "purpose": "PMU sleep: the PMU's interrupt line stays quiet from PMU_SLEEP until the wake and what is pending is delivered after it. Mac OS 9.2.2 (Mac OS ROM 8.7) hung after the wake when a one-second tick was pending at its sleep (its 68K emulator spun in its interrupt dispatch); research/pmu922",
+      "files": [
+        "hw/misc/macio/pmu.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-adb-burst.patch",
+      "sha256": "a45a4cd782b9bbe3cf8186fb49828094b4db02a5e9877f4faf971205c0d97803",
+      "purpose": "ADB under bursts: a PMU ADB command's reply no longer overwrites autopoll data that is still waiting for its INT ACK (the event was lost and the reply went out flagged as autopoll data); the PowerBook buttons queue never holds a press without room for its release (a burst loses whole presses, never a release); research/pmu922",
+      "files": [
+        "hw/misc/macio/pmu.c",
+        "include/hw/misc/macio/pmu.h",
+        "hw/input/adb-buttons.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ide-srst-no-irq.patch",
+      "sha256": "fef102fe709c35b0047bf7fe965220b67ab6d53fbe4b50da416374a5b555a1ed",
+      "purpose": "ATA software reset without an interrupt: QEMU completed a software reset with its EXECUTE DEVICE DIAGNOSTIC, interrupt included; carried out after the host had released SRST with nIEN clear (the bottom half late on a busy host, or on the next access with srst-complete-on-access), it left INTRQ asserted. Mac OS 9.2.2 resets IDE0 at a wake from sleep and polls Alternate Status, so the level interrupt (OpenPIC 0x0d) was acknowledged and ended about 96,000 times a second without reaching the ATA driver and the PMU (0x2f) and PCI (0x1c) at the same priority were never serviced again: the residual 9.2.2 wake hang. A reset now sets the diagnostic's registers without the interrupt and negates INTRQ (ATA/ATAPI-6 9.2). Before the ATI card patch and independent of it (hw/ide/core.c only); research/pmu922",
+      "files": [
+        "hw/ide/core.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-screamer-realtime.patch",
+      "sha256": "79c7ca149b9f50199801e26828c31875472c0159899b3ac174da1da18b868457",
+      "purpose": "sound on slow hosts (emulator/reports/qtaudio2-20261012.md): the screamer's codec clock keeps a continuous timeline instead of losing every timer delay and every late DBDMA restart (r12/r13 delivered a 4.59 s QuickTime soundtrack in 5.08 s on the lab builder and 9.38 s at a 30 % vCPU cap, so ALSA ran dry: sound in bursts on the N5105/N4100); output commands complete dma-lead-us (5 ms) ahead of the codec, a late DMA catches up at up to twice real time on its own schedule, a pause over resync-ms (200) starts a new timeline; the host pre-roll starts at host-lead-ms (40) and grows by 20 ms after each detected host underrun up to host-lead-max-ms (120), shrinking a step per 20 s without one; the staging buffer grows to 64 KB and drops its oldest audio rather than hold the guest's DMA when the host is a whole buffer behind; trace events screamer_out, screamer_dma_done, screamer_host, screamer_underrun, screamer_drop. The every-other-buffer silences of a CPU-starved guest (QuickTime's 1536-frame buffer) are the guest's own output and are not changed.",
+      "files": [
+        "hw/audio/screamer.c",
+        "include/hw/audio/screamer.h",
+        "hw/audio/trace-events"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-screamer-irq-hold.patch",
+      "sha256": "b5ac27064e13432bab08a480468222d2baa61e2363e0f70d8d584f8ae94ca903",
+      "purpose": "sound on slow hosts (emulator/reports/qtaudio2-20261012.md): mac_dbdma records when a channel raised its interrupt and clears that when the guest reads the channel's STATUS/CONTROL (Mac OS's sound driver does at once after IACK); with screamer.irq-hold-ms (default 100, 0 = off) an output command does not complete while channel 0x10's last interrupt is unserviced, at most that long, and only once the guest has been seen to service interrupts that way. On a slow vCPU Mac OS serviced the half-done interrupt so late that the next half completed first and the edge-triggered OpenPIC source merged the two (129 of 1457 at a 40 % vCPU cap); each merge cost the driver a half, its DBDMA program ran out and QuickTime's next 1536-frame buffer played as silence (35 ms every 70 ms on the N5105/N4100). Lab, vCPU capped at 75 %: 0 dropouts instead of 101; trace event screamer_hold.",
+      "files": [
+        "hw/audio/screamer.c",
+        "include/hw/audio/screamer.h",
+        "hw/audio/trace-events",
+        "hw/misc/macio/mac_dbdma.c",
+        "include/hw/ppc/mac_dbdma.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-screamer-lead-strict.patch",
+      "sha256": "fb609f4eb35e612c79a92e47e0edf0b9a789a93115052303f1093c3a93d5a893",
+      "purpose": "sound on the Gemini PDA (emulator/reports/gemini-audio-20261014.md): screamer.host-lead-strict (default off) keeps the host pre-roll when the output DMA pauses between two of Mac OS's DBDMA programs; without it the stream starts with what is queued as soon as no output command is pending (meant for sounds shorter than the lead), which on a slow guest also happens in the program-restart gap: one QuickTime stream started with 35 ms instead of the 120 ms lead and ran dry at the next 90 ms wait for the guest (irq-hold). With it an idle DMA starts the stream only once the lead's time has passed since the pre-roll began. hostd turns it on for the Gemini PDA; PCs and Raspberry Pis keep QEMU's behaviour.",
+      "files": [
+        "hw/audio/screamer.c",
+        "include/hw/audio/screamer.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ppc-fpu-fast.patch",
+      "sha256": "7b3d799cd15f475cf22f06874a3ed555153c4959eec5223f0ed07b12fda31120",
+      "purpose": "PowerPC scalar FPU fast paths (emulator/reports/ppcfpu-20261012.md): CPU property fast-fpu (default on) and x-fast-fpu-mask (default 15). Each arithmetic FP instruction is one helper instead of reset_fpstatus + softfloat op + compute_fprf + float_check_status; with FPSCR[XE]=0, round-to-nearest, no pending FP program exception, normal-or-zero operands and a normal (above the smallest normal) or zero result it computes with host IEEE double arithmetic, with inexact determined exactly (2Sum, an integer product-exactness test, exact 128-bit integer fused multiply-add) and FPSCR FPRF/FI/XX/FX, the softfloat flags and the target FPR exactly as the original sequence; otherwise it runs the original sequence (target FPR written before a deferred exception). lfs/stfs convert normal numbers inline, fsel is inline TCG. Bit-identical to softfloat in the fpconf conformance harness (emulator/tests/ppcfpu). -cpu 7400,fast-fpu=off restores QEMU's code generation",
+      "files": [
+        "target/ppc/cpu.h",
+        "target/ppc/cpu_init.c",
+        "target/ppc/ff_stats.h",
+        "target/ppc/fpu_fast.c.inc",
+        "target/ppc/fpu_helper.c",
+        "target/ppc/helper.h",
+        "target/ppc/translate.c",
+        "target/ppc/translate/fp-impl.c.inc"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ppc-fpu-vmx.patch",
+      "sha256": "aca6d803cc813c21feff1dd025376131abfb27c55ff2930166f0a03aaf867a44",
+      "purpose": "AltiVec FP lanes on the host (fast-fpu part 0x8, env->fast_vmx): vaddfp/vsubfp/vmaxfp/vminfp/vmaddfp/vnmsubfp/vrefp/vrsqrtefp/vcmp*fp/vctsxs/vctuxs/vcfsx/vcfux compute a lane with host single/double arithmetic (fused multiply-add exactly, without host FMA) when operands are normal or zero and the result is zero or above FLT_MIN, so VSCR[NJ] cannot apply; any other lane runs the original softfloat code. AltiVec has no FP status, so results are bit-identical; only the never-read vec_status exception flags are not accumulated for fast lanes",
+      "files": [
+        "target/ppc/cpu.h",
+        "target/ppc/cpu_init.c",
+        "target/ppc/int_helper.c",
+        "target/ppc/vmx_fast.c.inc"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ppc-fpu-r17.patch",
+      "sha256": "9a0b2a5f493c3c178f850fea9710659ecb56ba3106900bf9d0956093e7318355",
+      "purpose": "fast-fpu parts for r17 (emulator/reports/ppcfpu2-20261012.md), x-fast-fpu-mask default 0x7f: 0x10 CALLS: in TBs where MSR[FE0]=MSR[FE1]=0 (new hflag HFLAGS_FPEXC) the FP and AltiVec FP helpers are called TCG_CALL_NO_RWG (they cannot raise there; FPSCR is read from memory, fcmpu/fcmpo return the CR field); leaner fast paths (the original softfloat sequence out of line, products of singles without the exactness test); 0x20 SIMD: AltiVec vaddfp/vsubfp/vmaddfp/vnmsubfp/vmaxfp/vminfp/vrefp/vrsqrtefp/vcmpeq/ge/gtfp four lanes at once with SSE2 under the per-lane conditions, vperm with SSSE3 pshufb (runtime check); 0x40 VLDST: lvebx/lvehx/lvewx/stvebx/stvehx/stvewx inline. Bit-identical to r16 in the conformance harness (FPR, FPSCR, CR, VSCR, exceptions, stores; big- and little-endian element accesses).",
+      "files": [
+        "target/ppc/cpu.h",
+        "target/ppc/cpu_init.c",
+        "target/ppc/fpu_fast.c.inc",
+        "target/ppc/helper.h",
+        "target/ppc/helper_regs.c",
+        "target/ppc/int_helper.c",
+        "target/ppc/translate.c",
+        "target/ppc/translate/fp-impl.c.inc",
+        "target/ppc/translate/vmx-impl.c.inc",
+        "target/ppc/vmx_fast.c.inc"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ppc-branch-cache.patch",
+      "sha256": "1f12c4983bb070f3d473e581546a7e9080ae9021524a080ad03607055b6d8116",
+      "purpose": "cached branch destinations (CPU property fast-branch, default on; x-fast-branch-mask default 7): TB slots (include/exec/tb-slot.h) hold the host code of the TB for (pc, flags) like a jump cache entry and are valid while a global generation is unchanged; it advances on every jump cache flush or page/class clear and every TB invalidation, and tb_flush recycles the slot arena. 0x1 XPAGE: direct branches to another page jump to their own slot instead of calling helper_lookup_tb_ptr; 0x2 RAS: bl/bctrl/blrl push the slot of the return address on a 16-entry ring in CPUPPCState, blr pops and jumps when pc, flags and generation match; 0x4 SITE: a blr/bctr that misses both keeps a slot with its last destination. Single vCPU only. Lab counters with -DRB_STATS (include/qemu/rb-stats.h).",
+      "files": [
+        "accel/tcg/cpu-exec.c",
+        "accel/tcg/cputlb.c",
+        "accel/tcg/tb-maint.c",
+        "accel/tcg/tcg-runtime.c",
+        "accel/tcg/tcg-runtime.h",
+        "accel/tcg/translate-all.c",
+        "include/exec/tb-slot.h",
+        "include/qemu/rb-stats.h",
+        "include/tcg/tcg-op-common.h",
+        "target/ppc/cpu.h",
+        "target/ppc/cpu_init.c",
+        "target/ppc/mmu_helper.c",
+        "target/ppc/translate.c",
+        "tcg/tcg-op.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-via-t2-hold.patch",
+      "sha256": "8f44ec141d787fb82608cba14c22b6992b21cfdbc031db38aac0da8c679685c5",
+      "purpose": "pre-gray hang type B on slower hosts (emulator/reports/viacal-20261013.md): mos6522-cuda/mos6522-pmu t2-hold (default on, with coherent-timers): while timer 2's interrupt is enabled, an interrupt that falls due while the vCPU is translating code waits until the vCPU has not translated for x-t2-hold-quiet-us (100), at most x-t2-hold-max-us (4000); the counter and the timebase keep host time. The Mac OS ROM times four loops against timer 2 at startup (1 ms, at most 65536 iterations); a loop that runs out first is stored as 0xFFFF, but an interrupt in the dozen instructions between the table pointer's advance and the next timer-2 load makes the handler repeat the store (vector 0x1C overwritten, jump to 0xFFC01244, nanokernel debugger). Under TCG those instructions run for the first time and are translated on the spot (0.15 ms on the lab builder, ~3x on an N5105, instead of ~1 us), and r17's faster branches put the end of the first loop just before the deadline on slower hosts. New bookkeeping of when the vCPU translates: cpu_translation_watch/begin/end/quiet_ns in system/cpu-timers.c around tb_gen_code (one vCPU, TCG without icount). t2-hold=off restores r17's behaviour",
+      "files": [
+        "accel/tcg/cpu-exec.c",
+        "accel/tcg/translate-all.c",
+        "hw/misc/macio/cuda.c",
+        "hw/misc/macio/pmu.c",
+        "hw/misc/mos6522.c",
+        "include/hw/misc/mos6522.h",
+        "include/system/cpu-timers.h",
+        "system/cpu-timers.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-ati-r100.patch",
+      "sha256": "6276b79e4d9e4ec771c1767b53272096272abc782a94a7abaf94cf8b39b3e393",
+      "purpose": "graphics (research/gfx, EXPERIMENTAL, off unless argv adds -vga none -device ati-vga,model=r100): ati-vga gains an R100 Radeon model (PCI 1002:5144, Open Firmware ATY,Rage6p) for Mac OS 9.2.1's own ATI drivers: Radeon register file, PLLs and modes, command processor (PIO queues, ring, indirect buffers, PCI GART, scratch write-back), the 2D engine as ATI Graphics Accelerator uses it, and the 3D engine rendered on the host through EGL surfaceless + GLES 3.0 (libEGL/libGLESv2 are dlopen()ed only when the card is realized; no new link dependency). Only hw/display/ati* changes, so machines without the card are unaffected",
+      "files": [
+        "hw/display/ati.c",
+        "hw/display/ati_2d.c",
+        "hw/display/ati_3d.c",
+        "hw/display/ati_3d.h",
+        "hw/display/ati_cp.c",
+        "hw/display/ati_gl.c",
+        "hw/display/ati_gl.h",
+        "hw/display/ati_glr.c",
+        "hw/display/ati_int.h",
+        "hw/display/ati_regs.h",
+        "hw/display/meson.build",
+        "hw/display/trace-events"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-relative-pointer.patch",
+      "sha256": "f3bfdbc2283a9048c7fc5a3f8804b94c0322dadfcb4a5eeb2d116e7b86ffe660",
+      "purpose": "Signed relative pointer messages and active mouse-mode capability; retain absolute tablet coordinates for touch/web and older backends",
+      "files": [
+        "ui/retroboot.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-tcg-hot-data-pages.patch",
+      "sha256": "4be2c60cbb8e12c4910e329992a7817c89c0a31c1ac73ed2da274ba8c7527b32",
+      "purpose": "hot data pages (TCG accelerator property x-hot-data-writes, default 64, 0 = off): a page holding translated code is write-protected in the softmmu TLB, so every store to it takes notdirty_write even when the code coverage mask shows it touches no code; after that many such stores since the page was last protected, all TBs on the page are dropped (unless the storing TB is on it) and the TLB entry turns writable. A page protected again within 10 ms of a drop doubles its threshold (at most 256x), one left unprotected for over 1 s halves it. info jit prints hot-data-writes and \"Hot data page drops\". Quake III on the PMU machine trapped 600,000 stores/s on one stack page sharing 45 translated instructions (emulator/reports/hot-data-pages-2026-10-24.md).",
+      "files": [
+        "accel/tcg/internal-common.h",
+        "accel/tcg/tb-context.h",
+        "accel/tcg/tb-maint.c",
+        "accel/tcg/tcg-all.c",
+        "accel/tcg/tcg-stats.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-tcg-split-i128.patch",
+      "sha256": "6838fe48a991da099a625b0e861402e184395ca938accf0ac5762faff7b240a8",
+      "purpose": "split 16-byte guest accesses (TCG accelerator property x-split-i128, default on, off = upstream): on a host without 16-byte loads/stores (x86-64 without AVX, e.g. the Celeron N5105 and N4100), softmmu sent every PowerPC lvx/stvx through helper_ld_i128/helper_st_i128 and a full softmmu lookup; accesses that need no 16-byte atomicity (MO_ATOM_NONE, always so with one vCPU, or MO_ATOM_IFALIGN_PAIR) are now two inline 8-byte accesses with the TLB fast path, as QEMU already does in user mode. Hosts with AVX keep their inline 16-byte access. info jit prints split-i128 (image/reports/perf-n5105-2026-10-24.md).",
+      "files": [
+        "accel/tcg/tcg-all.c",
+        "accel/tcg/tcg-stats.c",
+        "include/tcg/startup.h",
+        "tcg/tcg-op-ldst.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-vga-flip-during-snapshot.patch",
+      "sha256": "1034ed2a4224e529146c3816843e2c6d36f858697e6cd2d825973ba88ab48589",
+      "purpose": "black frames with page flipping (Cro-Mag Rally on the ATI card): vga_draw_graphic reads the display parameters, then takes the VRAM dirty snapshot, during which the vCPU can complete device writes; a page flip and the 2D clear of the buffer it left landed there and the refresh drew the cleared buffer. When the parameters changed during the snapshot the refresh draws nothing (the previous frame stays) and the next one redraws everything. hw/display/vga.c only",
+      "files": [
+        "hw/display/vga.c"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-vga-fast-rows.patch",
+      "sha256": "b022b6438cef8f5a1fef6b66f7eacde39b61da9dc6df584d6c874568301f8550",
+      "purpose": "display refresh at high resolutions (emulator/reports/cromag-speed-sound-2026-11-08.md): the VGA line converters for 15-, 16- and 32-bit pixels convert a row that lies in VRAM without wrapping from a plain pointer, 15/16-bit pixels through a table of the same formula, instead of one masked VRAM read per pixel. A page flip makes the whole screen dirty, and at 1920x1080 the per-pixel loop took several milliseconds per frame under the BQL. Same output (a standalone test compares both paths on random VRAM, wrapping rows and odd addresses included); rows that wrap or start on an odd address keep the original loops. hw/display/vga-helpers.h only",
+      "files": [
+        "hw/display/vga-helpers.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-vga-untracked-damage.patch",
+      "sha256": "6ad130ccab0a02e6da436bed36208eb4e983912f7effb2940c5d4429c6d9688a",
+      "purpose": "idle cost of the standard card with directFramebuffer (untracked VRAM, Deluxe and SuperDeluxe): every refresh reported the whole screen as changed, so a still Finder was redrawn in full about 17 times a second through the display socket, the presenter and the panel (on the Gemini PDA the presenter took a whole core). Each refresh now compares the displayed rows with a copy of what it last reported and reports only the changed span of each changed row, copying only that span; writes the guest makes by any route are still seen (they differ from the copy), at most one refresh later. Shadow surfaces and tracked VRAM are unchanged. hw/display/vga.c and vga_int.h only",
+      "files": [
+        "hw/display/vga.c",
+        "hw/display/vga_int.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-macosx-nvram.patch",
+      "sha256": "1ba1de4800f98693ae48b4d93b44569656c2b81e88629af4f8167448fe3ef2a1",
+      "purpose": "opt-in macio-nvram.osx-partitions: upstream dual-bank OS X NVRAM; supplied backing images validated and preserved; classic layout remains the default",
+      "files": [
+        "hw/nvram/mac_nvram.c",
+        "include/hw/nvram/mac_nvram.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-macosx-agp.patch",
+      "sha256": "6ef9a0179067ee597270ada3fabb2d96e179b3511bdbe238e8e02dd2141790db",
+      "purpose": "opt-in UniNorth AGP compatibility aperture for selected master, with checked 4KiB GART PTEs and Radeon AGP capabilities; ARGB guest cursor composition and clipping; AGP defaults unchanged; cursor offsets retain the driver-selected first visible row and clip monochrome pixels within both planes",
+      "files": [
+        "hw/pci-host/uninorth.c",
+        "include/hw/pci-host/uninorth.h",
+        "hw/display/ati.c",
+        "hw/display/ati_int.h"
+      ]
+    },
+    {
+      "path": "emulator/patches/retroboot-macosx-flash.patch",
+      "sha256": "5b81e98eb5c44e77a07bc651dd8065f4d09f4c8b5596a28c10f4f49efe9325e8",
+      "purpose": "opt-in native Core99 flash NVRAM: two contiguous 8KiB banks, Intel program/erase/status protocol, validated persistent backing, firmware feature gate; classic and legacy diagnostic layouts unchanged",
+      "files": [
+        "hw/nvram/mac_nvram.c",
+        "include/hw/nvram/mac_nvram.h",
+        "hw/ppc/mac_newworld.c"
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "path": "screamer/screamer.c",
+      "destination": "hw/audio/screamer.c",
+      "sha256": "9d2f58d660cf46bb98d8af4fe6241d56c7ce54da47d052296e447253d29da808",
+      "bytes": 12492,
+      "binary_private_input": false
+    },
+    {
+      "path": "screamer/screamer.h",
+      "destination": "include/hw/audio/screamer.h",
+      "sha256": "86bca6a2f85230259c6b7889746a4c95c8125eb6b115c235e0029308f8f8be74",
+      "bytes": 2114,
+      "binary_private_input": false
+    },
+    {
+      "path": "screamer/openbios-ppc",
+      "destination": "pc-bios/openbios-ppc",
+      "sha256": "cc5bccd2d9482aa74b41930e2f1649af84b945771cdc045349186e586b230abe",
+      "bytes": 705356,
+      "binary_private_input": true
+    },
+    {
+      "path": "ppcvid/qemu_vga.ndrv",
+      "destination": "pc-bios/qemu_vga.ndrv",
+      "sha256": "3b687b15b4ed321eaee6822438be5bba55a5ab1d8a3ef948fe8f63996a7c5722",
+      "bytes": 19811,
+      "binary_private_input": true
+    },
+    {
+      "path": "shared/ndrvloader",
+      "destination": "pc-bios/ndrvloader",
+      "sha256": "a5b441048916fdb58291e34ab029cfd06d7e6da9380b6035bd4d8740f040f27d",
+      "bytes": 207350,
+      "binary_private_input": true
+    }
+  ],
+  "inventory": [
+    {
+      "path": "audio/coreaudio-device-format.patch",
+      "sha256": "cf49b7d3062ce4f2a1e9435f73121ef715d38c1ea6d3566015b81930c46d889b",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "audio/coreaudio.m"
+      ]
+    },
+    {
+      "path": "classicvirtio/display-aware-input.patch",
+      "sha256": "8c9f5d4ba372d964f54502752feb1e2e99f8cd5479998cbb828a38a4967918c4",
+      "classification": "portable-power-mac-or-integration",
+      "selected": false,
+      "files": [
+        "device-input.c"
+      ]
+    },
+    {
+      "path": "classicvirtio/floppy-driver.patch",
+      "sha256": "c1f43e68f6a6b3733b88a1a795f6c236fb62b9332a0b3b0d59f2f8e079f9498c",
+      "classification": "portable-power-mac-or-integration",
+      "selected": false,
+      "files": [
+        "device-block.c"
+      ]
+    },
+    {
+      "path": "classicvirtio/powermac-boot.patch",
+      "sha256": "586a1c234c7917937c39e5a8fd49a94e12ad662c799438377f4b4748957223ee",
+      "classification": "portable-power-mac-or-integration",
+      "selected": false,
+      "files": [
+        "device-block.c",
+        "ndrvloader.c",
+        "transport-ndrv.c"
+      ]
+    },
+    {
+      "path": "classicvirtio/tools-mount.patch",
+      "sha256": "27b62901973187c80d07af8b7dbed1cfc62acc5babfe2da78ae152fc53b0ef82",
+      "classification": "portable-power-mac-or-integration",
+      "selected": false,
+      "files": [
+        "device-block.c"
+      ]
+    },
+    {
+      "path": "cocoaui/classicmac-ui.patch",
+      "sha256": "cde76af3b96f628f8ec23c8b1e6559a0c96fc743a40fd7f8539e28c9a5f5c939",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/display-performance.patch",
+      "sha256": "4dbaa0b218890d442449939b7b3cd02790271d1b06668efd640d3d4fee1643d4",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/floppy-menu.patch",
+      "sha256": "4de4dfe9346bec3e57506b6e19228aaf16fcb12e7894cfe06aa1ced480c28f95",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/fullscreen-resolution-menu.patch",
+      "sha256": "32114d61321bc58f6da9f446521ec9b673bdcb003dd448fbe774e7c762c568b0",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/game-input-handoff.patch",
+      "sha256": "a2523435b1e737132aa79b7dddf099b656c1e0850f3bf89a78fa18b80fe53310",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/input.c",
+        "include/ui/input.h",
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/guest-force-quit-menu.patch",
+      "sha256": "d609ea423e01acb2a4c303cbabaa49033619cf9e49a278334e2bb72255895f4a",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/gxmetal-status-menu.patch",
+      "sha256": "5192370cadbf8deae68183a8fd08ab72ca2a892e61c18e5b7f1e25f7c3045b45",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/input-helpers-menu.patch",
+      "sha256": "b12fc3d0335558436095b823b95e40544de2f7f02231a1d2b63495963eb0c1db",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/input-remap.patch",
+      "sha256": "21dd8fc2b3c8b466f51d186c29198986c04f36bf06ab8529e5431ade84af730e",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m",
+        "qapi/ui.json"
+      ]
+    },
+    {
+      "path": "cocoaui/mac-native-menus.patch",
+      "sha256": "7a9c48adbe652ecc93dfbd1011247dff9d37779c6d7efa868b69b715ec208867",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/media-drawer.patch",
+      "sha256": "c00dbf8cc3447df29b1f6db67fb9dfec5e30798958a09620df3808bfadfc64db",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/paste-text.patch",
+      "sha256": "911c119d2e9982b8f4896175927b77f0283ba3436b5b5037e73e8e929339b84f",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/removable-media-names.patch",
+      "sha256": "d5aa53b8e7ecc774d8c51664c2687f886a421463b03fb0ab56d6df9d6405dd53",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/tools-cd-menu.patch",
+      "sha256": "ccd2cd312d5a9a010f4a44c7262fa2753ec7e82e5ceb8278dad0ab6cf4b07945",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "cocoaui/window-presentation.patch",
+      "sha256": "56ec5ee1e8e56dac0f5267ac9f715089adb32f540c6b28e034b1bde0be3f5e7f",
+      "classification": "macos-frontend-or-coreaudio",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "copland/clock-state.patch",
+      "sha256": "8eabe0e0b8193b4f3caa32478a4faccc12de7703f09dd6f9dde2fe27c0ca5278",
+      "classification": "other-engine-or-platform",
+      "selected": false,
+      "files": [
+        "devices/common/viacuda.cpp",
+        "devices/common/viacuda.h"
+      ]
+    },
+    {
+      "path": "copland/host-integration.patch",
+      "sha256": "191581f388538639759b5a66eaa3643126803d4041e17df91ac57b9412dc7170",
+      "classification": "other-engine-or-platform",
+      "selected": false,
+      "files": [
+        "core/hostevents_sdl.cpp",
+        "devices/serial/escc.cpp",
+        "devices/video/display_sdl.cpp",
+        "main.cpp"
+      ]
+    },
+    {
+      "path": "copland/keyboard-input.patch",
+      "sha256": "cf4a584d6dc08c57f3b5a77725cf226e25a23ba18ef931b5af5bc824da7814f8",
+      "classification": "other-engine-or-platform",
+      "selected": false,
+      "files": [
+        "devices/common/adb/adbkeyboard.cpp"
+      ]
+    },
+    {
+      "path": "copland/rtc.patch",
+      "sha256": "b7341086cdcab3917922f01d216c9391874ec0c34553d3ffc75e6b664785db61",
+      "classification": "other-engine-or-platform",
+      "selected": false,
+      "files": [
+        "devices/common/viacuda.cpp",
+        "devices/common/viacuda.h"
+      ]
+    },
+    {
+      "path": "gxmetal/qemu-integration.patch",
+      "sha256": "7b36275d11ad970478cc0d4b05bd0098738d46a6c42d2abe23efca66fad095d7",
+      "classification": "optional-graphics-disabled",
+      "selected": false,
+      "files": [
+        "hw/display/meson.build",
+        "hw/display/vga-pci.c",
+        "include/hw/display/bochs-vbe.h"
+      ]
+    },
+    {
+      "path": "gxmetal/standalone/qemu-v11.0.2.patch",
+      "sha256": "23b6572cd386b63c0ce2a74fc70e7ebe2b415d04a01502487a760ff4b69f1801",
+      "classification": "optional-graphics-disabled",
+      "selected": false,
+      "files": [
+        "hw/display/meson.build",
+        "hw/display/vga-pci.c",
+        "include/hw/display/bochs-vbe.h",
+        "include/ui/input.h",
+        "meson.build",
+        "ui/input.c"
+      ]
+    },
+    {
+      "path": "ide/macio-ide-dma-race.patch",
+      "sha256": "11eb1ccbdacacf9d4ea23c6b6c80d9170d0d207afadd5aa65bd56fa74aadf712",
+      "classification": "portable-power-mac-or-integration",
+      "selected": true,
+      "files": [
+        "hw/ide/macio.c",
+        "hw/ide/trace-events",
+        "hw/misc/macio/mac_dbdma.c",
+        "hw/misc/macio/trace-events",
+        "include/hw/misc/macio/macio.h"
+      ]
+    },
+    {
+      "path": "ios/utm-classicmac.patch",
+      "sha256": "eadb33265630769d684b374212edff940a0657c976267473902ea8b455e5be30",
+      "classification": "other-engine-or-platform",
+      "selected": false,
+      "files": [
+        "Platform/Shared/ContentView.swift",
+        "Platform/Shared/VMNavigationListView.swift",
+        "Platform/Shared/VMPlaceholderView.swift",
+        "Platform/Shared/VMWizardOSView.swift",
+        "Platform/Shared/VMWizardStartViewTCI.swift",
+        "Platform/iOS/Info.plist",
+        "UTM.xcodeproj/project.pbxproj"
+      ]
+    },
+    {
+      "path": "monitor/media-control.patch",
+      "sha256": "0de7ddd1b2c2bbb773c08ccd118025907d53478658862a8479aeff94c90ead91",
+      "classification": "portable-power-mac-or-integration",
+      "selected": false,
+      "files": [
+        "monitor/hmp-cmds.c",
+        "include/monitor/hmp.h",
+        "hmp-commands.hx"
+      ]
+    },
+    {
+      "path": "powermac/classic-macos-8.patch",
+      "sha256": "34c56486e3903b80f1b1474cae59474e038df2fe538740787ec3def324496f39",
+      "classification": "portable-power-mac-or-firmware",
+      "selected": true,
+      "files": [
+        "hw/misc/macio/cuda.c",
+        "hw/nvram/mac_nvram.c",
+        "include/hw/misc/macio/cuda.h"
+      ]
+    },
+    {
+      "path": "powermac/classicmac-boot-handoff-display.patch",
+      "sha256": "f0e522ae1cf689c775eb67441d9a51534b6ff969c54d95900ec0185e22149e03",
+      "classification": "host-runtime-audit",
+      "selected": true,
+      "files": [
+        "hw/display/vga.c",
+        "hw/display/vga-pci.c",
+        "hw/display/vga_int.h"
+      ]
+    },
+    {
+      "path": "powermac/openbios-classic-macos-8.patch",
+      "sha256": "82134e41430cacb2468b754748a4a0d40fe9655d1f7da5666b02e7dd002a0744",
+      "classification": "portable-power-mac-or-firmware",
+      "selected": false,
+      "files": [
+        "arch/ppc/qemu/init.c",
+        "arch/ppc/qemu/methods.c",
+        "arch/ppc/qemu/start.S",
+        "config/examples/ppc_config.xml",
+        "drivers/cuda.c",
+        "drivers/virtio.c",
+        "drivers/virtio.h",
+        "forth/debugging/client.fs",
+        "include/drivers/drivers.h",
+        "packages/nvram.c"
+      ]
+    },
+    {
+      "path": "powermac/os9-boot-handoff-metrics.patch",
+      "sha256": "fafde2d9a8b55da3904a954a1cf6942b4f277b0e9d9d784ad815c8d3e42ff79c",
+      "classification": "host-runtime-audit",
+      "selected": true,
+      "files": [
+        "accel/tcg/icount-common.c",
+        "include/exec/icount.h",
+        "monitor/hmp-cmds.c",
+        "hw/ppc/ppc.c"
+      ]
+    },
+    {
+      "path": "powermac/os9-boot-runtime.patch",
+      "sha256": "fcf11b95d86c6e99066c96b58325f29dd089598ebd58191aa9490da8e5649c6e",
+      "classification": "host-runtime-audit",
+      "selected": true,
+      "files": [
+        "accel/tcg/cpu-exec.c",
+        "accel/tcg/icount-common.c",
+        "accel/tcg/tcg-accel-ops-rr.c",
+        "accel/tcg/tcg-accel-ops.c",
+        "accel/tcg/tcg-accel-ops.h",
+        "accel/tcg/tcg-runtime.h",
+        "accel/tcg/translate-all.c",
+        "hmp-commands.hx",
+        "include/exec/icount.h",
+        "include/exec/translation-block.h",
+        "include/monitor/hmp.h",
+        "include/system/cpu-timers.h",
+        "include/tcg/tcg-op-common.h",
+        "monitor/hmp-cmds.c",
+        "system/cpu-timers.c",
+        "target/ppc/translate.c",
+        "tcg/tcg-op.c"
+      ]
+    },
+    {
+      "path": "powermac/tcg-graphics-fast-path.patch",
+      "sha256": "1ccfd107eae5b41ae4faa0d1bb95a889ba5f9f893cb8b45649f768679b5c96ae",
+      "classification": "host-runtime-audit",
+      "selected": true,
+      "files": [
+        "accel/tcg/cputlb.c",
+        "accel/tcg/tb-maint.c"
+      ]
+    },
+    {
+      "path": "powermac/tcg-ppc-bat-range-flush.patch",
+      "sha256": "c8557cf822f0b0102c6659ee01bed1a02b9a8c7da62166ec81543b73773b98be",
+      "classification": "host-runtime-audit",
+      "selected": true,
+      "files": [
+        "target/ppc/mmu_helper.c"
+      ]
+    },
+    {
+      "path": "ppcvid/vga-fast-scanout.patch",
+      "sha256": "acaee9fa44794a84b3f1bc5f1d3c22bbec55d0f61f9a21f616d6f100f1be4efe",
+      "classification": "portable-power-mac-or-integration",
+      "selected": true,
+      "files": [
+        "hw/display/vga_int.h",
+        "hw/display/vga.c",
+        "hw/display/vga-pci.c"
+      ]
+    },
+    {
+      "path": "ppcvid/vga-hardware-cursor.patch",
+      "sha256": "6095cf5803bc3450190bdbc4511e8f9ce8249d082f466adf3c00609ec3917b21",
+      "classification": "portable-power-mac-or-integration",
+      "selected": true,
+      "files": [
+        "hw/display/vga-pci.c",
+        "hw/display/vga_int.h",
+        "hw/display/virtio-vga.c",
+        "include/hw/display/bochs-vbe.h"
+      ]
+    },
+    {
+      "path": "ppcvid/vga-host-resize.patch",
+      "sha256": "d45d4a57c5d3a73358f2dc0a1d99cd60f9ae222921876909e5c73036f9c315b5",
+      "classification": "portable-power-mac-or-integration",
+      "selected": true,
+      "files": [
+        "hw/display/vga-pci.c",
+        "hw/display/vga_int.h",
+        "hw/display/virtio-vga.c",
+        "include/hw/display/bochs-vbe.h"
+      ]
+    },
+    {
+      "path": "ppcvid/vga-packed-depths.patch",
+      "sha256": "49211b3f361a07ebd0858e92f47d0d8dda9a004aed4972acd11f5d38c79aeea4",
+      "classification": "portable-power-mac-or-integration",
+      "selected": true,
+      "files": [
+        "hw/display/vga.c",
+        "hw/display/vga-pci.c",
+        "hw/display/vga_int.h",
+        "include/hw/display/bochs-vbe.h"
+      ]
+    },
+    {
+      "path": "qfb/asc-silence.patch",
+      "sha256": "231f177a40e8b9ac9504cee170bc99bfa4fb5ec678153bf59f281bc886f9bb14",
+      "classification": "quadra-only",
+      "selected": false,
+      "files": [
+        "hw/audio/asc.c"
+      ]
+    },
+    {
+      "path": "qfb/cocoa-resize.patch",
+      "sha256": "4232e9962d34d55addb0c40d4270ab17ffe70161e72e24b05d8c6a206d806cd5",
+      "classification": "macos-frontend",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "qfb/cocoa-retina.patch",
+      "sha256": "4317d260427039e82d5f26725dbcfb711d5cfaf00d07b48d9fa29939a5718abf",
+      "classification": "macos-frontend",
+      "selected": false,
+      "files": [
+        "ui/cocoa.m"
+      ]
+    },
+    {
+      "path": "qfb/integration.patch",
+      "sha256": "f8c682afb8ed716607dcda790da4b50adc83b431f1b11669a812f5696059c9ec",
+      "classification": "quadra-only",
+      "selected": false,
+      "files": [
+        "hw/display/Kconfig",
+        "hw/display/macfb.c",
+        "hw/display/meson.build",
+        "hw/m68k/Kconfig",
+        "hw/m68k/q800.c",
+        "include/hw/display/macfb.h",
+        "include/hw/m68k/q800.h",
+        "pc-bios/meson.build"
+      ]
+    },
+    {
+      "path": "screamer/integration.patch",
+      "sha256": "790f4bfcd03b1ee9b807aff90ef3521e5525787a459217e1c378d1e76b73801f",
+      "classification": "portable-power-mac-or-integration",
+      "selected": true,
+      "files": [
+        "hw/audio/Kconfig",
+        "hw/audio/meson.build",
+        "hw/misc/macio/macio.c",
+        "hw/ppc/Kconfig",
+        "hw/ppc/mac_newworld.c",
+        "hw/ppc/mac_oldworld.c",
+        "include/hw/misc/macio/macio.h"
+      ]
+    },
+    {
+      "path": "virtio/virtio-blk-removable.patch",
+      "sha256": "ab415f908b84bb9d4e58f9d96fb31677a84b8c581cc5b23998e6ad6707f94efb",
+      "classification": "portable-power-mac-or-integration",
+      "selected": false,
+      "files": [
+        "hw/block/virtio-blk.c",
+        "include/hw/virtio/virtio-blk.h"
+      ]
+    }
+  ],
+  "policy": {
+    "gxmetal": "omitted entirely; no Metal stub or graphics acceleration",
+    "host_gate": "Linux x86_64; preserve PageDesc size and virtual-clock checks",
+    "runtime_default": "real-time TCG; icount opt-in pending differential qualification",
+    "firmware_background": "unique 00ffffcc literal replaced with 00000000 in ignored staged copy",
+    "private_binary_policy": "retrieve pinned inputs into ignored build/package directories; never commit firmware/driver binaries",
+    "display": "RetroBoot -display retroboot backend; presenter owns the screen; QEMU never opens a window",
+    "ide_pio_status_drain": "on for disk boots in the RetroBoot argv; off by default in QEMU"
+  },
+  "firmware_build": {
+    "openbios": {
+      "url": "https://github.com/openbios/openbios.git",
+      "commit": "e1e703ac0ad615ab0d7edea54db600aaa629bf07",
+      "classicmac_patch": {
+        "path": "powermac/openbios-classic-macos-8.patch",
+        "sha256": "82134e41430cacb2468b754748a4a0d40fe9655d1f7da5666b02e7dd002a0744"
+      },
+      "builder_image": {
+        "image": "ghcr.io/openbios/openbios-builder",
+        "digest": "sha256:bf806644ccff091323dd56a853866ba09301b1a7fcb91e865fdb289499ef8b38",
+        "config": "sha256:5b84b0e398054bff1b4a9fbdfc40dec98cf691e27a10354ec2cb6f53099743b7",
+        "created": "2024-04-24T09:56:24Z",
+        "compiler": "powerpc-linux-gnu-gcc (Debian 12.2.0-13) 12.2.0",
+        "note": "the only tag (master) ClassicMac's scripts/build-openbios.sh used; unchanged since 2024-04-24"
+      },
+      "make": {
+        "command": "config/scripts/switch-arch ppc && make -j2",
+        "extracflags": "-Wno-array-bounds -Wno-address-of-packed-member"
+      },
+      "pinned_reproduction": {
+        "binary": "screamer/openbios-ppc",
+        "build_date": "Aug 15 2026 10:43",
+        "elf_sha256": "cc5bccd2d9482aa74b41930e2f1649af84b945771cdc045349186e586b230abe"
+      },
+      "retroboot": {
+        "patches": [
+          {
+            "path": "emulator/openbios/retroboot-airport-radio.patch",
+            "sha256": "2c0b3e11191f9820a4b608e822a51050a6d30c4d3ba92574018e1dee670696fb",
+            "purpose": "radio node (two reg entries, IRQ 0x39) only when QEMU publishes fw_cfg etc/retroboot/airport"
+          },
+          {
+            "path": "emulator/patches/openbios-sound-objects-terminator.patch",
+            "sha256": "00795a042f1d9b849099a6db540eaa55c62659c291e10e2ce73dc2b374deebbb",
+            "purpose": "sound-objects keeps its terminators (Apple Audio Extension stack overrun; wave3/crash, emulator/reports/restart-crash-20261011.md)"
+          },
+          {
+            "path": "emulator/openbios/retroboot-pmu.patch",
+            "sha256": "4f16a1e445fecad7216268067b6d16bea6feabbd726434520f6059901b4e3f5f",
+            "purpose": "PMU ADB replies in both layouts (QEMU's legacy and the command-byte layout of retroboot-pmu-adb-reply.patch); with fw_cfg etc/retroboot/battery, power-mgt prim-info gets one battery bay and loses the desktop's open-case-prevents-sleep bit; with fw_cfg etc/retroboot/backlight, a mac-io 'backlight' node (backlight-control \"pmu\") and private feature 0x200 (Mac OS's PowerBook button driver)"
+          },
+          {
+            "path": "emulator/openbios/retroboot-native-find-wordlist.patch",
+            "sha256": "b975c3494109dc6ad90201187eee9f71d2358c5adf0a5e6762ccfc0e0e026ce8",
+            "purpose": "boot time: find-wordlist (every evaluate, $find and client-interface lookup) walks the dictionary in a C primitive (find-wordlist) instead of a Forth loop; same result, 0x74 bytes allotted after it so the dictionary image and every phandle stay where they were (device tree byte-identical); OpenBIOS handed over to Mac OS at ~1.1 s instead of ~5 s (emulator/reports/boottime-20261011.md)"
+          },
+          {
+            "path": "emulator/openbios/retroboot-ati-radeon.patch",
+            "sha256": "c6282bb965fdb742d9a5c25bfdacd2aa7c3a1b460971b99b5d64866996bd0a88",
+            "purpose": "graphics (research/gfx): the R100 Radeon (1002:5144) is named ATY,Rage6p like a Radeon Mac Edition, gets bus mastering and a boot mode through the ATI CRTC registers, and loses the QEMU VGA driver property; only for that device, so other machines keep their tree"
+          }
+        ],
+        "build_date": "Oct 11 2026 00:00",
+        "elf_sha256": "c0f87a580ee200de759c7f18f84190f65400ac2800d35bde7f27cb5e5af18ae2",
+        "staged_sha256": "a34ab94cea84df3ac63d6331e3f6f73c69499f5021495aeba4c01d5e566867a9",
+        "device_tree": {
+          "tool": "emulator/tools/ofw_tree_dump.py",
+          "card_off_sha256": "f007f11f39400ee222e3dc68c04c0873c85aa2182b4c0ebfd05492715f3a5974",
+          "card_off_equals_pinned": false,
+          "card_on_sha256": "1c8b646c539e3fc810f474654a00eb37b1321df628173ad8ffea4cbb42496d35",
+          "card_on_difference": "one added node under mac-io: name=radio, built-in, reg=<0x30000 0x1000 0x1a000 0x1000>, interrupts=<0x39 1>, interrupt-parent=openpic",
+          "card_off_difference": "only sound-objects grows from 996 to 998 bytes (terminator fix); the pinned firmware with the same fix binary-patched gives the identical tree",
+          "card_off_equals_pinned_with_fix": true,
+          "pmu_off_sha256": "f1df78cab4fb38e633671d8b26c7b7997956976b458366aecd1391160105868a",
+          "pmu_off_equals_previous_firmware": true,
+          "pmu_battery_sha256": "d07360832dc43fb34c0fb8fbd2aacdd071a5b4e92dc7eb803a50881d1162f5d8",
+          "pmu_battery_difference": "only via-pmu/power-mgt prim-info: byte 25 0x00 -> 0x01 (one battery bay), byte 18 0x34 -> 0x14 (no open-case-prevents-sleep); research/battery/reports",
+          "pmu_backlight_sha256": "0092697047dfdcc139b7fe31a4520db9de916b47037c7299abc8e5c750d22edc",
+          "pmu_backlight_difference": "against pmu_battery: power-mgt prim-info private features 0x00001400 -> 0x00001600 and one added mac-io node after via-pmu: name=backlight, device_type=backlight, backlight-control=pmu (phandles after it shift); an adb-buttons device changes no tree",
+          "ati_off_sha256": "f007f11f39400ee222e3dc68c04c0873c85aa2182b4c0ebfd05492715f3a5974",
+          "ati_off_equals_card_off": true,
+          "ati_pmu_off_equals_pmu_off": true,
+          "ati_on_sha256": "6beca69d3e33a7a968cc103f8f8c8c323800f0382fa73b90c4bbd382f2e38ae7",
+          "ati_on_difference": "with -vga none -device ati-vga,model=r100: the display node is ATY,Rage6p (vendor 1002, device 5144) instead of QEMU,VGA, without the QEMU VGA driver property; /chosen screen/stdout and the memory map follow; research/gfx"
+        }
+      },
+      "pinned_staging": {
+        "sound_objects_fix": {
+          "find": "809e80b838c003e438bd0010",
+          "replace": "38c003e4 -> 38c003e6",
+          "literal_check": "bytes 990-997 of the sound-objects literal are utPort\\0\\0"
+        },
+        "staged_sha256": "57fbb23b47acdd472905a2a735ea4dbf216be9f78405424fc472971d3a906002",
+        "note": "PORT_FIRMWARE=pinned: prepare_sources.py applies the palette staging and this one-instruction fix"
+      },
+      "osx": {
+        "additional_patches": [
+          {
+            "path": "emulator/openbios/retroboot-macosx-profile.patch",
+            "sha256": "6a369795a2d979bd8d7766c8c3d6a579754be14e48f198c5ad4682e0bc5d2e07"
+          },
+          {
+            "path": "emulator/openbios/retroboot-macosx-flash.patch",
+            "sha256": "2da02dee931fcdc3f28c097df358fec38731e1a68a8eb834a8e4710bd3d80839"
+          },
+          {
+            "path": "emulator/openbios/retroboot-macosx-numbers.patch",
+            "sha256": "0e31b9abef78967364a628418134d01b4bfa2069b74ddd79b297247d8ece1532"
+          }
+        ],
+        "build_date": "Oct 11 2026 00:00",
+        "elf_sha256": "30110a2992867b08c636c6e686ca8c4b2d75086bcc3c8e21b204d131ed9c8a95",
+        "staged_sha256": "a942695593d47a82e20455dceaf91b2f6a03f881633a4cceef3d7f326f02b73d",
+        "asset": "openbios-ppc-osx",
+        "purpose": "separate OS X firmware: PowerMac3,1, no classic RTAS stubs, gated real Core99 flash adapter; original classic firmware stays byte-identical"
+      }
+    },
+    "staging": "the console background palette literal 00ffffcc is replaced by zeros (as prepare_sources.py does for the pinned binary)"
+  }
+}

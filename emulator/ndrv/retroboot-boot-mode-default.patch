@@ -1,0 +1,34 @@
+diff --git a/ppcvid/driver/src/DriverQDCalls.c b/ppcvid/driver/src/DriverQDCalls.c
+--- a/ppcvid/driver/src/DriverQDCalls.c	2026-10-11 02:20:52
++++ b/ppcvid/driver/src/DriverQDCalls.c	2026-10-11 02:38:34
+@@ -545,11 +545,30 @@
+ 		timingInfo->csTimingFlags = (1 << kModeValid) | (1 << kModeSafe);
+ 		if (GLOBAL.hostPendingMode == timingInfo->csTimingMode)
+ 			timingInfo->csTimingFlags |= (1 << kModeDefault) | (1 << kModeShowNow);
++#ifdef RETROBOOT_PREFER_BOOT_MODE
++		else if (GLOBAL.hostPendingMode == 0 &&
++		         timingInfo->csTimingMode == GLOBAL.bootMode + 1)
++			/* The host-chosen startup geometry (a dynamic mode when it is
++			 * not a standard size) is this display's default. */
++			timingInfo->csTimingFlags |= (1 << kModeDefault) | (1 << kModeShowNow);
++#endif
+ 		else
+ 			timingInfo->csTimingFlags |= (1 << kModeShowNever);
+ 	} else {
+ 		timingInfo->csTimingFlags =
+ 			(1 << kModeValid) | (1 << kModeDefault) | (1 <<kModeSafe);
++#ifdef RETROBOOT_PREFER_BOOT_MODE
++		/* Mark only the startup geometry as the default. With every
++		 * standard mode flagged default, a Display Manager without saved
++		 * preferences (or NVRAM) picks the first one, 640x480, just before
++		 * the Finder appears; RetroBoot starts the guest at the host size. */
++		{
++			UInt32 preferred = GLOBAL.hostPendingMode ? GLOBAL.hostPendingMode
++			                                          : GLOBAL.bootMode + 1;
++			if (timingInfo->csTimingMode != preferred)
++				timingInfo->csTimingFlags &= ~(1 << kModeDefault);
++		}
++#endif
+ 		/* While a host window resize is pending, report every other mode
+ 		 * as not valid. The Display Manager's connect-change re-probe
+ 		 * otherwise revalidates its *saved* preference (usually the mode

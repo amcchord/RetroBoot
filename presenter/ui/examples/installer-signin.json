@@ -1,0 +1,24 @@
+{
+  "id": "installer-signin",
+  "kind": "window",
+  "title": "RetroBoot Downloads",
+  "width": 440,
+  "focus": "user",
+  "items": [
+    {"type": "columns", "items": [
+      {"type": "icon", "icon": "web", "size": 32, "width": 32},
+      {"type": "stack", "items": [
+        {"type": "text", "text": "Sign in to RetroBoot downloads.", "style": "emphasis"},
+        {"type": "text", "text": "Enter your user name and password for mcchord.net."}
+      ]}
+    ]},
+    {"type": "field", "id": "user", "label": "User name:", "secure": false, "value": "", "placeholder": "", "max_length": 128},
+    {"type": "field", "id": "password", "label": "Password:", "secure": true, "value": "", "placeholder": "", "max_length": 256},
+    {"type": "checkbox", "id": "remember", "label": "Remember on this computer", "value": true},
+    {"type": "text", "text": "RetroBoot keeps them on the installed computer, so you can download another Mac later.", "style": "small"},
+    {"type": "buttons", "items": [
+      {"id": "cancel", "label": "Cancel"},
+      {"id": "signin", "label": "Sign In", "default": true}
+    ]}
+  ]
+}

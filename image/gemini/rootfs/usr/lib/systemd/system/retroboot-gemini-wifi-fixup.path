@@ -1,0 +1,11 @@
+# RetroBoot on the Gemini PDA: rerun the Wi-Fi profile fix-up whenever hostd (or anyone)
+# saves a NetworkManager profile (keyfiles on the data directory, 50-retroboot-keyfile.conf).
+[Unit]
+Description=Watch the Wi-Fi profiles for the Gemini fix-up
+
+[Path]
+PathChanged=/var/lib/retroboot/network/connections
+Unit=retroboot-gemini-wifi-fixup.service
+
+[Install]
+WantedBy=multi-user.target

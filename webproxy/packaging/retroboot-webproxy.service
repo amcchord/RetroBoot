@@ -1,0 +1,62 @@
+[Unit]
+Description=RetroBoot Modern Web Helper (today's web for Mac OS browsers)
+Documentation=file:///usr/lib/retroboot/webproxy/README.md
+# Started, reloaded and stopped only by hostd (setting network.web_proxy); never enabled.
+# A crash of this unit never touches hostd or Mac OS: the redirect of Mac OS's web and
+# DNS traffic is removed with it (ExecStopPost) and Mac OS connects directly meanwhile.
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+Environment=PYTHONPATH=/usr/lib/retroboot/webproxy
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m rbwebproxy --config /run/retroboot/webproxy.json
+# Privileged ("+") steps around the unprivileged helper: redirect the rbguest user's
+# port-80 and DNS sockets (QEMU's user network) to it, and remove that redirect again.
+ExecStartPost=+/usr/bin/python3 -m rbwebproxy.nft add --config /run/retroboot/webproxy.json
+ExecStopPost=+/usr/bin/python3 -m rbwebproxy.nft remove
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+# The helper pings systemd from its event loop; a stalled helper is restarted.
+WatchdogSec=30
+TimeoutStartSec=30
+TimeoutStopSec=10
+
+# Unprivileged and sandboxed: no capabilities, read-only system, private /tmp.
+DynamicUser=yes
+RuntimeDirectory=retroboot-webproxy
+RuntimeDirectoryMode=0755
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0022
+# Mac OS (QEMU, Nice -5) always comes first.
+Nice=5
+CPUWeight=50
+IOWeight=50
+MemoryMax=384M
+TasksMax=64
+LimitNOFILE=1024
+SyslogIdentifier=retroboot-webproxy

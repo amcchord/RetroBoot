@@ -1,0 +1,31 @@
+#!/bin/sh
+# RetroBoot initramfs contents on the Raspberry Pi (image/rpi/rootfs; replaces the
+# x86 hook of the same name, which prunes a MODULES=most image for PC hardware).
+#
+# * vc4 (HDMI and the display pipeline on BCM2711 and BCM2712) and v3d are added, not
+#   listed in /etc/initramfs-tools/modules, so they are only loaded when udev finds
+#   their device: the splash (rb-splash) draws the checkerboard as soon as vc4 binds.
+#   The presenter's own hook (retroboot-splash) may add the same modules; adding twice
+#   is harmless.
+# * xfs: init-top/retroboot-preload loads it in the background and
+#   local-bottom/retroboot-data mounts RBDATA before switch_root, as on x86.
+# * Everything the root file system needs is built into the Raspberry Pi kernel
+#   (conf.d/retroboot.conf), so nothing else is copied.
+set -e
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+for module in vc4 v3d xfs; do
+    if modinfo -k "${version}" "$module" >/dev/null 2>&1; then
+        manual_add_modules "$module"
+    fi
+done

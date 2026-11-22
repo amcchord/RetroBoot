@@ -1,0 +1,12 @@
+[Unit]
+Description=RetroBoot serial boot milestone marker
+DefaultDependencies=no
+After=multi-user.target
+ConditionPathExists=/dev/ttyS0
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'printf "\\r\\nRBMARK multi-user uptime=%%s\\r\\n" "$(cut -d" " -f1 /proc/uptime)" > /dev/ttyS0'
+
+[Install]
+WantedBy=multi-user.target

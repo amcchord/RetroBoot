@@ -1,0 +1,38 @@
+diff --git a/hw/misc/macio/pmu.c b/hw/misc/macio/pmu.c
+index 539921e..defa2ee 100644
+--- a/hw/misc/macio/pmu.c
++++ b/hw/misc/macio/pmu.c
+@@ -73,7 +73,16 @@ static void via_set_sr_int(void *opaque)
+ 
+ static void pmu_update_extirq(PMUState *s)
+ {
+-    if ((s->intbits & s->intmask) != 0) {
++    /*
++     * RetroBoot sleep (see "Sleep" below): from PMU_SLEEP until the wake the
++     * processor is powered down and the PMU's interrupt line stays quiet;
++     * what is pending (a one-second tick, an environment or ADB interrupt)
++     * is delivered after the wake.  Mac OS 9.2.2 (Mac OS ROM 8.7) never
++     * recovered from a line held asserted across its sleep: after the wake
++     * its 68K emulator spun in its interrupt dispatch (PC 0x6806e8d0) and the
++     * machine stopped responding.
++     */
++    if ((s->intbits & s->intmask) != 0 && !s->sleeping) {
+         macio_set_gpio(s->gpio, 1, false);
+     } else {
+         macio_set_gpio(s->gpio, 1, true);
+@@ -870,6 +879,7 @@ static void pmu_wake(PMUState *s, const char *why)
+     snprintf(msg, sizeof(msg), "{\"type\":\"wake\",\"reason\":\"%s\"}\n", why);
+     pmu_bridge_send(s, msg);
+     qemu_irq_pulse(s->wake_irq);
++    pmu_update_extirq(s);
+ }
+ 
+ /*
+@@ -935,6 +945,7 @@ static void pmu_cmd_sleep(PMUState *s,
+     }
+     s->sleeping = true;
+     s->sleeps++;
++    pmu_update_extirq(s);
+     pmu_bat_trace(s, "guest sleeping (%u, %.4s)", s->sleeps, (const char *)in_data);
+     trace_pmu_rb_sleep(s->sleeps);
+     snprintf(msg, sizeof(msg), "{\"type\":\"sleep\",\"low_battery\":%s}\n",

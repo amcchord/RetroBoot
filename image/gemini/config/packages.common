@@ -1,0 +1,79 @@
+# RetroBoot Gemini PDA rootfs packages (both flavors), arm64. One package per line.
+# Derived from image/rpi/config/packages.common: the same Debian 13 userspace without any
+# boot pieces (no kernel, no raspi-firmware, no initramfs-tools, no GRUB: the boot.img on
+# PARTNAME=boot carries the kernel and its busybox initrd) and without the Raspberry Pi
+# Wi-Fi/Bluetooth firmware; the MT6630 CONSYS firmware is fetched from the pinned
+# gemini-nixos commit (config/gemini.conf).
+# Base system
+systemd
+systemd-sysv
+udev
+dbus
+kmod
+procps
+busybox
+zstd
+# Compressed swap in RAM (CONFIG_ZRAM=y, lzo-rle): /etc/systemd/zram-generator.conf
+systemd-zram-generator
+wireless-regdb
+# Storage (debugfs reads this unit's Wi-Fi record out of the nvdata partition, read-only)
+e2fsprogs
+xfsprogs
+dosfstools
+gdisk
+cloud-guest-utils
+rsync
+util-linux
+# Offline Mac OS volume repair for hostd (non-free; APSL)
+hfsprogs
+# Classic Mac archives (StuffIt etc.) for the media library (apps/rbapps; LGPL-2.1)
+unar
+# Networking and management (iw: the internal Wi-Fi bring-up waits for wlan0 with it)
+network-manager
+wpasupplicant
+iw
+avahi-daemon
+systemd-timesyncd
+ca-certificates
+openssl
+# Bluetooth keyboards, mice and game controllers (hostd/retroboot/bluetooth.py); the
+# MT6630's controller is hci0 through hci_stp (rb-gemini-bt)
+bluez
+python3-dbus-fast
+# Audio (mt6797-mt6351: route with amixer; speaker amps on SoC GPIO 243/244 with gpioset)
+alsa-utils
+alsa-ucm-conf
+gpiod
+# hostd runtime
+python3
+python3-aiohttp
+python3-cryptography
+python3-qrcode
+# Modern Web Helper (webproxy/)
+python3-lxml
+python3-readability
+python3-pil
+python3-cairosvg
+nftables
+# Platinum asset bundle (rbplatinum, ctypes)
+libfreetype6
+# rb-presenter runtime
+libdrm2
+libinput10
+libudev1
+libxkbcommon0
+libpng16-16t64
+# QEMU runtime; extended from the arm64 package's ELF dependencies at build time
+libglib2.0-0t64
+libpixman-1-0
+libslirp0
+libasound2t64
+zlib1g
+libfdt1
+libzstd1
+# Emulated ATI Radeon's host GL (EGL/GLES through Debian's Mesa: llvmpipe; no panfrost)
+libegl1
+libegl-mesa0
+libgles2
+libglvnd0
+libgl1-mesa-dri

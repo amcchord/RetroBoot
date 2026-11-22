@@ -1,0 +1,124 @@
+# initramfs-tools boot script for the RetroBoot live installer
+# (kernel command line: boot=retroboot-live rb.live=<marker file name>).
+#
+# Finds the installer medium by its build-unique marker file, mounts the
+# read-only root squashfs (plus the optional private embedded-machine squashfs)
+# under a tmpfs overlay at ${rootmnt}. The x86 ISO has one root
+# (/live/rootfs.squashfs); the universal medium (image/build.sh --universal: a
+# Raspberry Pi SD card and a PC USB stick in one image) has one per processor,
+# /live/<uname -m>/rootfs.squashfs (x86_64, aarch64), on its ISO 9660 partition
+# 2. Everything lives below /run/retroboot/live,
+# which initramfs-tools moves into the real root, so the installer backend can
+# identify the medium (is_boot_medium) and copy the pristine root filesystem.
+# Output goes only to the kernel console (ttyS0); never to the display.
+# Each stage is also noted in the kernel log ("retroboot: stage ID [detail]",
+# "retroboot: panic REASON") for Startup Details (rb-bootdiag, ARCHITECTURE
+# 16); at loglevel=0 nothing of it reaches a screen.
+
+rb_live_dir=/run/retroboot/live
+
+rb_note()
+{
+	echo "<6>retroboot: $*" > /dev/kmsg 2>/dev/null || true
+}
+
+rb_panic()
+{
+	rb_note "panic $*"
+	panic "retroboot-live: $*"
+}
+
+# USB storage (uas, usb-storage) for a USB stick medium. The initramfs blacklists
+# them so udev never loads them for an internal card reader (hooks/retroboot-modules),
+# and kmod's modprobe also skips a blacklisted module named on its own command line
+# (it does nothing and returns 0), so they are loaded with an empty configuration
+# directory (-C), which the blacklist is not part of. 1.1.0 called plain modprobe,
+# and no USB-stick installer found its medium (ThinkPad Z13, October 17 2026).
+rb_load_usb_storage()
+{
+	mkdir -p /run/retroboot/modprobe-none.d
+	for m in uas usb_storage; do
+		modprobe -C /run/retroboot/modprobe-none.d -q "$m" || true
+	done
+	if [ -d /sys/module/usb_storage ]; then
+		rb_note "usb-storage loaded"
+	else
+		rb_note "usb-storage could not be loaded"
+	fi
+}
+
+rb_find_medium()
+{
+	marker=$1
+	for dev in /dev/disk/by-label/* /dev/sr[0-9]* /dev/sd[a-z] /dev/sd[a-z][0-9]* /dev/vd[a-z] /dev/vd[a-z][0-9]* /dev/nvme[0-9]*n[0-9]* /dev/mmcblk[0-9]*; do
+		[ -b "$dev" ] || continue
+		for fstype in iso9660 vfat; do
+			if mount -t "$fstype" -o ro "$dev" "$rb_live_dir/medium" 2>/dev/null; then
+				if [ -f "$rb_live_dir/medium/$marker" ]; then
+					readlink -f "$dev" > "$rb_live_dir/medium-device"
+					return 0
+				fi
+				umount "$rb_live_dir/medium"
+			fi
+		done
+	done
+	return 1
+}
+
+# The live root image for this processor on the mounted medium DIR (empty if none).
+rb_live_rootfs()
+{
+	arch=$(uname -m 2>/dev/null)
+	if [ -n "$arch" ] && [ -f "$1/live/$arch/rootfs.squashfs" ]; then
+		echo "$1/live/$arch/rootfs.squashfs"
+	elif [ -f "$1/live/rootfs.squashfs" ]; then
+		echo "$1/live/rootfs.squashfs"
+	fi
+}
+
+mountroot()
+{
+	marker=
+	for arg in $(cat /proc/cmdline); do
+		case "$arg" in
+			rb.live=*) marker="${arg#rb.live=}" ;;
+		esac
+	done
+	[ -n "$marker" ] || rb_panic "rb.live= missing"
+
+	for m in squashfs overlay iso9660 loop sr_mod; do modprobe -q "$m" || true; done
+	# The medium may be a USB stick (see rb_load_usb_storage).
+	rb_load_usb_storage
+	mkdir -p "$rb_live_dir/medium" "$rb_live_dir/rootfs" "$rb_live_dir/embedded" "$rb_live_dir/rw"
+
+	wait_for_udev 10
+	rb_note "stage medium-search"
+	tries=0
+	until rb_find_medium "$marker"; do
+		tries=$((tries + 1))
+		case "$tries" in
+		25|100)   # what the search sees, for Startup Details (5 s and 20 s in)
+			rb_note "medium-search disks: $(ls /sys/class/block 2>/dev/null | tr '\n' ' ')" ;;
+		esac
+		[ "$tries" -lt 150 ] || rb_panic "installer medium not found"
+		sleep 0.2
+	done
+	rb_note "stage medium-found $(cat "$rb_live_dir/medium-device" 2>/dev/null)"
+
+	rootimg=$(rb_live_rootfs "$rb_live_dir/medium")
+	[ -n "$rootimg" ] || rb_panic "no root squashfs for $(uname -m 2>/dev/null) on the medium"
+	mount -t squashfs -o ro,loop "$rootimg" "$rb_live_dir/rootfs" ||
+		rb_panic "cannot mount root squashfs"
+	rb_note "stage squashfs-mounted"
+	lower="$rb_live_dir/rootfs"
+	if [ -f "$rb_live_dir/medium/live/embedded.squashfs" ]; then
+		mount -t squashfs -o ro,loop "$rb_live_dir/medium/live/embedded.squashfs" "$rb_live_dir/embedded" &&
+			lower="$rb_live_dir/embedded:$lower"
+	fi
+	mount -t tmpfs -o mode=0755,size=60% tmpfs "$rb_live_dir/rw"
+	mkdir -p "$rb_live_dir/rw/upper" "$rb_live_dir/rw/work"
+	mount -t overlay -o "lowerdir=$lower,upperdir=$rb_live_dir/rw/upper,workdir=$rb_live_dir/rw/work" overlay "${rootmnt}" ||
+		rb_panic "cannot mount overlay root"
+	rb_note "stage root-mounted"
+	echo "RBMARK live-root-mounted" > /dev/ttyS0 2>/dev/null || true
+}

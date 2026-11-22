@@ -1,0 +1,49 @@
+#!/bin/sh
+# Load the USB storage drivers only when the root file system is not on an
+# internal disk. On x86 the initramfs keeps udev from loading them by itself
+# (hooks/retroboot-modules): an empty USB card reader, the ThinkPad X1 Carbon's
+# Realtek USB3.0-CRW, took 4 s to probe and its udev event 4 s more, and
+# initramfs-tools' last `udevadm settle` waited for both, 6.8 s on every boot
+# (image/reports/lenovo-2026-10-15.md). A RetroBoot root on a USB disk still
+# boots: when the root device has not appeared within 3 s, uas and usb-storage
+# are loaded here and the normal root wait follows. The live installer loads
+# them itself (scripts/retroboot-live). After switch_root, systemd's udev loads
+# them as usual and a slow reader no longer holds up the boot.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+[ -e /etc/modprobe.d/retroboot-usb-storage.conf ] || exit 0
+root=
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+    boot=retroboot-live) exit 0 ;;
+    root=*) root="${arg#root=}" ;;
+    esac
+done
+case "$root" in
+PARTLABEL=*) dev="/dev/disk/by-partlabel/${root#PARTLABEL=}" ;;
+PARTUUID=*) dev="/dev/disk/by-partuuid/${root#PARTUUID=}" ;;
+UUID=*) dev="/dev/disk/by-uuid/${root#UUID=}" ;;
+LABEL=*) dev="/dev/disk/by-label/${root#LABEL=}" ;;
+/dev/*) dev="$root" ;;
+*) dev= ;;
+esac
+tries=0
+while [ -n "$dev" ] && [ ! -e "$dev" ] && [ "$tries" -lt 30 ]; do
+    sleep 0.1
+    tries=$((tries + 1))
+done
+if [ -z "$dev" ] || [ ! -e "$dev" ]; then
+    # kmod's modprobe skips a blacklisted module even when it is named, so load
+    # them without RetroBoot's initramfs configuration (scripts/retroboot-live).
+    mkdir -p /run/retroboot/modprobe-none.d
+    modprobe -C /run/retroboot/modprobe-none.d -q uas || true
+    modprobe -C /run/retroboot/modprobe-none.d -q usb_storage || true
+fi
+exit 0

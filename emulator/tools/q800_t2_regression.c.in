@@ -1,0 +1,94 @@
+/* Actual prepared MOS6522 timer functions, with deterministic host/translation
+ * clocks and delivery counters. No guest instructions, ROM, or OS are used. */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#define SCALE_US 1000
+#define T2_INT 0x20
+#define QEMU_CLOCK_VIRTUAL 1
+typedef struct QEMUTimer { int64_t deadline; } QEMUTimer;
+typedef struct MOS6522Timer {
+    int index;
+    int64_t load_time, next_irq_time;
+    unsigned counter_value;
+    QEMUTimer *timer;
+} MOS6522Timer;
+typedef struct MOS6522State {
+    bool t2_hold, t2_watch;
+    unsigned t2_hold_max_us, t2_hold_quiet_us, ier, ifr;
+    int64_t t2_held_since;
+    MOS6522Timer timers[2];
+} MOS6522State;
+static int64_t now, quiet;
+static int deliveries, updates;
+static bool watch = true;
+static int64_t cpu_translation_quiet_ns(int64_t t) { assert(t == now); return quiet; }
+static int64_t qemu_clock_get_ns(int clock) { assert(clock == QEMU_CLOCK_VIRTUAL); return now; }
+static void timer_mod(QEMUTimer *timer, int64_t deadline) { timer->deadline = deadline; }
+static void mos6522_timer2_update(MOS6522State *s, MOS6522Timer *timer, int64_t t)
+{ (void)s; (void)timer; (void)t; updates++; }
+static void mos6522_timer1_update(MOS6522State *s, MOS6522Timer *timer, int64_t t)
+{ (void)s; (void)timer; (void)t; }
+static void mos6522_update_irq(MOS6522State *s)
+{ assert(s->ifr & T2_INT); if (s->ier & T2_INT) deliveries++; }
+static void trace_mos6522_set_counter(unsigned timer, unsigned val) { (void)timer; (void)val; }
+static bool cpu_translation_watch(void) { return watch; }
+static int64_t get_load_time(MOS6522State *s, MOS6522Timer *timer) { (void)s; (void)timer; return now; }
+
+/* @ACTUAL_VIA@ */
+
+static MOS6522State fresh(QEMUTimer *timer)
+{
+    now = 1000000000; quiet = 0; deliveries = updates = 0; watch = true;
+    MOS6522State s = {.t2_hold = true, .ier = T2_INT,
+        .t2_hold_max_us = @MAXIMUM@, .t2_hold_quiet_us = @QUIET@};
+    s.timers[1].index = 1; s.timers[1].timer = timer;
+    return s;
+}
+
+int main(int argc, char **argv)
+{
+    assert(argc == 2);
+    bool old = !strcmp(argv[1], "old");
+    QEMUTimer timer = {0};
+    MOS6522State s = fresh(&timer);
+    mos6522_timer2(&s);
+    assert(deliveries == 0);
+    for (int i = 1; i <= 14; i++) {
+        now += 300 * SCALE_US;
+        mos6522_timer2(&s);
+        if (deliveries) break;
+    }
+    assert(old ? deliveries == 1 : deliveries == 0);
+    puts(old ? "slow-window: old cap delivers inside translation (reproduced)" : "slow-window: held through 4.2 ms translation");
+
+    s = fresh(&timer); quiet = @QUIET@ * SCALE_US;
+    mos6522_timer2(&s); assert(deliveries == 1 && s.t2_held_since == 0);
+    puts("quiet-release: pass");
+    s = fresh(&timer); quiet = @QUIET@ * SCALE_US - 1;
+    mos6522_timer2(&s); assert(deliveries == 0 && timer.deadline == now + 1);
+    puts("below-quiet: pass");
+    s = fresh(&timer); mos6522_timer2(&s);
+    now += @MAXIMUM@ * SCALE_US;
+    mos6522_timer2(&s); assert(deliveries == 1 && s.t2_held_since == 0);
+    puts("maximum-bound: pass");
+    s = fresh(&timer); s.t2_hold = false;
+    mos6522_timer2(&s); assert(deliveries == 1);
+    puts("off-switch: pass");
+    s = fresh(&timer); s.ier = 0;
+    mos6522_timer2(&s); assert(deliveries == 0 && updates == 1);
+    puts("masked: no hold, pass");
+    s = fresh(&timer); mos6522_timer2(&s); assert(s.t2_held_since != 0);
+    now += 1000 * SCALE_US;
+    set_counter(&s, &s.timers[1], 780);
+    assert(s.t2_held_since == 0 && s.t2_watch && s.timers[1].counter_value == 780);
+    puts("new-load-cancels-hold: pass");
+    s = fresh(&timer); watch = false;
+    set_counter(&s, &s.timers[1], 780);
+    assert(!s.t2_hold && !s.t2_watch);
+    puts("unsupported-watch-disables-hold: pass");
+    return 0;
+}

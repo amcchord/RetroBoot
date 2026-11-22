@@ -1,0 +1,155 @@
+diff --git a/hw/nvram/mac_nvram.c b/hw/nvram/mac_nvram.c
+index aaf3ebf..ef25cb1 100644
+--- a/hw/nvram/mac_nvram.c
++++ b/hw/nvram/mac_nvram.c
+@@ -95,6 +95,34 @@ static void macio_nvram_reset(DeviceState *dev)
+ {
+ }
+
++/* A supplied OS X image must contain at least one complete flash bank.
++ * The other bank may be interrupted: OS X chooses by checksum/generation.
++ * Never format a supplied image to hide corruption. */
++static bool macio_nvram_osx_valid(const uint8_t *data, uint32_t size)
++{
++    uint32_t bank_size = size / 2;
++
++    if (size != MACIO_NVRAM_SIZE) {
++        return false;
++    }
++    for (uint32_t offset = 0; offset < size; offset += bank_size) {
++        const uint8_t *bank = data + offset;
++        ChrpNvramPartHdr header;
++
++        if (bank[0] != 0x5a || lduw_be_p(bank + 2) * 16 != bank_size) {
++            continue;
++        }
++        memcpy(&header, bank, sizeof(header));
++        chrp_nvram_finish_partition(&header, bank_size);
++        if (header.checksum == bank[1] &&
++            (uint32_t)ldl_be_p(bank + 16) ==
++            (uint32_t)adler32(0, bank + 20, bank_size - 20)) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static void macio_nvram_realizefn(DeviceState *dev, Error **errp)
+ {
+     SysBusDevice *d = SYS_BUS_DEVICE(dev);
+@@ -121,6 +149,11 @@ static void macio_nvram_realizefn(DeviceState *dev, Error **errp)
+             error_setg(errp, "can't read-nvram contents");
+             return;
+         }
++        if (s->osx_partitions && !macio_nvram_osx_valid(s->data, s->size)) {
++            error_setg(errp, "OS X NVRAM has no valid flash bank; "
++                       "restore its checkpoint");
++            return;
++        }
+     }
+
+     memory_region_init_io(&s->mem, OBJECT(s), &macio_nvram_ops, s,
+@@ -139,6 +172,7 @@ static const Property macio_nvram_properties[] = {
+     DEFINE_PROP_UINT32("size", MacIONVRAMState, size, 0),
+     DEFINE_PROP_UINT32("it_shift", MacIONVRAMState, it_shift, 0),
+     DEFINE_PROP_DRIVE("drive", MacIONVRAMState, blk),
++    DEFINE_PROP_BOOL("osx-partitions", MacIONVRAMState, osx_partitions, false),
+ };
+
+ static void macio_nvram_class_init(ObjectClass *oc, const void *data)
+@@ -176,28 +210,67 @@ static void pmac_format_nvram_partition_of(MacIONVRAMState *nvr, int off,
+     sysp_end = chrp_nvram_create_system_partition(&nvr->data[off],
+                                                   DEF_SYSTEM_SIZE, len) + off;
+
+-    /* New World Mac OS expects the OF partition to be named "common". */
+-    part_header = (ChrpNvramPartHdr *)&nvr->data[off];
+-    pstrcpy(part_header->name, sizeof(part_header->name), "common");
+-    chrp_nvram_finish_partition(part_header, sysp_end - off);
+-
+-    /*
+-     * Mac OS 8 and 9 store 256 bytes of XPRAM followed by 1 KiB of
+-     * Name Registry data in an APL,MacOS75 partition.
+-     */
+-    part_header = (ChrpNvramPartHdr *)&nvr->data[sysp_end];
+-    part_header->signature = 0xa0;
+-    pstrcpy(part_header->name, sizeof(part_header->name), "APL,MacOS75");
+-    chrp_nvram_finish_partition(part_header, DEF_MACOS_SIZE);
+-    sysp_end += DEF_MACOS_SIZE;
++    /* Classic Mac OS needs "common"; OS X retains upstream's "system". */
++    if (!nvr->osx_partitions) {
++        part_header = (ChrpNvramPartHdr *)&nvr->data[off];
++        pstrcpy(part_header->name, sizeof(part_header->name), "common");
++        chrp_nvram_finish_partition(part_header, sysp_end - off);
++    }
++
++    if (!nvr->osx_partitions) {
++        /*
++         * Mac OS 8 and 9 store 256 bytes of XPRAM followed by 1 KiB of
++         * Name Registry data in an APL,MacOS75 partition.
++         */
++        part_header = (ChrpNvramPartHdr *)&nvr->data[sysp_end];
++        part_header->signature = 0xa0;
++        pstrcpy(part_header->name, sizeof(part_header->name), "APL,MacOS75");
++        chrp_nvram_finish_partition(part_header, DEF_MACOS_SIZE);
++        sysp_end += DEF_MACOS_SIZE;
++    }
+
+     /* Free space partition */
+     chrp_nvram_create_free_partition(&nvr->data[sysp_end], len - sysp_end);
+ }
+
+-/* Set up NVRAM with OF and OSX partitions */
++#define OSX_NVRAM_SIGNATURE     (0x5A)
++
++/* Set up a Mac OS X NVRAM partition */
++static void pmac_format_nvram_partition_osx(MacIONVRAMState *nvr, int off,
++                                            int len)
++{
++    uint32_t start = off;
++    ChrpNvramPartHdr *part_header;
++    unsigned char *data = &nvr->data[start];
++
++    /* empty partition */
++    part_header = (ChrpNvramPartHdr *)data;
++    part_header->signature = OSX_NVRAM_SIGNATURE;
++    pstrcpy(part_header->name, sizeof(part_header->name), "wwwwwwwwwwww");
++
++    chrp_nvram_finish_partition(part_header, len);
++
++    /* Generation */
++    stl_be_p(&data[20], 2);
++
++    /* Adler32 checksum */
++    stl_be_p(&data[16], adler32(0, &data[20], len - 20));
++}
++
++/* Set up NVRAM with classic or OS X partitions. */
+ void pmac_format_nvram_partition(MacIONVRAMState *nvr, int len)
+ {
+-    pmac_format_nvram_partition_of(nvr, 0, len);
++    if (nvr->osx_partitions) {
++        /* Match upstream mac99: OS X expects a second flash bank at 4 KiB.
++         * Its OF bank has no APL,MacOS75 partition (the classic layout
++         * needs more than one bank).  Never overwrite a supplied image. */
++        if (nvr->blk) {
++            return;
++        }
++        pmac_format_nvram_partition_of(nvr, 0, len / 2);
++        pmac_format_nvram_partition_osx(nvr, len / 2, len / 2);
++    } else {
++        pmac_format_nvram_partition_of(nvr, 0, len);
++    }
+ }
+ type_init(macio_nvram_register_types)
+diff --git a/include/hw/nvram/mac_nvram.h b/include/hw/nvram/mac_nvram.h
+index e023732..b51b4f9 100644
+--- a/include/hw/nvram/mac_nvram.h
++++ b/include/hw/nvram/mac_nvram.h
+@@ -41,6 +41,7 @@ struct MacIONVRAMState {
+
+     uint32_t size;
+     uint32_t it_shift;
++    bool osx_partitions;
+
+     MemoryRegion mem;
+     uint8_t *data;

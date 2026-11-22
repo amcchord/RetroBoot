@@ -1,0 +1,136 @@
+#!/bin/sh
+# RetroBoot initramfs contents (image/reports/hostboot-2026-10-12.md).
+#
+# The initramfs has two jobs: mount the root file system from a local disk (or
+# the installer medium) and let the splash draw on the display as early as
+# possible. GRUB reads the whole file through the firmware, which on the N4100
+# and N5105 firmware costs 45-70 ms per MB, so it carries nothing else:
+#
+# * KMS drivers for the splash and the live installer's modules are *added*
+#   here, not listed in /etc/initramfs-tools/modules (a listed module is also
+#   loaded unconditionally at every boot). udev loads a KMS driver when its
+#   device is present; scripts/retroboot-live loads the installer's.
+# * amdgpu and xe are not included: amdgpu with its firmware is 25 of the 80 MB,
+#   and loading it took 6 s on a Celeron. On AMD (and Intel Xe2) machines the
+#   GRUB checkerboard stays up until the driver loads from the root file system
+#   a moment later, and the splash, which follows the root, draws then.
+# * MODULES=most also copies every network driver (for NFS roots), InfiniBand,
+#   NFS, enterprise SCSI/FC/SAS host adapters and some file systems with their
+#   firmware. None can hold a RetroBoot root, so they are removed, and with them
+#   every firmware file no remaining module asks for.
+# * xfs stays: scripts/init-premount/retroboot-preload loads it in the
+#   background so the data partition mounts without waiting for it. So do vfat
+#   and its code pages for the EFI system partition, which hostd reads at start
+#   (the A/B slot state): loading a module waits for every asynchronous device
+#   probe still running, so a late vfat load waited out a slow USB disk probe.
+# * USB storage (uas, usb-storage, the ums-* card-reader drivers) stays for a
+#   root or installer medium on USB, but on x86 udev may not load it by itself
+#   (etc/modprobe.d/retroboot-usb-storage.conf, initramfs only). An empty USB
+#   card reader or a KVM's virtual drive took seconds to probe, and
+#   initramfs-tools' last `udevadm settle` waited for it: 6.8 s on every boot of
+#   a ThinkPad X1 Carbon (image/reports/lenovo-2026-10-15.md).
+#   scripts/local-top/retroboot-usb-root loads it when the root is not on an
+#   internal disk and scripts/retroboot-live always does, both with
+#   `modprobe -C <empty dir>`: kmod also skips a blacklisted module named on its
+#   command line. After switch_root systemd's udev loads it as before. The Raspberry Pi image boots from USB as
+#   often as from its SD card, so arm64 keeps the old behaviour.
+set -e
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+for module in bochs virtio-gpu qxl i915 \
+              squashfs overlay iso9660 loop sr_mod uas usb_storage xfs \
+              vfat nls_cp437 nls_ascii; do
+    if modinfo -k "${version}" "$module" >/dev/null 2>&1; then
+        manual_add_modules "$module"
+    fi
+done
+# Modules added by hooks are copied after the hooks have run; copy them now so
+# the pruning below sees everything that will be in the image.
+apply_add_modules
+
+kdir="${DESTDIR}/usr/lib/modules/${version}/kernel"
+[ -d "$kdir" ] || kdir="${DESTDIR}/lib/modules/${version}/kernel"
+[ -d "$kdir" ] || exit 0
+
+prune() {
+    for p in "$@"; do
+        rm -rf "${kdir:?}/$p"
+    done
+}
+# KMS drivers that load from the root file system instead (see above).
+prune drivers/gpu/drm/amd drivers/gpu/drm/xe drivers/gpu/drm/radeon drivers/gpu/drm/nouveau
+# Network, InfiniBand, NFS: RetroBoot never boots from the network.
+prune drivers/net drivers/infiniband net/sunrpc fs/nfs fs/nfs_common fs/lockd fs/nfsd \
+      drivers/nvme/host/nvme-rdma.ko* drivers/nvme/host/nvme-fc.ko* drivers/nvme/host/nvme-tcp.ko* \
+      drivers/nvme/target drivers/isdn drivers/atm
+# File systems a RetroBoot root, data partition or installer medium never uses.
+prune fs/btrfs fs/f2fs fs/jfs fs/reiserfs fs/nilfs2 fs/ocfs2 fs/gfs2 fs/ceph fs/smb fs/cifs fs/9p \
+      fs/ubifs fs/hfs fs/hfsplus fs/ntfs3 fs/exfat fs/ufs fs/minix fs/omfs fs/befs fs/affs
+# SCSI: keep the core, disks, CD-ROM drives, generic access and the virtual
+# adapters (virtio, VMware, Hyper-V); drop SAS/FC/RAID/iSCSI host adapters.
+if [ -d "$kdir/drivers/scsi" ]; then
+    find "$kdir/drivers/scsi" -name '*.ko*' | while read -r ko; do
+        case "$(basename "$ko")" in
+        scsi_mod.ko*|scsi_common.ko*|sd_mod.ko*|sr_mod.ko*|sg.ko*|virtio_scsi.ko*|vmw_pvscsi.ko*|\
+        hv_storvsc.ko*|scsi_transport_spi.ko*|scsi_transport_sas.ko*|scsi_dh_*.ko*) ;;
+        *) rm -f "$ko" ;;
+        esac
+    done
+fi
+
+# Firmware: keep only files a remaining module (or a built-in driver) asks for.
+fwdir="${DESTDIR}/usr/lib/firmware"
+[ -d "$fwdir" ] || fwdir="${DESTDIR}/lib/firmware"
+if [ -d "$fwdir" ]; then
+    names=$(mktemp)
+    keep=$(mktemp)
+    find "${kdir%/kernel}" -name '*.ko*' -exec modinfo -F firmware {} + >"$names" 2>/dev/null || true
+    if [ -e "/lib/modules/${version}/modules.builtin.modinfo" ]; then
+        tr '\0' '\n' <"/lib/modules/${version}/modules.builtin.modinfo" |
+            sed -n 's/^[^=]*\.firmware=//p' >>"$names"
+    fi
+    # Every present form of a wanted name, and every hop of a symlink chain.
+    sort -u "$names" | while read -r name; do
+        for f in "$name" "$name.zst" "$name.xz"; do
+            hops=0
+            while [ -n "$f" ] && { [ -e "$fwdir/$f" ] || [ -L "$fwdir/$f" ]; } && [ "$hops" -lt 8 ]; do
+                echo "$f"
+                [ -L "$fwdir/$f" ] || break
+                target=$(readlink "$fwdir/$f")
+                case "$target" in
+                /*) f= ;;   # linux-firmware links are relative
+                *) f=$(realpath -ms --relative-to="$fwdir" "$(dirname "$fwdir/$f")/$target") ;;
+                esac
+                hops=$((hops + 1))
+            done
+        done
+    done >"$keep"
+    (cd "$fwdir" && find . \( -type f -o -type l \) | sed 's|^\./||') | while read -r f; do
+        grep -qxF "$f" "$keep" || rm -f "$fwdir/$f"
+    done
+    find "$fwdir" -depth -type d -empty -delete
+    rm -f "$names" "$keep"
+fi
+
+# USB storage loads only on request in the initramfs (see the top of this file).
+if [ "$(dpkg --print-architecture 2>/dev/null)" = amd64 ] && [ -d "$kdir/drivers/usb/storage" ]; then
+    mkdir -p "${DESTDIR}/etc/modprobe.d"
+    {
+        echo "# RetroBoot initramfs only (hooks/retroboot-modules): USB storage loads on request."
+        for ko in "$kdir"/drivers/usb/storage/*.ko*; do
+            [ -e "$ko" ] || continue
+            m=$(basename "$ko")
+            echo "blacklist ${m%%.ko*}"
+        done
+    } >"${DESTDIR}/etc/modprobe.d/retroboot-usb-storage.conf"
+fi

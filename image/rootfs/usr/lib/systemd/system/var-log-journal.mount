@@ -1,0 +1,20 @@
+[Unit]
+Description=RetroBoot persistent journal on RBDATA
+Documentation=file:/usr/lib/retroboot/image/README
+DefaultDependencies=no
+RequiresMountsFor=/var/lib/retroboot
+Requires=retroboot-data-layout.service
+After=retroboot-data-layout.service
+ConditionPathIsMountPoint=/var/lib/retroboot
+Before=systemd-journal-flush.service local-fs.target
+Conflicts=umount.target
+Before=umount.target
+
+[Mount]
+What=/var/lib/retroboot/logs/journal
+Where=/var/log/journal
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

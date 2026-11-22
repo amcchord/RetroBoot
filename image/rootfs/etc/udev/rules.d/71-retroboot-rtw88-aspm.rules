@@ -1,0 +1,6 @@
+# RetroBoot: PCIe link power states (ASPM L0s/L1) off for the Realtek RTL8821CE
+# Wi-Fi (10ec:c821). With them on, its link logged about nine correctable
+# receiver errors (AER RxErr) a minute on the N5105 laptop, into the journal; with
+# them off, none in 20+ minutes. The driver's own power saving is off as well
+# (modprobe.d/retroboot-wifi.conf). image/reports/hardware-n5105-2026-10-11.md
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10ec", ATTR{device}=="0xc821", ATTR{link/l0s_aspm}="0", ATTR{link/l1_aspm}="0"

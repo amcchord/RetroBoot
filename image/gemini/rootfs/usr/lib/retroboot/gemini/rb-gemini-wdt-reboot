@@ -1,0 +1,25 @@
+#!/bin/sh
+# rb-gemini-wdt-reboot [SECONDS]: the Gemini's escape-hatch reboot through the SoC
+# watchdog (TOPRGU WDT external reset), for a system whose normal reboot path is broken.
+# Never needed on a healthy system: `systemctl reboot` uses the kernel's restart handler,
+# which replays the bootloader's own watchdog reset (and systemd arms the watchdog for
+# the last phase of every reboot, /etc/systemd/system.conf.d/60-retroboot-gemini.conf).
+#
+# Arms WDT_LENGTH (0x10007004) for SECONDS (2..31; one count is one second, bit 3 is the
+# key) and waits. When it fires, the PMIC power-cycles and the bootloader starts the
+# PARTNAME=boot partition (or recovery when para says boot-recovery). Field-verified
+# sequence documented by gemini-nixos (services/scripts/gemini-wdt-reboot), reimplemented.
+# Hand-started only (retroboot-gemini-wdt-reboot.service is never enabled: a boot-time arm
+# would reboot in a loop).
+set -u
+SECS=${1:-20}
+case "$SECS" in ''|*[!0-9]*) echo "usage: rb-gemini-wdt-reboot [2..31]" >&2; exit 2 ;; esac
+[ "$SECS" -ge 2 ] && [ "$SECS" -le 31 ] || { echo "SECONDS must be 2..31" >&2; exit 2; }
+echo "rb-gemini-wdt-reboot: arming the watchdog for $SECS s; the Gemini restarts in about $((SECS + 2)) s"
+sync
+busybox devmem 0x10007004 32 $(( (SECS << 5) | 8 )) || { echo "rb-gemini-wdt-reboot: could not arm the watchdog" >&2; exit 1; }
+sync
+sleep "$SECS"
+sleep 5
+echo "rb-gemini-wdt-reboot: WARNING: the watchdog did not fire" >&2
+exit 1

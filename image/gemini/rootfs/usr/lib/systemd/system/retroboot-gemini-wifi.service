@@ -1,0 +1,16 @@
+# RetroBoot on the Gemini PDA: internal Wi-Fi (MT6630 CONSYS) -> wlan0. NetworkManager
+# picks wlan0 up through udev and joins the saved networks with nobody logged in;
+# nothing is ordered after this (the bring-up takes about 15 s).
+[Unit]
+Description=Gemini internal Wi-Fi bring-up
+After=systemd-modules-load.service retroboot-gemini-wifi-nvram.service sys-kernel-debug.mount
+Wants=retroboot-gemini-wifi-nvram.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=120
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-wifi start
+
+[Install]
+WantedBy=multi-user.target

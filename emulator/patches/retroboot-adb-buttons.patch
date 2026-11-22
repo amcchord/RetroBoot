@@ -1,0 +1,319 @@
+diff --git a/hw/input/adb-buttons.c b/hw/input/adb-buttons.c
+new file mode 100644
+index 0000000..02b1c6d
+--- /dev/null
++++ b/hw/input/adb-buttons.c
+@@ -0,0 +1,257 @@
++/*
++ * ADB special-function buttons (RetroBoot)
++ *
++ * The device Mac OS finds at ADB address 7: on a PowerBook (handler 0x1f)
++ * the brightness, volume, mute and eject keys; on a desktop with the
++ * AppleDesign Keyboard (handler 0x02, "adjustable keyboard buttons") the
++ * volume and mute buttons.  Mac OS 9 hands the presses to its Button Manager,
++ * which changes the volume or brightness and draws its own on-screen
++ * feedback.
++ *
++ * Register 0 reports one button per talk: the button code in the first byte
++ * (bit 7 set on release) and 0xff in the second (no second button).
++ *
++ * Copyright (c) 2026 RetroBoot contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "qemu/osdep.h"
++#include "hw/input/adb.h"
++#include "hw/input/adb-buttons.h"
++#include "hw/core/qdev-properties.h"
++#include "migration/vmstate.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "adb-internal.h"
++#include "trace.h"
++#include "qom/object.h"
++
++OBJECT_DECLARE_SIMPLE_TYPE(ADBButtonsState, ADB_BUTTONS)
++
++#define ADB_BUTTONS_QUEUE 16
++
++typedef struct ADBButtonsClass {
++    ADBDeviceClass parent_class;
++    DeviceRealize parent_realize;
++} ADBButtonsClass;
++
++struct ADBButtonsState {
++    ADBDevice parent_obj;
++
++    uint8_t handler_prop;
++    uint8_t data[ADB_BUTTONS_QUEUE];
++    int32_t rptr, wptr, count;
++};
++
++/* Button codes of the two Apple devices (Mac OS ADBS 0x71F / 0x702). */
++static const struct {
++    const char *name;
++    uint8_t pb;      /* PowerBook buttons, handler 0x1f */
++    uint8_t adj;     /* adjustable keyboard buttons, handler 0x02 */
++} buttons[] = {
++    [ADB_BUTTON_VOLUME_UP]       = { "volume-up",       0x06, 0x03 },
++    [ADB_BUTTON_VOLUME_DOWN]     = { "volume-down",     0x07, 0x02 },
++    [ADB_BUTTON_MUTE]            = { "mute",            0x08, 0x01 },
++    [ADB_BUTTON_BRIGHTNESS_UP]   = { "brightness-up",   0x09, 0 },
++    [ADB_BUTTON_BRIGHTNESS_DOWN] = { "brightness-down", 0x0a, 0 },
++    [ADB_BUTTON_EJECT]           = { "eject",           0x0b, 0 },
++};
++
++static void adb_buttons_put(ADBButtonsState *s, uint8_t code)
++{
++    if (s->count < ADB_BUTTONS_QUEUE) {
++        s->data[s->wptr] = code;
++        s->wptr = (s->wptr + 1) % ADB_BUTTONS_QUEUE;
++        s->count++;
++    }
++}
++
++bool adb_buttons_event(DeviceState *dev, ADBButton button, bool down)
++{
++    ADBButtonsState *s = ADB_BUTTONS(dev);
++    ADBDevice *d = ADB_DEVICE(dev);
++    uint8_t code;
++
++    if (button >= ARRAY_SIZE(buttons)) {
++        return false;
++    }
++    code = s->handler_prop == ADB_BUTTONS_HANDLER_POWERBOOK ? buttons[button].pb
++                                                            : buttons[button].adj;
++    if (!code) {
++        return false;      /* this keyboard has no such button */
++    }
++    trace_adb_device_buttons_event(buttons[button].name, down, d->devaddr, d->handler);
++    adb_buttons_put(s, down ? code : code | 0x80);
++    return true;
++}
++
++int adb_buttons_lookup(const char *name)
++{
++    for (int i = 0; i < ARRAY_SIZE(buttons); i++) {
++        if (!strcmp(name, buttons[i].name)) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++static int adb_buttons_request(ADBDevice *d, uint8_t *obuf,
++                               const uint8_t *buf, int len)
++{
++    ADBButtonsState *s = ADB_BUTTONS(d);
++    int cmd, reg, olen = 0;
++
++    if ((buf[0] & 0x0f) == ADB_FLUSH) {
++        s->wptr = s->rptr = s->count = 0;
++        return 0;
++    }
++    cmd = buf[0] & 0xc;
++    reg = buf[0] & 0x3;
++    switch (cmd) {
++    case ADB_WRITEREG:
++        if (reg == 3 && len >= 3) {
++            switch (buf[2]) {
++            case ADB_CMD_SELF_TEST:
++                break;
++            case ADB_CMD_CHANGE_ID:
++            case ADB_CMD_CHANGE_ID_AND_ACT:
++            case ADB_CMD_CHANGE_ID_AND_ENABLE:
++                d->devaddr = buf[1] & 0xf;
++                break;
++            default:
++                /* one fixed handler: only an address change applies */
++                d->devaddr = buf[1] & 0xf;
++                break;
++            }
++            trace_adb_device_buttons_change(d->devaddr, d->handler);
++        }
++        break;
++    case ADB_READREG:
++        switch (reg) {
++        case 0:
++            if (s->count) {
++                obuf[0] = s->data[s->rptr];
++                obuf[1] = 0xff;
++                s->rptr = (s->rptr + 1) % ADB_BUTTONS_QUEUE;
++                s->count--;
++                olen = 2;
++            }
++            break;
++        case 3:
++            obuf[0] = d->devaddr;
++            obuf[1] = d->handler;
++            olen = 2;
++            break;
++        }
++        break;
++    }
++    return olen;
++}
++
++static bool adb_buttons_has_data(ADBDevice *d)
++{
++    return ADB_BUTTONS(d)->count > 0;
++}
++
++static void adb_buttons_set_press(Object *obj, const char *value, Error **errp)
++{
++    /* "name" taps the button; "name:down" / "name:up" press or release it */
++    g_autofree char *name = g_strdup(value);
++    char *colon = strchr(name, ':');
++    bool down = true, up = true;
++    int b;
++
++    if (colon) {
++        *colon = 0;
++        down = !strcmp(colon + 1, "down");
++        up = !strcmp(colon + 1, "up");
++    }
++    b = adb_buttons_lookup(name);
++    if (b < 0 || (!down && !up)) {
++        error_setg(errp, "unknown button '%s'", value);
++        return;
++    }
++    if ((down && !adb_buttons_event(DEVICE(obj), b, true)) ||
++        (up && !adb_buttons_event(DEVICE(obj), b, false))) {
++        error_setg(errp, "this keyboard has no '%s' button", name);
++    }
++}
++
++static void adb_buttons_reset(DeviceState *dev)
++{
++    ADBDevice *d = ADB_DEVICE(dev);
++    ADBButtonsState *s = ADB_BUTTONS(dev);
++
++    d->devaddr = ADB_DEVID_MISC;
++    d->handler = s->handler_prop;
++    s->rptr = s->wptr = s->count = 0;
++}
++
++static void adb_buttons_realize(DeviceState *dev, Error **errp)
++{
++    ADBButtonsState *s = ADB_BUTTONS(dev);
++    ADBButtonsClass *abc = (ADBButtonsClass *)object_get_class(OBJECT(dev));
++
++    if (s->handler_prop != ADB_BUTTONS_HANDLER_POWERBOOK &&
++        s->handler_prop != ADB_BUTTONS_HANDLER_ADJUSTABLE) {
++        error_setg(errp, "handler must be 0x1f (PowerBook) or 0x02 (adjustable keyboard)");
++        return;
++    }
++    abc->parent_realize(dev, errp);
++    adb_buttons_reset(dev);
++}
++
++static const VMStateDescription vmstate_adb_buttons = {
++    .name = "adb_buttons",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .fields = (const VMStateField[]) {
++        VMSTATE_STRUCT(parent_obj, ADBButtonsState, 0, vmstate_adb_device, ADBDevice),
++        VMSTATE_BUFFER(data, ADBButtonsState),
++        VMSTATE_INT32(rptr, ADBButtonsState),
++        VMSTATE_INT32(wptr, ADBButtonsState),
++        VMSTATE_INT32(count, ADBButtonsState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static const Property adb_buttons_properties[] = {
++    DEFINE_PROP_UINT8("handler", ADBButtonsState, handler_prop, ADB_BUTTONS_HANDLER_POWERBOOK),
++};
++
++static void adb_buttons_initfn(Object *obj)
++{
++    ADB_DEVICE(obj)->devaddr = ADB_DEVID_MISC;
++    object_property_add_str(obj, "press", NULL, adb_buttons_set_press);
++}
++
++static void adb_buttons_class_init(ObjectClass *oc, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(oc);
++    ADBDeviceClass *adc = ADB_DEVICE_CLASS(oc);
++
++    device_class_set_parent_realize(dc, adb_buttons_realize,
++                                    &((ADBButtonsClass *)oc)->parent_realize);
++    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
++    adc->devreq = adb_buttons_request;
++    adc->devhasdata = adb_buttons_has_data;
++    device_class_set_legacy_reset(dc, adb_buttons_reset);
++    device_class_set_props(dc, adb_buttons_properties);
++    dc->vmsd = &vmstate_adb_buttons;
++}
++
++static const TypeInfo adb_buttons_type_info = {
++    .name = TYPE_ADB_BUTTONS,
++    .parent = TYPE_ADB_DEVICE,
++    .instance_size = sizeof(ADBButtonsState),
++    .instance_init = adb_buttons_initfn,
++    .class_init = adb_buttons_class_init,
++    .class_size = sizeof(ADBButtonsClass),
++};
++
++static void adb_buttons_register_types(void)
++{
++    type_register_static(&adb_buttons_type_info);
++}
++
++type_init(adb_buttons_register_types)
+diff --git a/hw/input/meson.build b/hw/input/meson.build
+index 90a2149..a314931 100644
+--- a/hw/input/meson.build
++++ b/hw/input/meson.build
+@@ -1,5 +1,5 @@
+ system_ss.add(files('hid.c'))
+-system_ss.add(when: 'CONFIG_ADB', if_true: files('adb.c', 'adb-mouse.c', 'adb-kbd.c'))
++system_ss.add(when: 'CONFIG_ADB', if_true: files('adb.c', 'adb-mouse.c', 'adb-kbd.c', 'adb-buttons.c'))
+ system_ss.add(when: 'CONFIG_PCKBD', if_true: files('pckbd.c'))
+ system_ss.add(when: 'CONFIG_PL050', if_true: files('pl050.c'))
+ system_ss.add(when: 'CONFIG_PS2', if_true: files('ps2.c'))
+diff --git a/hw/input/trace-events b/hw/input/trace-events
+index 1484625..5f11432 100644
+--- a/hw/input/trace-events
++++ b/hw/input/trace-events
+@@ -53,3 +53,7 @@ virtio_input_queue_full(void) "queue full"
+ lasips2_reg_read(unsigned int size, int id, uint64_t addr, const char *name, uint64_t val) "%u %d addr 0x%"PRIx64 "%s -> 0x%"PRIx64
+ lasips2_reg_write(unsigned int size, int id, uint64_t addr, const char *name, uint64_t val) "%u %d addr 0x%"PRIx64 "%s <- 0x%"PRIx64
+ lasips2_intr(unsigned int val) "%d"
++
++# adb-buttons.c
++adb_device_buttons_event(const char *button, bool down, int devaddr, int handler) "%s down=%d addr %d handler 0x%x"
++adb_device_buttons_change(int devaddr, int handler) "addr %d handler 0x%x"
+diff --git a/include/hw/input/adb-buttons.h b/include/hw/input/adb-buttons.h
+new file mode 100644
+index 0000000..80ea935
+--- /dev/null
++++ b/include/hw/input/adb-buttons.h
+@@ -0,0 +1,27 @@
++/*
++ * ADB special-function buttons (RetroBoot)
++ * SPDX-License-Identifier: MIT
++ */
++#ifndef HW_INPUT_ADB_BUTTONS_H
++#define HW_INPUT_ADB_BUTTONS_H
++
++#define TYPE_ADB_BUTTONS "adb-buttons"
++
++#define ADB_BUTTONS_HANDLER_ADJUSTABLE 0x02   /* AppleDesign Keyboard */
++#define ADB_BUTTONS_HANDLER_POWERBOOK  0x1f   /* PowerBook keyboard */
++
++typedef enum ADBButton {
++    ADB_BUTTON_VOLUME_UP,
++    ADB_BUTTON_VOLUME_DOWN,
++    ADB_BUTTON_MUTE,
++    ADB_BUTTON_BRIGHTNESS_UP,
++    ADB_BUTTON_BRIGHTNESS_DOWN,
++    ADB_BUTTON_EJECT,
++} ADBButton;
++
++/* Queue one press or release; false if this keyboard has no such button. */
++bool adb_buttons_event(DeviceState *dev, ADBButton button, bool down);
++/* "volume-up" ... "eject" to an ADBButton, or -1. */
++int adb_buttons_lookup(const char *name);
++
++#endif

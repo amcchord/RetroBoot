@@ -1,0 +1,13 @@
+[Unit]
+Description=Put this computer's early microcode where GRUB loads it
+ConditionPathExists=/boot/microcode.cfg
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/retroboot/image/rb-microcode
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=RetroBoot new-version check (Software Update)
+Documentation=file:///usr/lib/retroboot/hostd/README.md
+# Only on the one trial boot of a new system slot (GRUB adds retroboot.trial=1).
+# Restarts into the previous version unless hostd confirms this one in time
+# (ARCHITECTURE 13). Started early and independent of hostd on purpose.
+ConditionKernelCommandLine=retroboot.trial=1
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/lib/retroboot/hostd/retroboot/update/guard.py --deadline 300
+Restart=no
+SyslogIdentifier=retroboot-slot-guard
+
+[Install]
+WantedBy=sysinit.target

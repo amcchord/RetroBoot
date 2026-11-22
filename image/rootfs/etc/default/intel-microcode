@@ -1,0 +1,7 @@
+# RetroBoot: no early microcode inside the initramfs. Every Intel CPU's updates go
+# to /boot/microcode.cpio, its own initrd, and rb-microcode puts this CPU's
+# updates on the ESP for GRUB (image/scripts/customize-rootfs.sh,
+# image/reports/hostboot-2026-10-12.md): the full set is about 15 MB that GRUB
+# would read through the firmware at every boot.
+IUCODE_TOOL_INITRAMFS=no
+IUCODE_TOOL_SCANCPUS=no

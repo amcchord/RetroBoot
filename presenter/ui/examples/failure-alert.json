@@ -1,0 +1,15 @@
+{
+  "id": "start-failed",
+  "kind": "alert",
+  "alert_icon": "stop",
+  "width": 440,
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "Mac OS could not start."},
+    {"type": "text", "style": "small", "text": "RetroBoot tried twice, but Mac OS did not reach its startup screen. Try again, or open Recovery to check settings and run diagnostics."},
+    {"type": "text", "style": "small", "text": "Evidence ID: RB-20261011-0412-7F3A"},
+    {"type": "buttons", "items": [
+      {"id": "recovery", "label": "Recovery…"},
+      {"id": "retry", "label": "Try Again", "default": true}
+    ]}
+  ]
+}

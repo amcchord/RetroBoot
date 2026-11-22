@@ -1,0 +1,29 @@
+#!/bin/sh
+# Grow RBDATA (the last GPT partition) and its XFS filesystem to fill the disk.
+# Used when the raw image is written to (or imported as) a larger disk. Safe to
+# run on every boot: it does nothing unless at least 64 MiB are unallocated.
+# Once a disk of this size has been handled, later boots stop at the marker:
+# `sgdisk -e` rewrote the partition table at every boot (hostboot report), which
+# made udev re-read every partition while hostd and the ESP mount waited.
+set -eu
+part=$(readlink -f /dev/disk/by-partlabel/RBDATA 2>/dev/null) || exit 0
+[ -b "$part" ] || exit 0
+disk=/dev/$(lsblk -no PKNAME "$part" | head -n1)
+num=$(cat "/sys/class/block/$(basename "$part")/partition")
+[ -b "$disk" ] || exit 0
+marker=/var/lib/retroboot/state/growdata.done
+size=$(cat "/sys/class/block/$(basename "$disk")/size" 2>/dev/null || echo unknown)
+if [ "$(cat "$marker" 2>/dev/null || true)" = "$disk $size" ]; then exit 0; fi
+# Recorded only when this run ends successfully (grown, or nothing to grow).
+trap 'if [ $? -eq 0 ]; then printf "%s %s\n" "$disk" "$size" > "$marker.tmp" 2>/dev/null && mv -f "$marker.tmp" "$marker" 2>/dev/null || true; fi' EXIT
+# Move the backup GPT header to the real end of the disk first (no-op if already there).
+sgdisk -e "$disk" >/dev/null 2>&1 || true
+end=$(sgdisk -i "$num" "$disk" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+last=$(sgdisk -p "$disk" | sed -n 's/.*last usable sector is \([0-9]*\).*/\1/p')
+[ -n "$end" ] && [ -n "$last" ] || exit 0
+if [ $((last - end)) -lt 131072 ]; then exit 0; fi
+echo "rb-growdata: growing $part (partition $num on $disk) from sector $end to $last"
+growpart "$disk" "$num"
+partx -u -n "$num" "$disk" 2>/dev/null || true
+udevadm settle --timeout=10 || true
+xfs_growfs /var/lib/retroboot

@@ -1,0 +1,13 @@
+{
+  "id": "install-done",
+  "kind": "alert",
+  "alert_icon": "note",
+  "width": 420,
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "RetroBoot is installed."},
+    {"type": "text", "style": "small", "text": "Remove the USB installer, then click Restart. This computer will start up directly into Mac OS."},
+    {"type": "buttons", "items": [
+      {"id": "restart", "label": "Restart", "default": true}
+    ]}
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "id": "installer-macs",
+  "kind": "window",
+  "title": "Choose Macs to Install",
+  "width": 540,
+  "items": [
+    {"type": "text", "text": "Choose the Macs to install. Click a Mac to check or uncheck it."},
+    {"type": "list", "id": "macs", "rows": 6, "value": null, "activate": "click", "items": [
+      {"id": "disc:os922-deluxe-v4", "label": "Mac OS 9.2.2 Deluxe v4", "detail": "On this disc · 1.4 GB", "icon": "cd", "checked": true},
+      {"id": "disc:os922-full-v5", "label": "Mac OS 9.2.2 (v5)", "detail": "On this disc · 509 MB", "icon": "cd", "checked": true},
+      {"id": "status:lab", "label": "RetroBoot downloads", "detail": "Sign in to see these Macs", "icon": "web", "checked": false, "disabled": true},
+      {"id": "status:catalog", "label": "Internet", "detail": "Not connected to a network", "icon": "web", "checked": false, "disabled": true}
+    ]},
+    {"type": "popup", "id": "startup", "label": "Starts first:", "options": [{"id": "disc:os922-deluxe-v4", "label": "Mac OS 9.2.2 Deluxe v4"}, {"id": "disc:os922-full-v5", "label": "Mac OS 9.2.2 (v5)"}], "value": "disc:os922-deluxe-v4"},
+    {"type": "text", "text": "2 Macs: 1.9 GB of 33 GB available on “Virtual Disk”.", "style": "small"},
+    {"type": "text", "text": "Macs to download appear when this computer is connected. Click Wi-Fi… to join a network.", "style": "small"},
+    {"type": "text", "text": "RetroBoot downloads needs a user name and password. Click Sign In….", "style": "small"},
+    {"type": "buttons", "items": [
+      {"id": "toggle", "label": "Add", "disabled": true, "align": "left"},
+      {"id": "wifi", "label": "Wi-Fi…"},
+      {"id": "signin", "label": "Sign In…"},
+      {"id": "back", "label": "Back"},
+      {"id": "continue", "label": "Continue", "default": true}
+    ]}
+  ]
+}

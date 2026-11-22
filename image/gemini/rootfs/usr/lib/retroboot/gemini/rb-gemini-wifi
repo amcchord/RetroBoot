@@ -1,0 +1,63 @@
+#!/bin/sh
+# rb-gemini-wifi: bring up the Gemini's internal Wi-Fi (MT6630 on the MT6797's CONSYS) as
+# wlan0. NetworkManager then picks wlan0 up through udev and joins the saved networks;
+# nothing waits for this (it takes about 15 s), and nobody needs to be logged in.
+#
+#   rb-gemini-wifi start     load mtk_wcn (WMT core) and wlan_gen3, power the chip on
+#                            (debugfs wcn/pwr), wait for wlan0
+#   rb-gemini-wifi status    modules, power node, interfaces
+#
+# Order (behaviour of gemini-debian's gemini-wifi-internal, reimplemented): wlan_gen3 must
+# be loaded before the power-on, otherwise the WMT function-on finds no Wi-Fi driver and
+# powers the chip down again; the wcn debugfs directory appears with mtk_wcn. A second
+# power-on of a running chip returns an error, so its result is not checked: wlan0 is.
+# DRM (char major 226, which wlan_gen3 also asks for) is loaded earlier by
+# systemd-modules-load (/etc/modules-load.d/retroboot-gemini.conf).
+set -u
+PWR=/sys/kernel/debug/wcn/pwr
+IF=wlan0
+say() { echo "rb-gemini-wifi: $*"; }
+loaded() { grep -q "^$1 " /proc/modules; }
+debugfs_up() {
+  grep -q ' /sys/kernel/debug debugfs ' /proc/mounts || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+}
+wait_for() { # SECONDS TEST...
+  _n=$1; shift
+  while [ "$_n" -gt 0 ]; do
+    "$@" && return 0
+    sleep 1; _n=$((_n - 1))
+  done
+  "$@"
+}
+have_if() { [ -e "/sys/class/net/$IF" ]; }
+
+case "${1:-status}" in
+start)
+  debugfs_up
+  if have_if; then say "$IF already present"; exit 0; fi
+  loaded mtk_wcn || modprobe mtk_wcn || { say "modprobe mtk_wcn failed"; exit 1; }
+  wait_for 5 test -d /sys/kernel/debug/wcn || { say "mtk_wcn loaded but /sys/kernel/debug/wcn is missing"; exit 1; }
+  loaded wlan_gen3 || modprobe wlan_gen3 || { say "modprobe wlan_gen3 failed"; exit 1; }
+  for attempt in 1 2; do
+    echo on > "$PWR" 2>/dev/null || true
+    if wait_for 30 have_if; then
+      say "$IF up (mtk_wcn + wlan_gen3, WMT function on; attempt $attempt)"
+      exit 0
+    fi
+    say "$IF did not appear within 30 s; power-cycling the chip"
+    echo off > "$PWR" 2>/dev/null || true
+    sleep 2
+  done
+  say "$IF never appeared (see the kernel log)"
+  exit 1 ;;
+status)
+  debugfs_up
+  echo "modules: mtk_wcn=$(loaded mtk_wcn && echo yes || echo no) wlan_gen3=$(loaded wlan_gen3 && echo yes || echo no) hci_stp=$(loaded hci_stp && echo yes || echo no)"
+  echo "power node: $([ -e "$PWR" ] && echo present || echo missing)"
+  for d in /sys/class/net/*; do
+    [ -d "$d/wireless" ] || [ -e "$d/phy80211" ] || continue
+    echo "interface: ${d##*/} $(cat "$d/address" 2>/dev/null) $(cat "$d/operstate" 2>/dev/null)"
+  done
+  exit 0 ;;
+*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

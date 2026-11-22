@@ -1,0 +1,29 @@
+{
+  "id": "wifi-networks",
+  "kind": "window",
+  "title": "Wi-Fi",
+  "width": 480,
+  "items": [
+    {"type": "columns", "items": [
+      {"type": "icon", "icon": "wifi", "size": 32, "width": 32},
+      {"type": "stack", "items": [
+        {"type": "text", "style": "emphasis", "text": "Connected to “HomeNet”."},
+        {"type": "text", "text": "Click a network to join it."}
+      ]}
+    ]},
+    {"type": "list", "id": "network", "rows": 6, "activate": "click", "value": "NETGEAR-5G", "items": [
+      {"id": "HomeNet", "label": "HomeNet", "checked": true, "lock": true, "signal": 4},
+      {"id": "Coffee Shop", "label": "Coffee Shop", "signal": 3},
+      {"id": "NETGEAR-5G", "label": "NETGEAR-5G", "lock": true, "signal": 2},
+      {"id": "Neighbor", "label": "Neighbor’s Network", "lock": true, "signal": 1},
+      {"id": "Guest", "label": "Guest", "detail": "captive portal", "signal": 1},
+      {"id": "Garage", "label": "Garage", "lock": true, "signal": 1},
+      {"id": "Upstairs", "label": "Upstairs", "lock": true, "signal": 0}
+    ]},
+    {"type": "buttons", "items": [
+      {"id": "scan", "label": "Scan Again", "align": "left"},
+      {"id": "cancel", "label": "Done"},
+      {"id": "join", "label": "Join…", "default": true}
+    ]}
+  ]
+}

@@ -1,0 +1,610 @@
+RetroBoot: a safe right USB-C port on the Gemini PDA (VBUS for USB devices only)
+
+Applied by build-kernel.sh (variant rightport, on top of a72dvfs2) to gemini-nixos
+6a172f5's kernel delta (GPL-2.0).
+
+The bring-up DTS hogged GPIO94 (usb1_drvvbus, the right port's 5 V source) and GPIO72
+(the SW7226 load switch to the connector) high, so the right connector sourced VBUS
+all the time, into a charger too, while userspace (rb-gemini-typec) put its FUSB301A
+in dual-role, where a charger attaches and turns its own VBUS on.
+
+- DTS. The GPIO94/72 hogs are gone. A pinctrl hog on &pio drives both low (GPIO mode,
+  output low) when the pin controller probes, as the vendor DWS default also does, so
+  the port does not source VBUS whenever the policy driver is not running. The lane mux
+  hogs (GPIO70 high, GPIO71 low: USB position) stay. &usb_cc_right (i2c0 0x25) is
+  enabled with compatible "retroboot,gemini-right-port", vbus-gpios (94) and
+  switch-gpios (72). The left port (i2c1 FUSB301A, BQ25896 and its GPIO107 boost gate,
+  the mtu3 gadget) is untouched.
+- drivers/usb/typec/gemini-right-port.c (CONFIG_TYPEC_GEMINI_RIGHT_PORT=y, built in).
+  The vendor policy (gemian/gemini-linux-kernel-3.18 @ 8cfe659,
+  drivers/misc/mediatek/usb_c/fusb302/usb_typec.c), made stricter. Probe requests
+  GPIO72 then GPIO94 output-low before touching the chip, checks the device ID (0x12),
+  and sets Modes = SOURCE (0x01, as the vendor does), so a charger (Rp) never attaches
+  and never sends VBUS into the port. The chip is polled (mainline pinctrl-mt6797 has no
+  EINT) every 250 ms. VBUS goes on, GPIO94 then GPIO72 (vendor order), only for a USB
+  device: ATTACH, Type = sink (0x10, or 0x14 with an active cable), orientation CC1 or
+  CC2, VBUSOK clear, the same on two polls. It goes off, GPIO72 then GPIO94, at once on
+  anything else: detach, any other partner, VBUS seen before we drive it, an I2C error,
+  Modes changed outside the driver (then restored to SOURCE), allow_source=0, suspend,
+  unbind and shutdown. Modes stays SOURCE at shutdown. No charge path: the right port has
+  none (Planet: the left port charges; the vendor kernel never takes power from it).
+- Interface. /sys/bus/i2c/devices/0-0025/{state,vbus,regs,stats} (state: idle,
+  pending, sourcing, foreign-vbus, other-partner, mode-changed, i2c-error, disabled),
+  sysfs_notify on state; /sys/module/gemini_right_port/parameters/allow_source (0644),
+  poll_ms (0444). Transitions are logged with dev_info (below the console loglevel).
+- Test. variants/rightport/test-right-port-policy.c compiles the code between the
+  rightport-policy markers unchanged (check-src.sh): scenarios, every register value
+  from four policy states, and random sequences.
+
+diff -ruN a/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda.dts b/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda.dts
+--- a/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda.dts
++++ b/arch/arm64/boot/dts/mediatek/mt6797-gemini-pda.dts
+@@ -834,15 +834,24 @@
+ 	};
+ 
+ 	/*
+-	 * FUSB301 USB Type-C CC controller at 0x25 — RIGHT port / HDMI
++	 * FUSB301A USB Type-C CC controller at 0x25 — RIGHT port / HDMI
+ 	 * mux (vendor harvest 2026-07-14: there are TWO FUSB301 chips;
+-	 * the LEFT-port one is on i2c1, see &i2c1). Right port is served
+-	 * by the driverless legacy MUSB controller — stays disabled.
++	 * the LEFT-port one is on i2c1, see &i2c1).
++	 * RetroBoot rightport: the right port's VBUS policy
++	 * (drivers/usb/typec/gemini-right-port.c), the vendor's
++	 * fusb302/usb_typec.c made stricter. The chip is kept in SOURCE
++	 * mode, so a charger never sends VBUS into this port (it has no
++	 * charge path); GPIO94 (5 V source) then GPIO72 (SW7226 load
++	 * switch) go high only while a USB device (Rd) is attached, and
++	 * low at once otherwise. Both are held low by &pio's pinctrl hog
++	 * until this driver takes them, also low.
+ 	 */
+ 	usb_cc_right: typec@25 {
+-		compatible = "onsemi,fusb301a";
++		compatible = "retroboot,gemini-right-port";
+ 		reg = <0x25>;
+-		status = "disabled";
++		vbus-gpios = <&pio 94 GPIO_ACTIVE_HIGH>;
++		switch-gpios = <&pio 72 GPIO_ACTIVE_HIGH>;
++		status = "okay";
+ 	};
+ };
+ 
+@@ -2162,9 +2171,12 @@
+  * host coexists with left-port charging (the vendor behaviour).
+  * GPIO70/71 are the OTG/HDMI lane mux (vendor fusb302/usb_typec.c
+  * fusb300_eint_work): USB-OTG position = sw_en(70) HIGH + sw_sel(71)
+- * LOW (70 goes low only for HDMI alt-mode). All four are static
+- * gpio-hogs for bring-up; NOTE this makes the right port host-only —
+- * do not plug a charger into it while these hogs are active.
++ * LOW (70 goes low only for HDMI alt-mode).
++ * RetroBoot rightport: the bring-up hogs on GPIO94/72 sourced VBUS into
++ * the right connector permanently, even into a charger. They are gone:
++ * &usb_cc_right switches VBUS for USB devices only, and the &pio
++ * pinctrl hog below holds both low from pin-controller probe. The lane
++ * mux hogs (70/71, USB position) stay.
+  */
+ / {
+ 	usb1phy: t-phy@11210000 {
+@@ -2241,18 +2253,20 @@
+ };
+ 
+ &pio {
+-	usb1_drvvbus_hog: usb1-drvvbus-hog {
+-		gpio-hog;
+-		gpios = <94 GPIO_ACTIVE_HIGH>;
+-		output-high;
+-		line-name = "usb1-drvvbus";
+-	};
++	/*
++	 * Right-port VBUS off from pin-controller probe (a pinctrl hog), so
++	 * the port never sources VBUS before &usb_cc_right's driver runs or
++	 * if it does not. The vendor DWS default for both is also output low.
++	 */
++	pinctrl-names = "default";
++	pinctrl-0 = <&right_port_vbus_off_pins>;
+ 
+-	sw7226_en_hog: sw7226-en-hog {
+-		gpio-hog;
+-		gpios = <72 GPIO_ACTIVE_HIGH>;
+-		output-high;
+-		line-name = "sw7226-en";
++	right_port_vbus_off_pins: right-port-vbus-off {
++		pins-vbus {
++			pinmux = <MT6797_GPIO94__FUNC_GPIO94>,
++				 <MT6797_GPIO72__FUNC_GPIO72>;
++			output-low;
++		};
+ 	};
+ 
+ 	fusb301a_sw_en_hog: fusb301a-sw-en-hog {
+diff -ruN a/drivers/usb/typec/Kconfig b/drivers/usb/typec/Kconfig
+--- a/drivers/usb/typec/Kconfig
++++ b/drivers/usb/typec/Kconfig
+@@ -123,3 +123,14 @@
+ 	  Driver for the ON Semiconductor FUSB301A USB Type-C CC-only
+ 	  controller. Detects connector orientation and reports attach/detach
+ 	  to the USB role switch framework. Used on the Gemini PDA.
++
++config TYPEC_GEMINI_RIGHT_PORT
++	bool "Gemini PDA right USB-C port VBUS policy (FUSB301A on i2c0)"
++	depends on I2C=y && GPIOLIB && OF && TYPEC=y
++	help
++	  The Planet Computers Gemini PDA's right USB-C port has its own 5 V
++	  source (GPIO94) and load switch (GPIO72) and no charge path. This
++	  keeps its FUSB301A CC controller in SOURCE mode and switches VBUS
++	  on only while a USB device (Rd) is attached, never for a charger.
++	  Built in, so the policy runs before userspace. (drivers/usb/typec/
++	  is only built with TYPEC=y.)
+diff -ruN a/drivers/usb/typec/Makefile b/drivers/usb/typec/Makefile
+--- a/drivers/usb/typec/Makefile
++++ b/drivers/usb/typec/Makefile
+@@ -13,3 +13,4 @@
+ obj-$(CONFIG_TYPEC_WUSB3801)	+= wusb3801.o
+ obj-$(CONFIG_TYPEC)		+= mux/
+ obj-$(CONFIG_TYPEC_FUSB301A) += fusb301a.o
++obj-$(CONFIG_TYPEC_GEMINI_RIGHT_PORT) += gemini-right-port.o
+diff -ruN a/drivers/usb/typec/gemini-right-port.c b/drivers/usb/typec/gemini-right-port.c
+--- a/drivers/usb/typec/gemini-right-port.c
++++ b/drivers/usb/typec/gemini-right-port.c
+@@ -0,0 +1,461 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Planet Computers Gemini PDA: VBUS policy for the RIGHT USB-C port.
++ * RetroBoot, image/gemini/kernel/variants/rightport.
++ *
++ * Hardware (vendor gemian/gemini-linux-kernel-3.18 @ 8cfe659,
++ * drivers/misc/mediatek/usb_c/fusb302/usb_typec.c and the aeon6797_6m_n DWS;
++ * gemini-nixos DTS notes, proven live 2026-07-15):
++ *  - an ON Semiconductor FUSB301A CC controller at i2c0 0x25 (the left
++ *    port's FUSB301A on i2c1 is not touched here);
++ *  - GPIO94 (usb1_drvvbus) turns on the right port's own 5 V source and
++ *    GPIO72 (SW7226 load switch) connects it to the connector, independent
++ *    of the BQ25896 boost that serves the left port;
++ *  - GPIO70/71 select the USB or HDMI lanes; the DTS holds them at USB.
++ * The right port has no charge path: Planet documents the left port as the
++ * charging port, and the vendor kernel never takes power from the right one.
++ *
++ * Policy (the vendor's, made stricter): the controller is kept in SOURCE
++ * mode (Modes = 0x01, as the vendor sets it), so a charger (Rp) never
++ * attaches and never sends VBUS into this port. VBUS is switched on, GPIO94
++ * then GPIO72 as the vendor does, only for a USB device: attached, Type =
++ * sink (Rd), a valid CC orientation and no VBUS already on the connector,
++ * seen the same on two polls. It is switched off, GPIO72 then GPIO94, at
++ * once on anything else: detach, any other partner, an I2C error, a Modes
++ * register changed outside this driver (set back to SOURCE), allow_source=0,
++ * suspend, unbind and shutdown. The GPIOs are requested low before the
++ * controller is touched, and the DTS drives them low when the pin controller
++ * probes, so the port does not source VBUS whenever this driver is not
++ * running. Mainline pinctrl-mt6797 has no EINT, so the controller is polled.
++ *
++ * sysfs (on the i2c device): state, vbus, regs, stats.
++ * /sys/module/gemini_right_port/parameters/allow_source: 0 = never source.
++ */
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/kernel.h>
++#include <linux/minmax.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/pm.h>
++#include <linux/workqueue.h>
++
++/* rightport-policy-begin */
++#define GRP_REG_ID		0x01
++#define GRP_REG_MODES		0x02
++#define GRP_REG_STATUS		0x11
++#define GRP_REG_TYPE		0x12
++
++#define GRP_DEVICE_ID		0x12	/* FUSB301A, read on this unit */
++#define GRP_MODE_SOURCE		0x01
++
++#define GRP_STATUS_ATTACH	0x01
++#define GRP_STATUS_VBUSOK	0x08
++#define GRP_STATUS_ORIENT	0x30	/* 01 CC1, 10 CC2; 00 none, 11 fault */
++#define GRP_STATUS_ORIENT_SHIFT	4
++
++#define GRP_TYPE_ACTIVECABLE	0x04
++#define GRP_TYPE_SOURCE		0x08
++#define GRP_TYPE_SINK		0x10
++
++#define GRP_CONFIRM_POLLS	2	/* identical qualifying polls before VBUS on */
++
++enum grp_state {
++	GRP_IDLE,		/* nothing attached: VBUS off */
++	GRP_PENDING,		/* a USB device, not yet confirmed: VBUS off */
++	GRP_SOURCING,		/* a USB device: VBUS on */
++	GRP_FOREIGN_VBUS,	/* VBUS on the connector that is not ours: off */
++	GRP_OTHER_PARTNER,	/* attached, not a plain USB device: VBUS off */
++	GRP_MODE_CHANGED,	/* Modes was not SOURCE (caller restores): off */
++	GRP_I2C_ERROR,		/* controller unreadable: VBUS off */
++	GRP_DISABLED,		/* allow_source=0: VBUS off */
++	GRP_NR_STATES
++};
++
++struct grp_regs {
++	bool ok;		/* all three reads succeeded */
++	u8 mode, status, type;
++};
++
++struct grp_policy {
++	bool vbus;		/* VBUS on after the last step */
++	u8 seen;		/* consecutive identical qualifying polls */
++	u8 sig_status, sig_type;
++	enum grp_state state;
++};
++
++/*
++ * One poll: update @p from the registers @r and return whether VBUS must be
++ * on. A pure function of (*p, *r, allow); the RetroBoot unit test compiles
++ * this block unchanged.
++ */
++static bool grp_step(struct grp_policy *p, const struct grp_regs *r, bool allow)
++{
++	unsigned int orient;
++	bool usb_device;
++
++	if (!r->ok) {
++		p->state = GRP_I2C_ERROR;
++	} else if (r->mode != GRP_MODE_SOURCE) {
++		p->state = GRP_MODE_CHANGED;
++	} else if (!allow) {
++		p->state = GRP_DISABLED;
++	} else {
++		orient = (r->status & GRP_STATUS_ORIENT) >> GRP_STATUS_ORIENT_SHIFT;
++		usb_device = (r->status & GRP_STATUS_ATTACH) &&
++			     (orient == 1 || orient == 2) &&
++			     (r->type == GRP_TYPE_SINK ||
++			      r->type == (GRP_TYPE_SINK | GRP_TYPE_ACTIVECABLE));
++		if (usb_device && p->vbus) {
++			/* still the USB device we power; VBUSOK is our VBUS */
++			p->state = GRP_SOURCING;
++			return true;
++		}
++		if (r->status & GRP_STATUS_VBUSOK) {
++			p->state = GRP_FOREIGN_VBUS;
++		} else if (!usb_device) {
++			p->state = (r->status & GRP_STATUS_ATTACH) ?
++				   GRP_OTHER_PARTNER : GRP_IDLE;
++		} else {
++			if (p->seen && p->sig_status == r->status &&
++			    p->sig_type == r->type)
++				p->seen++;
++			else
++				p->seen = 1;
++			p->sig_status = r->status;
++			p->sig_type = r->type;
++			if (p->seen >= GRP_CONFIRM_POLLS) {
++				p->vbus = true;
++				p->seen = 0;
++				p->state = GRP_SOURCING;
++				return true;
++			}
++			p->vbus = false;
++			p->state = GRP_PENDING;
++			return false;
++		}
++	}
++	p->vbus = false;
++	p->seen = 0;
++	return false;
++}
++/* rightport-policy-end */
++
++static const char * const grp_state_names[GRP_NR_STATES] = {
++	[GRP_IDLE]		= "idle",
++	[GRP_PENDING]		= "pending",
++	[GRP_SOURCING]		= "sourcing",
++	[GRP_FOREIGN_VBUS]	= "foreign-vbus",
++	[GRP_OTHER_PARTNER]	= "other-partner",
++	[GRP_MODE_CHANGED]	= "mode-changed",
++	[GRP_I2C_ERROR]		= "i2c-error",
++	[GRP_DISABLED]		= "disabled",
++};
++
++static bool allow_source = true;
++module_param(allow_source, bool, 0644);
++MODULE_PARM_DESC(allow_source,
++		 "Switch right-port VBUS on for an attached USB device (0 = never)");
++
++static unsigned int poll_ms = 250;
++module_param(poll_ms, uint, 0444);
++MODULE_PARM_DESC(poll_ms, "Controller poll period in ms (50-1000)");
++
++struct grp {
++	struct i2c_client *client;
++	struct device *dev;
++	struct gpio_desc *vbus_gpio;	/* GPIO94 usb1_drvvbus */
++	struct gpio_desc *switch_gpio;	/* GPIO72 SW7226 enable */
++	struct delayed_work work;
++	struct mutex lock;		/* everything below */
++	struct grp_policy policy;
++	struct grp_regs regs;
++	unsigned int poll_ms;
++	unsigned long vbus_on, mode_restores, i2c_errors;
++	bool stopped;
++};
++
++static void grp_vbus_set(struct grp *g, bool on)
++{
++	if (on) {
++		gpiod_set_value_cansleep(g->vbus_gpio, 1);
++		gpiod_set_value_cansleep(g->switch_gpio, 1);
++	} else {
++		gpiod_set_value_cansleep(g->switch_gpio, 0);
++		gpiod_set_value_cansleep(g->vbus_gpio, 0);
++	}
++}
++
++static void grp_read(struct grp *g, struct grp_regs *r)
++{
++	int mode, status, type;
++
++	mode = i2c_smbus_read_byte_data(g->client, GRP_REG_MODES);
++	status = i2c_smbus_read_byte_data(g->client, GRP_REG_STATUS);
++	type = i2c_smbus_read_byte_data(g->client, GRP_REG_TYPE);
++	r->ok = mode >= 0 && status >= 0 && type >= 0;
++	r->mode = mode < 0 ? 0 : mode;
++	r->status = status < 0 ? 0 : status;
++	r->type = type < 0 ? 0 : type;
++}
++
++static void grp_log(struct grp *g, enum grp_state old, bool was)
++{
++	const struct grp_regs *r = &g->regs;
++	enum grp_state st = g->policy.state;
++
++	if (st == old)
++		return;
++	switch (st) {
++	case GRP_SOURCING:
++		dev_info(g->dev, "USB device attached (CC%u): VBUS on\n",
++			 (r->status & GRP_STATUS_ORIENT) >> GRP_STATUS_ORIENT_SHIFT);
++		break;
++	case GRP_PENDING:
++		dev_dbg(g->dev, "USB device seen, confirming\n");
++		break;
++	case GRP_FOREIGN_VBUS:
++		dev_info(g->dev, "VBUS on the connector from the partner (status 0x%02x): VBUS %s; this port does not charge\n",
++			 r->status, was ? "turned off" : "stays off");
++		break;
++	case GRP_OTHER_PARTNER:
++		dev_info(g->dev, "partner attached that is not a USB device (status 0x%02x, type 0x%02x): VBUS %s\n",
++			 r->status, r->type, was ? "turned off" : "stays off");
++		break;
++	case GRP_MODE_CHANGED:
++		dev_warn(g->dev, "Modes was 0x%02x, changed outside this driver: VBUS %s, SOURCE restored\n",
++			 r->mode, was ? "turned off" : "stays off");
++		break;
++	case GRP_I2C_ERROR:
++		dev_warn_ratelimited(g->dev, "controller unreadable: VBUS %s\n",
++				     was ? "turned off" : "stays off");
++		break;
++	case GRP_DISABLED:
++		dev_info(g->dev, "allow_source=0: VBUS %s\n",
++			 was ? "turned off" : "stays off");
++		break;
++	default:
++		dev_info(g->dev, "nothing attached: VBUS %s\n",
++			 was ? "turned off" : "off");
++		break;
++	}
++	sysfs_notify(&g->dev->kobj, NULL, "state");
++}
++
++static void grp_work(struct work_struct *work)
++{
++	struct grp *g = container_of(to_delayed_work(work), struct grp, work);
++	enum grp_state old;
++	struct grp_regs r;
++	bool was, on;
++
++	mutex_lock(&g->lock);
++	if (g->stopped)
++		goto out;
++	grp_read(g, &r);
++	was = g->policy.vbus;
++	old = g->policy.state;
++	on = grp_step(&g->policy, &r, READ_ONCE(allow_source));
++	g->regs = r;
++	if (!on)
++		grp_vbus_set(g, false);	/* every poll: off stays off */
++	if (!r.ok)
++		g->i2c_errors++;
++	if (r.ok && r.mode != GRP_MODE_SOURCE &&
++	    !i2c_smbus_write_byte_data(g->client, GRP_REG_MODES, GRP_MODE_SOURCE))
++		g->mode_restores++;
++	if (on && !was) {
++		grp_vbus_set(g, true);
++		g->vbus_on++;
++	}
++	grp_log(g, old, was);
++	queue_delayed_work(system_power_efficient_wq, &g->work,
++			   msecs_to_jiffies(g->poll_ms));
++out:
++	mutex_unlock(&g->lock);
++}
++
++static void grp_stop(struct grp *g)
++{
++	mutex_lock(&g->lock);
++	g->stopped = true;
++	mutex_unlock(&g->lock);
++	cancel_delayed_work_sync(&g->work);
++	mutex_lock(&g->lock);
++	grp_vbus_set(g, false);
++	g->policy.vbus = false;
++	g->policy.seen = 0;
++	g->policy.state = GRP_IDLE;
++	mutex_unlock(&g->lock);
++}
++
++static void grp_start(struct grp *g)
++{
++	mutex_lock(&g->lock);
++	g->stopped = false;
++	queue_delayed_work(system_power_efficient_wq, &g->work, 0);
++	mutex_unlock(&g->lock);
++}
++
++static ssize_t state_show(struct device *dev, struct device_attribute *attr,
++			  char *buf)
++{
++	struct grp *g = dev_get_drvdata(dev);
++	ssize_t n;
++
++	mutex_lock(&g->lock);
++	n = sysfs_emit(buf, "%s\n", grp_state_names[g->policy.state]);
++	mutex_unlock(&g->lock);
++	return n;
++}
++static DEVICE_ATTR_RO(state);
++
++static ssize_t vbus_show(struct device *dev, struct device_attribute *attr,
++			 char *buf)
++{
++	struct grp *g = dev_get_drvdata(dev);
++	ssize_t n;
++
++	mutex_lock(&g->lock);
++	n = sysfs_emit(buf, "%d\n", g->policy.vbus);
++	mutex_unlock(&g->lock);
++	return n;
++}
++static DEVICE_ATTR_RO(vbus);
++
++static ssize_t regs_show(struct device *dev, struct device_attribute *attr,
++			 char *buf)
++{
++	struct grp *g = dev_get_drvdata(dev);
++	ssize_t n;
++
++	mutex_lock(&g->lock);
++	/* pad94/pad72: pad levels read back through the pin controller (DIN) */
++	n = sysfs_emit(buf, "ok=%d mode=0x%02x status=0x%02x type=0x%02x pad94=%d pad72=%d\n",
++		       g->regs.ok, g->regs.mode, g->regs.status, g->regs.type,
++		       gpiod_get_value_cansleep(g->vbus_gpio),
++		       gpiod_get_value_cansleep(g->switch_gpio));
++	mutex_unlock(&g->lock);
++	return n;
++}
++static DEVICE_ATTR_RO(regs);
++
++static ssize_t stats_show(struct device *dev, struct device_attribute *attr,
++			  char *buf)
++{
++	struct grp *g = dev_get_drvdata(dev);
++	ssize_t n;
++
++	mutex_lock(&g->lock);
++	n = sysfs_emit(buf, "vbus_on=%lu mode_restores=%lu i2c_errors=%lu poll_ms=%u\n",
++		       g->vbus_on, g->mode_restores, g->i2c_errors, g->poll_ms);
++	mutex_unlock(&g->lock);
++	return n;
++}
++static DEVICE_ATTR_RO(stats);
++
++static struct attribute *grp_attrs[] = {
++	&dev_attr_state.attr,
++	&dev_attr_vbus.attr,
++	&dev_attr_regs.attr,
++	&dev_attr_stats.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(grp);
++
++static int grp_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct grp *g;
++	int id, ret;
++
++	g = devm_kzalloc(dev, sizeof(*g), GFP_KERNEL);
++	if (!g)
++		return -ENOMEM;
++	g->client = client;
++	g->dev = dev;
++	mutex_init(&g->lock);
++	INIT_DELAYED_WORK(&g->work, grp_work);
++
++	/* VBUS off before anything that can fail: GPIO72, then GPIO94 */
++	g->switch_gpio = devm_gpiod_get(dev, "switch", GPIOD_OUT_LOW);
++	if (IS_ERR(g->switch_gpio))
++		return dev_err_probe(dev, PTR_ERR(g->switch_gpio),
++				     "no switch-gpios (SW7226)\n");
++	g->vbus_gpio = devm_gpiod_get(dev, "vbus", GPIOD_OUT_LOW);
++	if (IS_ERR(g->vbus_gpio))
++		return dev_err_probe(dev, PTR_ERR(g->vbus_gpio),
++				     "no vbus-gpios (usb1_drvvbus)\n");
++
++	id = i2c_smbus_read_byte_data(client, GRP_REG_ID);
++	if (id < 0)
++		return dev_err_probe(dev, id,
++				     "FUSB301A not responding: right-port VBUS stays off\n");
++	if (id != GRP_DEVICE_ID)
++		return dev_err_probe(dev, -ENODEV,
++				     "device ID 0x%02x is not a FUSB301A: right-port VBUS stays off\n",
++				     id);
++	ret = i2c_smbus_write_byte_data(client, GRP_REG_MODES, GRP_MODE_SOURCE);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "cannot set SOURCE mode: right-port VBUS stays off\n");
++
++	g->poll_ms = clamp(poll_ms, 50U, 1000U);
++	g->policy.state = GRP_IDLE;
++	i2c_set_clientdata(client, g);
++	grp_start(g);
++	dev_info(dev, "right USB-C port: FUSB301A (id 0x%02x) in SOURCE mode; VBUS only for a USB device (poll %u ms)\n",
++		 id, g->poll_ms);
++	return 0;
++}
++
++static void grp_remove(struct i2c_client *client)
++{
++	grp_stop(i2c_get_clientdata(client));
++}
++
++/* Modes stays SOURCE: across a reboot a charger still never sends VBUS here. */
++static void grp_shutdown(struct i2c_client *client)
++{
++	struct grp *g = i2c_get_clientdata(client);
++
++	if (g)
++		grp_stop(g);
++}
++
++static int grp_suspend(struct device *dev)
++{
++	grp_stop(dev_get_drvdata(dev));
++	return 0;
++}
++
++static int grp_resume(struct device *dev)
++{
++	grp_start(dev_get_drvdata(dev));
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(grp_pm_ops, grp_suspend, grp_resume);
++
++static const struct of_device_id grp_of_match[] = {
++	{ .compatible = "retroboot,gemini-right-port" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, grp_of_match);
++
++static struct i2c_driver grp_driver = {
++	.driver = {
++		.name		= "gemini-right-port",
++		.of_match_table	= grp_of_match,
++		.dev_groups	= grp_groups,
++		.pm		= pm_sleep_ptr(&grp_pm_ops),
++	},
++	.probe		= grp_probe,
++	.remove		= grp_remove,
++	.shutdown	= grp_shutdown,
++};
++module_i2c_driver(grp_driver);
++
++MODULE_DESCRIPTION("Gemini PDA right USB-C port VBUS policy (FUSB301A)");
++MODULE_LICENSE("GPL");

@@ -1,0 +1,25 @@
+{
+  "id": "installer-macs",
+  "kind": "window",
+  "title": "Choose Macs to Install",
+  "width": 540,
+  "items": [
+    {"type": "text", "text": "Choose the Macs to install. Click a Mac to check or uncheck it."},
+    {"type": "list", "id": "macs", "rows": 6, "value": "lab:os921-full-v4", "activate": "click", "items": [
+      {"id": "disc:os922-deluxe-v4", "label": "Mac OS 9.2.2 Deluxe v4", "detail": "On this disc · 1.4 GB", "icon": "cd", "checked": true},
+      {"id": "disc:os922-full-v5", "label": "Mac OS 9.2.2 (v5)", "detail": "On this disc · 509 MB", "icon": "cd", "checked": true},
+      {"id": "lab:os921-full-v4", "label": "Mac OS 9.2.1 (v4)", "detail": "RetroBoot downloads · 498 MB", "icon": "web", "checked": true},
+      {"id": "catalog:mac-os-9.2.1-gxmetal-2.3.0-32gb-v2", "label": "Mac OS 9", "detail": "Internet · Mac OS 9.2.1 · 120 MB", "icon": "web", "checked": false},
+      {"id": "catalog:copland-d11e4-activities-v3", "label": "Copland D11E4 Activities", "detail": "Internet · 94 MB", "icon": "web", "checked": false},
+      {"id": "usb:5f2a", "label": "macos9-backup", "detail": "USB disk “STICK” · about 207 MB", "icon": "usb", "checked": false}
+    ]},
+    {"type": "checkbox", "id": "older", "label": "Show older versions", "value": false},
+    {"type": "popup", "id": "startup", "label": "Starts first:", "options": [{"id": "disc:os922-deluxe-v4", "label": "Mac OS 9.2.2 Deluxe v4"}, {"id": "disc:os922-full-v5", "label": "Mac OS 9.2.2 (v5)"}, {"id": "lab:os921-full-v4", "label": "Mac OS 9.2.1 (v4)"}], "value": "disc:os922-deluxe-v4"},
+    {"type": "text", "text": "3 Macs: 2.9 GB of 33 GB available on “Virtual Disk”, 196 MB to download during installation.", "style": "small"},
+    {"type": "buttons", "items": [
+      {"id": "toggle", "label": "Remove", "align": "left"},
+      {"id": "back", "label": "Back"},
+      {"id": "continue", "label": "Continue", "default": true}
+    ]}
+  ]
+}

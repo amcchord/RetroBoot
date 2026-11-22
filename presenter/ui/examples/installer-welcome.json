@@ -1,0 +1,38 @@
+{
+  "id": "installer-welcome",
+  "kind": "window",
+  "title": "RetroBoot Setup",
+  "width": 500,
+  "items": [
+    {"type": "columns", "items": [
+      {"type": "icon", "icon": "mac", "size": 32, "width": 32},
+      {"type": "stack", "items": [
+        {"type": "text", "style": "emphasis", "text": "Welcome to RetroBoot"},
+        {"type": "text", "text": "This installer turns this computer into a dedicated Mac OS 9 machine. Setup takes a few minutes and works entirely from this screen; a second device is optional."}
+      ]}
+    ]},
+    {"type": "group", "label": "This Computer", "items": [
+      {"type": "columns", "items": [
+        {"type": "stack", "width": 110, "items": [
+          {"type": "text", "style": "emphasis", "align": "right", "text": "Processor:"},
+          {"type": "text", "style": "emphasis", "align": "right", "text": "Memory:"},
+          {"type": "text", "style": "emphasis", "align": "right", "text": "Display:"},
+          {"type": "text", "style": "emphasis", "align": "right", "text": "Keyboard:"},
+          {"type": "text", "style": "emphasis", "align": "right", "text": "Network:"}
+        ]},
+        {"type": "stack", "items": [
+          {"type": "text", "text": "Intel N150, 4 cores"},
+          {"type": "text", "text": "8 GB"},
+          {"type": "text", "text": "1920 × 1080, shown at 2×"},
+          {"type": "text", "text": "Ready"},
+          {"type": "text", "text": "Ethernet connected; Wi-Fi available"}
+        ]}
+      ]}
+    ]},
+    {"type": "text", "style": "small", "text": "Next you will choose the disk to install on and review exactly what will be erased before anything changes."},
+    {"type": "buttons", "items": [
+      {"id": "shutdown", "label": "Shut Down", "align": "left"},
+      {"id": "continue", "label": "Continue", "default": true}
+    ]}
+  ]
+}

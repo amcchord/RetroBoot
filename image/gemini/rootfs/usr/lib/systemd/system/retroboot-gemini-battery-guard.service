@@ -1,0 +1,22 @@
+# RetroBoot on the Gemini PDA: battery safety guard. Orderly poweroff before the cell
+# reaches a dangerous depth of discharge (MT6351 fuel gauge, IR-compensated 3.4 V, two
+# samples in a row; BQ25896 fallback 3.5 V), charger input limit kept at 2.5 A, and the
+# gauge's learned capacity and charge kept across power-offs (/var/lib/gemini-gauge).
+# The script is gemini-nixos services/scripts/battery-guard.sh at the pinned commit,
+# fetched at build time (image/gemini/config/gemini.conf); history in
+# /var/log/battery-history.csv, live state in /run/battery-guard/state.
+[Unit]
+Description=Gemini battery guard
+After=systemd-udevd.service systemd-modules-load.service
+
+[Service]
+ExecStart=/bin/bash /usr/lib/retroboot/gemini/upstream/battery-guard.sh
+Restart=always
+RestartSec=10
+Environment=BATTERY_GUARD_POLL_S=10
+Environment=BATTERY_GUARD_WARN_LOW_MV=3650
+Environment=BATTERY_GUARD_CRIT_MV=3500
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

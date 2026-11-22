@@ -1,0 +1,11 @@
+# Additional packages for the debug flavor only.
+openssh-server
+qemu-guest-agent
+iproute2
+less
+strace
+# Hardware bring-up diagnostics (lspci/lsusb/iw/ethtool)
+pciutils
+usbutils
+iw
+ethtool

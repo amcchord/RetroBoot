@@ -1,0 +1,30 @@
+#!/bin/sh
+# Start RetroBoot's Startup Details collector (rb-bootdiag, ARCHITECTURE 16)
+# as early as possible: before udev (no PREREQ), next to the splash. It
+# publishes the startup progress, listens for Escape and, while no display
+# driver owns the screen, draws the view on the firmware framebuffer. On for
+# the installer (retroboot.mode=installer), opt-in with retroboot.diag=1,
+# off with retroboot.diag=0. It never writes to the console.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+on=
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+    retroboot.diag=0) exit 0 ;;
+    retroboot.mode=installer|retroboot.diag=1|retroboot.diag=show) on=1 ;;
+    esac
+done
+[ -n "$on" ] && [ -x /usr/lib/retroboot/bin/rb-bootdiag ] || exit 0
+
+# The built-in keyboard (i8042) gets its event device from evdev; udev loads
+# the USB and I2C keyboards' drivers as they appear.
+modprobe -q evdev </dev/null >/dev/null 2>&1 || true
+/usr/lib/retroboot/bin/rb-bootdiag --initramfs </dev/null >/dev/null 2>&1 &
+exit 0

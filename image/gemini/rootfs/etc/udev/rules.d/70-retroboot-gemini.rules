@@ -1,0 +1,18 @@
+# RetroBoot on the Gemini PDA (image/gemini/rootfs).
+
+# Unbound kernel workqueues (among them geminipda-drm's scanout copy) on the two A72s
+# (cpu8, cpu9: mask 0x300) once cpu9 is online; the kernel brings the A72 cluster up
+# itself a few seconds after boot. "add" covers coldplug, "online" a later hotplug.
+SUBSYSTEM=="cpu", KERNEL=="cpu9", ACTION=="add|online", ATTR{online}=="1", \
+  RUN+="/bin/sh -c 'echo 300 > /sys/devices/virtual/workqueue/cpumask'"
+
+# USB host controllers and devices stay out of runtime autosuspend: no USB wake-up
+# source is wired, so an autosuspended port never notices a new device until reboot.
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="11270000.usb", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="11271000.usb", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="on"
+
+# Charger: the BQ25896 takes most wall chargers for a 500 mA port and resets its input
+# limit at every plug-in; allow 2.5 A in (the battery-side charge current stays as the
+# device tree sets it). The battery guard restores it if the chip drops it again.
+ACTION=="add|change", SUBSYSTEM=="power_supply", KERNEL=="bq25890-charger-*", ATTR{online}=="1", ATTR{input_current_limit}="2500000"

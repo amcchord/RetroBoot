@@ -1,0 +1,26 @@
+# RetroBoot appliance presets (applied at image build time)
+enable retroboot-presenter.service
+enable retroboot-bootdiag.service
+enable retroboot-hostd.service
+enable retroboot-data-layout.service
+enable var-log-journal.mount
+enable var-lib-bluetooth.mount
+enable bluetooth.service
+enable retroboot-growdata.service
+enable retroboot-bootdisplay.service
+enable retroboot-microcode.service
+enable retroboot-bootmark.service
+enable NetworkManager.service
+enable avahi-daemon.service
+enable systemd-timesyncd.service
+enable ssh.service
+enable qemu-guest-agent.service
+disable NetworkManager-wait-online.service
+disable systemd-networkd.service
+disable systemd-networkd-wait-online.service
+disable e2scrub_reap.service
+disable e2scrub_all.timer
+disable apt-daily.timer
+disable apt-daily-upgrade.timer
+disable dpkg-db-backup.timer
+disable fstrim.timer

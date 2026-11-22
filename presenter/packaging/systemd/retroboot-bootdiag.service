@@ -1,0 +1,27 @@
+[Unit]
+Description=RetroBoot Startup Details (startup progress, Escape, reports)
+# Continues what rb-bootdiag began in the initramfs (its state is in
+# /run/retroboot/bootdiag/): as early as possible, so Escape keeps working and
+# the firmware framebuffer keeps the view between switch_root and the
+# presenter. On by default for the installer, opt-in with retroboot.diag=1;
+# retroboot.diag=0 turns it off. It exits once the installer window (or
+# Mac OS) is shown and the view is closed (ARCHITECTURE 16).
+DefaultDependencies=no
+ConditionKernelCommandLine=|retroboot.mode=installer
+ConditionKernelCommandLine=|retroboot.diag=1
+ConditionKernelCommandLine=|retroboot.diag=show
+ConditionKernelCommandLine=!retroboot.diag=0
+After=systemd-journald.socket
+IgnoreOnIsolate=yes
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/retroboot/bin/rb-bootdiag
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+OOMScoreAdjust=-500
+TimeoutStopSec=3s
+
+[Install]
+WantedBy=sysinit.target

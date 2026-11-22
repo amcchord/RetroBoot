@@ -1,0 +1,15 @@
+{
+  "name": "Mac OS 9.2.1",
+  "machineFamily": "powerMacG4",
+  "useG4CPU": true,
+  "ramMB": 512,
+  "width": 1024,
+  "height": 768,
+  "depth": 32,
+  "diskImageName": "disk.img",
+  "diskSizeGB": 32,
+  "sound": true,
+  "networking": true,
+  "tabletInput": true,
+  "bootFromCD": false
+}

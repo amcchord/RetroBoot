@@ -1,0 +1,23 @@
+[Unit]
+Description=RetroBoot Bluetooth pairings on RBDATA
+# BlueZ keeps its pairings (link keys, LE keys) in /var/lib/bluetooth. RetroBoot
+# keeps them on the data partition, like the Wi-Fi profiles, so paired keyboards
+# and mice survive A/B system updates (hostd/retroboot/bluetooth.py, ARCHITECTURE 15).
+# The installer's live system has no RBDATA there and keeps its own directory.
+DefaultDependencies=no
+RequiresMountsFor=/var/lib/retroboot
+Requires=retroboot-data-layout.service
+After=retroboot-data-layout.service
+ConditionPathIsMountPoint=/var/lib/retroboot
+Before=local-fs.target bluetooth.service
+Conflicts=umount.target
+Before=umount.target
+
+[Mount]
+What=/var/lib/retroboot/bluetooth
+Where=/var/lib/bluetooth
+Type=none
+Options=bind
+
+[Install]
+WantedBy=local-fs.target

@@ -1,0 +1,213 @@
+diff --git a/hw/input/adb-buttons.c b/hw/input/adb-buttons.c
+index 02b1c6d..a7a7e60 100644
+--- a/hw/input/adb-buttons.c
++++ b/hw/input/adb-buttons.c
+@@ -11,6 +11,10 @@
+  * Register 0 reports one button per talk: the button code in the first byte
+  * (bit 7 set on release) and 0xff in the second (no second button).
+  *
++ * The queue never holds a press without room for its release: a press that
++ * would leave none is dropped together with its release (a burst faster than
++ * Mac OS polls loses whole presses, never a release, so no button stays down).
++ *
+  * Copyright (c) 2026 RetroBoot contributors
+  * SPDX-License-Identifier: MIT
+  */
+@@ -41,6 +45,7 @@ struct ADBButtonsState {
+     uint8_t handler_prop;
+     uint8_t data[ADB_BUTTONS_QUEUE];
+     int32_t rptr, wptr, count;
++    uint32_t held;           /* buttons whose press is queued, release not yet */
+ };
+ 
+ /* Button codes of the two Apple devices (Mac OS ADBS 0x71F / 0x702). */
+@@ -81,7 +86,18 @@ bool adb_buttons_event(DeviceState *dev, ADBButton button, bool down)
+         return false;      /* this keyboard has no such button */
+     }
+     trace_adb_device_buttons_event(buttons[button].name, down, d->devaddr, d->handler);
+-    adb_buttons_put(s, down ? code : code | 0x80);
++    if (down) {
++        /* room for this press, its release and every held button's release */
++        if ((s->held & (1u << button)) ||
++            s->count + 2 + ctpop32(s->held) > ADB_BUTTONS_QUEUE) {
++            return true;
++        }
++        s->held |= 1u << button;
++        adb_buttons_put(s, code);
++    } else if (s->held & (1u << button)) {
++        s->held &= ~(1u << button);
++        adb_buttons_put(s, code | 0x80);
++    }
+     return true;
+ }
+ 
+@@ -103,6 +119,7 @@ static int adb_buttons_request(ADBDevice *d, uint8_t *obuf,
+ 
+     if ((buf[0] & 0x0f) == ADB_FLUSH) {
+         s->wptr = s->rptr = s->count = 0;
++        s->held = 0;
+         return 0;
+     }
+     cmd = buf[0] & 0xc;
+@@ -185,6 +202,7 @@ static void adb_buttons_reset(DeviceState *dev)
+     d->devaddr = ADB_DEVID_MISC;
+     d->handler = s->handler_prop;
+     s->rptr = s->wptr = s->count = 0;
++    s->held = 0;
+ }
+ 
+ static void adb_buttons_realize(DeviceState *dev, Error **errp)
+@@ -203,14 +221,15 @@ static void adb_buttons_realize(DeviceState *dev, Error **errp)
+ 
+ static const VMStateDescription vmstate_adb_buttons = {
+     .name = "adb_buttons",
+-    .version_id = 1,
+-    .minimum_version_id = 1,
++    .version_id = 2,
++    .minimum_version_id = 2,
+     .fields = (const VMStateField[]) {
+         VMSTATE_STRUCT(parent_obj, ADBButtonsState, 0, vmstate_adb_device, ADBDevice),
+         VMSTATE_BUFFER(data, ADBButtonsState),
+         VMSTATE_INT32(rptr, ADBButtonsState),
+         VMSTATE_INT32(wptr, ADBButtonsState),
+         VMSTATE_INT32(count, ADBButtonsState),
++        VMSTATE_UINT32(held, ADBButtonsState),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+diff --git a/hw/misc/macio/pmu.c b/hw/misc/macio/pmu.c
+index defa2ee..a9dc4d9 100644
+--- a/hw/misc/macio/pmu.c
++++ b/hw/misc/macio/pmu.c
+@@ -510,6 +510,13 @@ static void pmu_cmd_int_ack(PMUState *s,
+         *out_len = s->adb_reply_size + 1;
+         s->intbits &= ~(PMU_INT_ADB | PMU_INT_ADB_AUTO);
+         s->adb_reply_size = 0;
++        if (s->adb_cmd_pending) {
++            /* RetroBoot: now the command's own reply (see pmu_cmd_adb) */
++            memcpy(s->adb_reply, s->adb_cmd_reply, s->adb_cmd_reply_size);
++            s->adb_reply_size = s->adb_cmd_reply_size;
++            s->adb_cmd_pending = false;
++            s->intbits |= PMU_INT_ADB;
++        }
+     } else {
+         out_data[0] = s->intbits;
+         s->intbits = 0;
+@@ -556,6 +563,16 @@ static void pmu_cmd_adb(PMUState *s,
+ {
+     int len, adblen;
+     uint8_t adb_cmd[255];
++    /*
++     * RetroBoot: autopoll data that has not been acknowledged yet keeps its
++     * buffer and its autopoll flag; the command's reply follows it (INT ACK).
++     * Writing over it lost a key or button event (a release, under a burst)
++     * and handed the guest this reply flagged as autopoll data from the
++     * command's device.
++     */
++    bool behind = s->adb_reply_cmd && (s->intbits & PMU_INT_ADB_AUTO);
++    uint8_t *reply = behind ? s->adb_cmd_reply : s->adb_reply;
++    uint8_t *reply_size = behind ? &s->adb_cmd_reply_size : &s->adb_reply_size;
+ 
+     if (in_len < 2) {
+         qemu_log_mask(LOG_GUEST_ERROR,
+@@ -606,7 +623,7 @@ static void pmu_cmd_adb(PMUState *s,
+         adb_cmd[0] = in_data[0];
+         memcpy(&adb_cmd[1], &in_data[3], in_len - 3);
+         len = adb_request(&s->adb_bus,
+-                          s->adb_reply + (s->adb_reply_cmd ? 1 : 2),
++                          reply + (s->adb_reply_cmd ? 1 : 2),
+                           adb_cmd, in_len - 2);
+ 
+         trace_pmu_cmd_adb_reply(len);
+@@ -622,19 +639,23 @@ static void pmu_cmd_adb(PMUState *s,
+          * became device type 3 and Apple Monitor Plugins, probing it as an
+          * ADB display, reported "did not load completely", error -29208).
+          */
+-        s->adb_reply_size = len + 1;
+-        s->adb_reply[0] = in_data[0];
++        *reply_size = len + 1;
++        reply[0] = in_data[0];
+     } else if (len > 0) {
+         /* XXX Check this */
+-        s->adb_reply_size = len + 2;
+-        s->adb_reply[0] = 0x01;
+-        s->adb_reply[1] = len;
++        *reply_size = len + 2;
++        reply[0] = 0x01;
++        reply[1] = len;
+     } else {
+         /* XXX Check this */
+-        s->adb_reply_size = 1;
+-        s->adb_reply[0] = 0x00;
++        *reply_size = 1;
++        reply[0] = 0x00;
+     }
+ 
++    if (behind) {
++        s->adb_cmd_pending = true;
++        return;
++    }
+     s->intbits |= PMU_INT_ADB;
+     pmu_update_extirq(s);
+ }
+@@ -1195,6 +1216,26 @@ static bool pmu_adb_state_needed(void *opaque)
+     return s->has_adb;
+ }
+ 
++static bool pmu_adb_cmd_reply_needed(void *opaque)
++{
++    PMUState *s = opaque;
++
++    return s->adb_cmd_pending;
++}
++
++static const VMStateDescription vmstate_pmu_adb_cmd_reply = {
++    .name = "pmu/retroboot-adb-cmd-reply",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = pmu_adb_cmd_reply_needed,
++    .fields = (const VMStateField[]) {
++        VMSTATE_BOOL(adb_cmd_pending, PMUState),
++        VMSTATE_UINT8(adb_cmd_reply_size, PMUState),
++        VMSTATE_BUFFER(adb_cmd_reply, PMUState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
+ static const VMStateDescription vmstate_pmu_adb = {
+     .name = "pmu/adb",
+     .version_id = 1,
+@@ -1277,6 +1318,7 @@ static const VMStateDescription vmstate_pmu = {
+     },
+     .subsections = (const VMStateDescription * const []) {
+         &vmstate_pmu_adb,
++        &vmstate_pmu_adb_cmd_reply,
+         &vmstate_pmu_battery,
+         &vmstate_pmu_backlight,
+         NULL
+@@ -1298,6 +1340,7 @@ static void pmu_reset(DeviceState *dev)
+         s->intmask |= PMU_INT_ENVIRONMENT;
+     }
+     s->intbits = 0;
++    s->adb_cmd_pending = false;
+ 
+     s->cmd_state = pmu_state_idle;
+     if (s->wake_input) {
+diff --git a/include/hw/misc/macio/pmu.h b/include/hw/misc/macio/pmu.h
+index 42afacb..36ec533 100644
+--- a/include/hw/misc/macio/pmu.h
++++ b/include/hw/misc/macio/pmu.h
+@@ -221,6 +221,13 @@ struct PMUState {
+     ADBBusState adb_bus;
+     uint8_t adb_reply_size;
+     uint8_t adb_reply[ADB_MAX_OUT_LEN];
++    /*
++     * RetroBoot: the reply to an ADB command that arrives while autopoll
++     * data is still waiting for its INT ACK; it follows that data.
++     */
++    bool adb_cmd_pending;
++    uint8_t adb_cmd_reply_size;
++    uint8_t adb_cmd_reply[ADB_MAX_OUT_LEN];
+ 
+     /* RTC */
+     uint32_t tick_offset;

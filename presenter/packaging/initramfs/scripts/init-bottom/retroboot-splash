@@ -1,0 +1,16 @@
+#!/bin/sh
+# Move the running splash into the real root before switch_root so it keeps
+# seeing /dev, /sys and /run after run-init replaces the initramfs.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+if [ -x /usr/lib/retroboot/bin/rb-splash ]; then
+    /usr/lib/retroboot/bin/rb-splash --splash-chroot "${rootmnt:-/root}" </dev/null >/dev/null 2>&1 || true
+fi
+exit 0

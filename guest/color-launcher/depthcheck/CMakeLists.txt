@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.10)
+project(RetroBootDepthCheck C)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Retro68")
+    message(FATAL_ERROR "Use the read-only Retro68 68k toolchain")
+endif()
+add_compile_options(-O2 -Wall -Wextra -Wno-multichar)
+add_application(RetroBootDepthCheck TYPE APPL CREATOR R2dp FILES depthcheck.c depthcheck.r)

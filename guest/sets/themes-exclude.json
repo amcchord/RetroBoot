@@ -1,0 +1,18 @@
+{
+ "why": "Mac OS 9.2.1's Appearance control panel quits with error 2 when Theme Files holds more than about 75-90 added themes (75 opened, 90 crashed, in two cold boots each; a 4 MB memory partition did not help). The merged collections have 101 distinct theme files, so the base keeps 64 (headroom for themes a user adds) and drops lite/no-icon/older/duplicate variants of a kept theme and a few novelty or seasonal ones. Sound sets are not limited (all 79 install).",
+ "limit_tested": {"opens": 75, "crashes": 90},
+ "exclude": {
+  "variant of a kept theme": [
+   "Aerial (Lite)", "Aqua", "Aqua  v2.0.1", "Aqua Theme (No Icons)", "Aqua v2.0",
+   "Geometry PR2", "GlassBox w/ out Icons", "Hi-Tech with Platinum Icons",
+   "IrieMac 1.0.2", "IrieMac 1.0.2 (icon)", "Liquid (icons)", "Liquid Theme 1.2",
+   "NeXTheme 1.0.1", "Neutech Lite", "Paper Lite", "QT4 Modoki", "System 7 (No Icons)",
+   "Tubular Sky Paper (tr", "Y3K v2.0 Lite", "iThemePub1", "iMac Original Paper", "Sky Paper",
+   "Paper Tugray", "Paper blugray", "paper8", "Paper Sky"
+  ],
+  "novelty or seasonal": [
+   "Win Doze 98", "Halloween Night", "The dark knight Theme", "GoldenBed 1.0", "Gin~Sing",
+   "Doohickey", "Moby", "VR", "CandiTech", "Ω", "Beta"
+  ]
+ }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "wifi-joining",
+  "kind": "window",
+  "title": "Wi-Fi",
+  "width": 400,
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "Joining “HomeNet”…"},
+    {"type": "progress", "indeterminate": true},
+    {"type": "text", "style": "small", "text": "Waiting for an address from the network."},
+    {"type": "buttons", "items": [
+      {"id": "cancel", "label": "Cancel"}
+    ]}
+  ]
+}

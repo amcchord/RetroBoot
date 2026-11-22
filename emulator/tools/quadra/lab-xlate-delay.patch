@@ -1,0 +1,33 @@
+LAB ONLY, never in a package: RB_XLATE_DELAY_US=N spins N microseconds after every
+TCG translation (report quadra-m68k-2026-10-24.md, section 2.4). It widens the
+window in which the Quadra ROM's delay-loop calibration can take its timer-2
+interrupt, so the failure the t2-hold patch prevents shows up in a few dozen
+starts: apply after the m68k series (it needs retroboot-q800-t2-hold.patch's
+cpu_translation_begin/end), build in a separate tree, run rbd_quadra_hunt.sh with
+the variable set, with and without -global mos6522-q800-via1.t2-hold=off.
+
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+index 2bb08fcfb9..645b943c60 100644
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -275,6 +275,20 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+      */
+     cpu_translation_begin();
+     tb = tb_gen_code_body(cpu, s);
++    {
++        /* LAB ONLY (not in any package): RB_XLATE_DELAY_US slows every translation */
++        static int64_t rb_delay_ns = -1;
++        if (rb_delay_ns < 0) {
++            const char *e = getenv("RB_XLATE_DELAY_US");
++            rb_delay_ns = e ? atoll(e) * 1000 : 0;
++        }
++        if (rb_delay_ns) {
++            int64_t until = get_clock() + rb_delay_ns;
++            while (get_clock() < until) {
++                /* spin */
++            }
++        }
++    }
+     cpu_translation_end();
+     return tb;
+ #else

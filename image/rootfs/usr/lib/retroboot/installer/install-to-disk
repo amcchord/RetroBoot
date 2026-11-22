@@ -1,0 +1,1256 @@
+#!/usr/bin/python3 -I
+"""Install RetroBoot from the running live installer onto one whole disk.
+
+    install-to-disk --target DEV [--machine-dir DIR ...] [--seed FILE] [--hostname NAME]
+                    [--machine-id ID] [--network-profiles DIR] [--bluetooth DIR] [--dry-run]
+    install-to-disk --target DEV --mount-data DIR      mount the RBDATA this tool made on DEV
+    install-to-disk --target DEV --unmount-data DIR    sync and unmount it again
+    install-to-disk --board rpi [--mode disk|free-space] ...   Raspberry Pi layouts (below)
+
+Contract (hostd installer panel, ARCHITECTURE section 8):
+* stdout carries only JSON progress lines {"phase","progress","message"}
+  (progress 0..1 for the whole install); diagnostics go to stderr.
+* exit 0 on success; on failure a final {"phase":"error",...} line and exit 1.
+
+Safety: DEV must be exactly the `path` of an eligible disk reported by
+list-disks (never the boot medium, never a partition, nothing on it mounted or
+used as swap). Only DEV and its own partitions are wiped. The guest machine
+directory is only read.
+
+Result: GPT RBEFI (ESP) / BIOS boot / RBROOT_A (ext4, copy of the pristine live
+root squashfs) / RBROOT_B (ext4, empty) / RBDATA (XFS, reflink) with every guest
+machine copied sparsely to RBDATA/machines/<id>/, GRUB for UEFI (removable path
+plus a best-effort NVRAM entry) and BIOS, and fresh hostname/machine-id.
+
+--machine-dir may be repeated (or left out: the installer then adds Macs it
+downloads itself). Each directory's id comes from its machine.json (else from its
+config.json name; --machine-id names the first one); an id already used on the
+disk gets a -2, -3 ... suffix. After each machine a progress line also carries
+"machine_dir" and "machine_id" (the id it got). --seed FILE (hostd's install seed:
+settings the installed hostd adopts at its first start) goes to
+RBDATA/config/install-seed.json, with its machine.active following a renamed id;
+then install-seed files inside machine directories are not copied.
+
+--mount-data/--unmount-data let the installer add Macs it downloads onto the new
+disk itself (they go straight to RBDATA, not into the live system's memory): DEV
+must be a list-disks disk that is not the boot medium, and only its partition
+labelled RBDATA with an XFS file system is mounted (read-write, at DIR).
+
+--network-profiles DIR copies the NetworkManager keyfiles (*.nmconnection) stored
+during installation to RBDATA/network/connections/ (directory 0700, files 0600,
+root), where the installed system's NetworkManager reads them. Their names and
+contents are never logged: they hold network names and Wi-Fi passwords.
+
+--bluetooth DIR copies BlueZ's pairing store of the live system (/var/lib/bluetooth:
+<adapter>/<device>/info with the link keys, attributes, cache) to RBDATA/bluetooth/
+(directories 0700, files 0600, root), which the installed system bind-mounts at
+/var/lib/bluetooth, so a Bluetooth keyboard paired during installation keeps working.
+Only counts are logged.
+
+--board rpi (the arm64 live installer on a Raspberry Pi; ARCHITECTURE 8.2,
+rpi_layout.py) installs the Raspberry Pi layout:
+* --mode disk (default): DEV is erased and gets image/rpi's standard GPT layout
+  (RBEFI FAT32 type 0700 labelled RETROBOOT with the Pi firmware, kernel8.img,
+  initramfs8, device trees, overlays, config.txt and cmdline.txt made from the
+  installed root; BIOSBOOT placeholder; RBROOT_A; RBROOT_B; RBDATA).
+* --mode free-space: DEV is the installer's own SD card or USB stick (the boot
+  medium, which is otherwise refused). The installer's partitions stay; RBROOT_A
+  and RBDATA are added in the free space after them (an earlier installation there
+  is replaced), the installed system's boot files go to RBINSTEFI's retroboot/os/
+  (os_prefix), its config.txt replaces the installer's last of all, and the
+  installer's own configuration is kept as tryboot.txt (Recovery's Start
+  Installer... boots it once). The installed fstab names its partitions by PARTUUID.
+--mount-data/--unmount-data take the same --board/--mode. With --board rpi the last
+progress line carries "medium": "kept" (free space: the card stays), "released"
+(the live system no longer reads it) or "in-use" (too little memory to copy the
+installer's images to RAM: shut down before removing the medium).
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+import uuid
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import rpi_layout  # noqa: E402  (Raspberry Pi layouts, ARCHITECTURE 8.2)
+
+LIB = '/usr/lib/retroboot'
+BOOT = f'{LIB}/boot'
+LIVE_ROOT = '/run/retroboot/live/rootfs'
+WORK = '/run/retroboot/install'
+LAYOUT = [  # (number, name, type, size MiB or None for the rest)
+    (1, 'RBEFI', 'EF00', 256),
+    (2, 'BIOSBOOT', 'EF02', 1),
+    (3, 'RBROOT_A', '8300', 3072),
+    (4, 'RBROOT_B', '8300', 3072),
+    (5, 'RBDATA', '8300', None),
+]
+# image/rpi's standard layout (make-disk.sh): the same partitions, the boot partition typed
+# "Microsoft basic data", which the Pi bootloader reads.
+RPI_LAYOUT = [(1, 'RBEFI', '0700', 256)] + LAYOUT[1:]
+MACHINE_ID_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,47}$')
+HOSTNAME_RE = re.compile(r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$')
+PHASES = {  # phase: (start, end) share of overall progress
+    'validate': (0.00, 0.02), 'partition': (0.02, 0.05), 'format': (0.05, 0.09),
+    'system': (0.09, 0.55), 'configure': (0.55, 0.58), 'bootloader': (0.58, 0.62),
+    'machine': (0.62, 0.97), 'finish': (0.97, 1.0),
+}
+_last = 0.0
+
+
+class InstallError(Exception):
+    pass
+
+
+def emit(phase, fraction, message, **extra):
+    global _last
+    lo, hi = PHASES.get(phase, (_last, _last))
+    value = round(min(1.0, max(_last, lo + (hi - lo) * max(0.0, min(1.0, fraction)))), 4)
+    _last = value
+    sys.stdout.write(json.dumps({'phase': phase, 'progress': value, 'message': message, **extra}) + '\n')
+    sys.stdout.flush()
+
+
+def log(msg):
+    sys.stderr.write(f'install-to-disk: {msg}\n')
+    sys.stderr.flush()
+
+
+def run(argv, **kw):
+    log('$ ' + ' '.join(argv))
+    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kw)
+    if result.stdout.strip():
+        log(result.stdout.strip()[-2000:])
+    if result.returncode != 0:
+        raise InstallError(f"{os.path.basename(argv[0])} failed ({result.returncode}): {result.stderr.strip()[-300:]}")
+    return result.stdout
+
+
+def list_disks():
+    out = subprocess.run([f'{LIB}/installer/list-disks'], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+def partitions_of(disk):
+    out = run(['lsblk', '-J', '-p', '-o', 'NAME,TYPE,MOUNTPOINTS', disk])
+    tree = json.loads(out)['blockdevices'][0]
+    parts = []
+    stack = list(tree.get('children') or [])
+    while stack:
+        node = stack.pop()
+        parts.append(node)
+        stack.extend(node.get('children') or [])
+    return tree, parts
+
+
+def validate(args):
+    if os.geteuid() != 0:
+        raise InstallError('must run as root')
+    if args.network_profiles and not os.path.isdir(args.network_profiles):
+        raise InstallError('the network profile directory does not exist')
+    if args.bluetooth and not os.path.isdir(args.bluetooth):
+        raise InstallError('the Bluetooth pairing directory does not exist')
+    disks = list_disks()
+    match = [d for d in disks if d['path'] == args.target]
+    if not match:
+        raise InstallError(f'{args.target} is not a disk reported by list-disks (exact path required)')
+    disk = match[0]
+    if args.board == 'rpi' and args.mode == 'free-space':
+        return validate_free_space(args, disk)
+    if disk['is_boot_medium']:
+        raise InstallError('refusing to install onto the disk RetroBoot is running from')
+    if not disk.get('eligible', True):
+        raise InstallError(f"disk not eligible: {disk.get('reason')}")
+    st = os.stat(args.target)
+    if not stat.S_ISBLK(st.st_mode) or os.path.realpath(args.target) != args.target:
+        raise InstallError('target must be a block device path, not a link')
+    tree, parts = partitions_of(args.target)
+    busy = [p['name'] for p in [tree] + parts if any(m for m in (p.get('mountpoints') or []) if m)]
+    with open('/proc/swaps') as f:
+        swaps = {line.split()[0] for line in f.read().splitlines()[1:] if line.strip()}
+    busy += [p['name'] for p in [tree] + parts if p['name'] in swaps]
+    holders = os.listdir(f"/sys/class/block/{os.path.basename(args.target)}/holders")
+    if busy or holders:
+        raise InstallError(f'target is in use: {", ".join(busy + holders)}')
+    for mdir in args.machine_dir:
+        if not os.path.isdir(mdir) or not os.path.isfile(os.path.join(mdir, 'disk.img')):
+            raise InstallError('machine directory has no disk.img')
+        if not (os.path.isfile(os.path.join(mdir, 'machine.json')) or
+                os.path.isfile(os.path.join(mdir, 'config.json'))):
+            raise InstallError('machine directory has neither machine.json nor config.json')
+    if len(set(map(os.path.realpath, args.machine_dir))) != len(args.machine_dir):
+        raise InstallError('a machine directory is named twice')
+    if args.seed and (not os.path.isfile(args.seed) or os.path.getsize(args.seed) > 65536):
+        raise InstallError('the install seed is missing or too large')
+    validate_inputs(args)
+    fixed = sum(size for _, _, _, size in LAYOUT if size) * 1024 ** 2 + 2 * 1024 ** 2
+    data_bytes = disk['size_bytes'] - fixed
+    machine_alloc = sum(installed_bytes(mdir) for mdir in args.machine_dir)
+    if data_bytes < machine_alloc + 1024 ** 3:
+        raise InstallError('the disk is too small for these Mac OS systems' if len(args.machine_dir) > 1 else
+                           'the disk is too small for this Mac OS system')
+    if args.hostname and not HOSTNAME_RE.match(args.hostname):
+        raise InstallError('invalid host name')
+    return disk
+
+
+def validate_inputs(args):
+    """The pristine root and its boot payload (x86: GRUB's; Raspberry Pi: firmware, kernel,
+    device trees and the image's config.txt/cmdline.txt.in)."""
+    source = args.source_root
+    if not os.path.isfile(os.path.join(source, 'usr/lib/retroboot/release.json')):
+        raise InstallError(f'no pristine RetroBoot root at {source} (not running from the installer?)')
+    if args.board == 'rpi':
+        for need in ('usr/lib/retroboot/boot/config.txt', 'usr/lib/retroboot/boot/cmdline.txt.in'):
+            if not os.path.isfile(os.path.join(source, need)):
+                raise InstallError(f'boot payload incomplete: {need}')
+        try:
+            rpi_layout.kernel_files(source)
+            rpi_layout.display_files(source)
+            if args.mode == 'disk':
+                rpi_layout.firmware_files(source)
+        except rpi_layout.LayoutError as error:
+            raise InstallError(str(error)) from None
+        return
+    for need in ('esp/EFI/BOOT/BOOTX64.EFI', 'esp/grub/grub.cfg', 'i386-pc/core.img', 'i386-pc/boot.img', 'i386-pc/grub-bios-setup'):
+        if not os.path.exists(os.path.join(BOOT, need)):
+            raise InstallError(f'boot payload incomplete: {need}')
+
+
+def validate_free_space(args, disk):
+    """--board rpi --mode free-space: the installer's own disk, with room after the installer
+    (list-disks' free_space plan) for the root, the Macs and RetroBoot's boot files."""
+    plan = disk.get('free_space') or {}
+    if not disk['is_boot_medium']:
+        raise InstallError('free space is only used on the disk the installer runs from')
+    if not plan.get('eligible'):
+        raise InstallError('no free space after the installer: ' + (plan.get('message') or plan.get('reason') or
+                                                                     'not an installer card'))
+    for mdir in args.machine_dir:
+        if not os.path.isdir(mdir) or not os.path.isfile(os.path.join(mdir, 'disk.img')):
+            raise InstallError('machine directory has no disk.img')
+        if not (os.path.isfile(os.path.join(mdir, 'machine.json')) or
+                os.path.isfile(os.path.join(mdir, 'config.json'))):
+            raise InstallError('machine directory has neither machine.json nor config.json')
+    if len(set(map(os.path.realpath, args.machine_dir))) != len(args.machine_dir):
+        raise InstallError('a machine directory is named twice')
+    if args.seed and (not os.path.isfile(args.seed) or os.path.getsize(args.seed) > 65536):
+        raise InstallError('the install seed is missing or too large')
+    if args.hostname and not HOSTNAME_RE.match(args.hostname):
+        raise InstallError('invalid host name')
+    validate_inputs(args)
+    st = os.stat(args.target)
+    if not stat.S_ISBLK(st.st_mode) or os.path.realpath(args.target) != args.target:
+        raise InstallError('target must be a block device path, not a link')
+    # the partitions an earlier installation left there must not be in use
+    _, parts = partitions_of(args.target)
+    kernel = rpi_layout.sysfs_partitions(args.target)
+    old = {f"/dev/{kernel[n]['name']}" for n in plan.get('remove') or [] if n in kernel}
+    with open('/proc/swaps') as f:
+        swaps = {line.split()[0] for line in f.read().splitlines()[1:] if line.strip()}
+    busy = [p['name'] for p in parts if p['name'] in old and
+            (any(m for m in (p.get('mountpoints') or []) if m) or p['name'] in swaps)]
+    if busy:
+        raise InstallError(f'the earlier installation on this card is in use: {", ".join(busy)}')
+    data_bytes = plan['bytes'] - rpi_layout.ROOT_BYTES
+    machine_alloc = sum(installed_bytes(mdir) for mdir in args.machine_dir)
+    if data_bytes < machine_alloc + 1024 ** 3:
+        raise InstallError('the free space is too small for these Mac OS systems' if len(args.machine_dir) > 1 else
+                           'the free space is too small for this Mac OS system')
+    # RetroBoot's boot files go to the installer's FAT partition (the old ones are replaced)
+    kf = rpi_layout.kernel_files(args.source_root)
+    need = rpi_layout.files_bytes(rpi_layout.os_files(kf)) + 2 * 1024 ** 2
+    boot = BootPartition(f"/dev/{plan['boot_partition']}")
+    try:
+        mnt = boot.open(write=False)
+        sv = os.statvfs(mnt)
+        room = sv.f_bavail * sv.f_frsize + rpi_layout.tree_bytes(os.path.join(mnt, rpi_layout.OS_PREFIX))
+        if not os.path.isfile(os.path.join(mnt, 'config.txt')):
+            raise InstallError("the installer's startup partition has no config.txt")
+    finally:
+        boot.close()
+    if room < need:
+        raise InstallError(f"the installer's startup partition (RBINSTEFI) has no room for RetroBoot's startup "
+                           f"files ({need // 1024 ** 2} MB needed, {room // 1024 ** 2} MB free)")
+    return dict(disk, plan=plan)
+
+
+class BootPartition:
+    """The installer's FAT partition (RBINSTEFI), mounted for reading or writing. When the
+    live system already has it mounted (its payload on the same partition) that mount is
+    used, remounted read-write for writing and back to read-only afterwards; a short
+    read-only mount by hostd (network.conf, lab-auth.env) is waited out."""
+
+    def __init__(self, dev):
+        self.dev = dev
+        self.path = None
+        self.mounted_here = False
+        self.remounted = False
+
+    def _mounts(self):
+        r = subprocess.run(['findmnt', '-n', '-r', '-o', 'TARGET,OPTIONS', '--source', self.dev],
+                           capture_output=True, text=True)
+        out = []
+        for line in r.stdout.splitlines() if r.returncode == 0 else []:
+            target, _, opts = line.partition(' ')
+            out.append((target.replace('\\x20', ' '), opts.split(',')))
+        return out
+
+    def open(self, write=True):
+        deadline = time.monotonic() + 20
+        while True:
+            mounts = self._mounts()
+            medium = [m for m in mounts if m[0] == '/run/retroboot/live/medium']
+            if medium:
+                self.path = medium[0][0]
+                if write and 'ro' in medium[0][1]:
+                    run(['mount', '-o', 'remount,rw', self.path])
+                    self.remounted = True
+                return self.path
+            if not mounts:
+                break
+            if time.monotonic() > deadline:
+                raise InstallError(f'{self.dev} is in use')
+            time.sleep(0.5)
+        self.path = f'{WORK}/rbinstefi'
+        mount(self.dev, self.path, 'vfat', None if write else 'ro')
+        self.mounted_here = True
+        return self.path
+
+    def close(self):
+        if self.path is None:
+            return
+        subprocess.run(['sync'])
+        if self.remounted:
+            subprocess.run(['mount', '-o', 'remount,ro', self.path], stderr=subprocess.DEVNULL)
+        if self.mounted_here:
+            subprocess.run(['umount', self.path], stderr=subprocess.DEVNULL)
+        self.path, self.mounted_here, self.remounted = None, False, False
+
+
+def wait_partitions(disk, layout=LAYOUT):
+    run(['udevadm', 'settle', '--timeout=20'])
+    deadline = time.monotonic() + 20
+    base = os.path.basename(disk)
+    while time.monotonic() < deadline:
+        found = {}
+        for name in os.listdir(f'/sys/class/block/{base}'):
+            pfile = f'/sys/class/block/{base}/{name}/partition'
+            if name.startswith(base) and os.path.exists(pfile):
+                with open(pfile) as f:
+                    found[int(f.read())] = f'/dev/{name}'
+        if all(n in found and os.path.exists(found[n]) for n, *_ in layout):
+            return found
+        time.sleep(0.2)
+    raise InstallError('new partitions did not appear')
+
+
+def partition(disk, layout=LAYOUT):
+    _, parts = partitions_of(disk)
+    for p in parts:
+        run(['wipefs', '-a', '-q', p['name']])
+    run(['wipefs', '-a', '-q', disk])
+    run(['sgdisk', '--zap-all', disk])
+    argv = ['sgdisk', '-a', '2048']
+    for num, name, code, size in layout:
+        start = '1M' if num == 1 else '0'
+        argv += ['-n', f'{num}:{start}:{"+%dM" % size if size else "0"}', '-t', f'{num}:{code}', '-c', f'{num}:{name}']
+    run(argv + [disk])
+    run(['blockdev', '--rereadpt', disk])
+    return wait_partitions(disk, layout)
+
+
+def mount(dev, path, fstype=None, options=None):
+    os.makedirs(path, exist_ok=True)
+    argv = ['mount']
+    if fstype:
+        argv += ['-t', fstype]
+    if options:
+        argv += ['-o', options]
+    run(argv + [dev, path])
+
+
+def copy_system(source, dest):
+    total = int(run(['du', '-sbx', source]).split()[0])
+    log(f'copying {total} bytes of system files')
+    proc = subprocess.Popen(['rsync', '-aHAXx', '--numeric-ids', '--no-inc-recursive', '--info=progress2',
+                             f'{source}/', f'{dest}/'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    buf = b''
+    last = 0.0
+    while True:
+        chunk = proc.stdout.read(256)
+        if not chunk:
+            break
+        buf += chunk
+        *lines, buf = re.split(rb'[\r\n]', buf)
+        for line in lines:
+            m = re.search(rb'\s(\d+)%', line)
+            if m and time.monotonic() - last > 0.5:
+                last = time.monotonic()
+                emit('system', int(m.group(1)) / 100, 'Copying RetroBoot…')
+    if proc.wait() != 0:
+        raise InstallError(f'copying the system failed: {proc.stderr.read().decode(errors="replace")[-300:]}')
+
+
+EXTENTS_SUFFIX = '.extents'      # build-time data map beside a disk (image/scripts/make-extents.py)
+GRANULE = 4096
+
+
+def load_extents(src):
+    """The build-time map of src's data, or None when absent, stale or malformed.
+
+    make-iso.sh writes ``disk.img.extents`` from the staged disk it embeds:
+    ``{"format": "retroboot-extents-1", "size", "mtime", "extents": [[offset, length], ...]}``.
+    It is used only when it describes exactly this file (size and whole-second
+    mtime, which squashfs keeps) and its extents are sorted, non-overlapping,
+    512-byte aligned and inside the file; everything outside them is zero.
+    """
+    path = src + EXTENTS_SUFFIX
+    try:
+        if os.path.getsize(path) > 64 * 1024 * 1024:
+            return None
+        with open(path) as f:
+            doc = json.load(f)
+        st = os.stat(src)
+        if not isinstance(doc, dict) or doc.get('format') != 'retroboot-extents-1' or \
+                doc.get('size') != st.st_size or doc.get('mtime') != int(st.st_mtime):
+            return None
+        ext = doc.get('extents')
+        if not isinstance(ext, list) or len(ext) > 1 << 20:
+            return None
+        out, pos = [], 0
+        for e in ext:
+            if not (isinstance(e, list) and len(e) == 2 and all(type(v) is int for v in e)):
+                return None
+            off, n = e
+            if off < pos or n <= 0 or off % 512 or n % 512 or off + n > st.st_size:
+                return None
+            out.append((off, n))
+            pos = off + n
+        return out
+    except (OSError, ValueError):
+        return None
+
+
+def data_regions(fd, size, extents):
+    """Regions that may hold data: the build map, else SEEK_DATA/SEEK_HOLE, else the whole file."""
+    if extents is not None:
+        yield from ((off, off + n) for off, n in extents)
+        return
+    pos = 0
+    while pos < size:
+        try:  # skip holes quickly where the source filesystem reports them (not squashfs)
+            data_at = os.lseek(fd, pos, os.SEEK_DATA)
+        except OSError:
+            return
+        try:
+            hole_at = min(os.lseek(fd, data_at, os.SEEK_HOLE), size)
+        except OSError:
+            hole_at = size
+        if hole_at > data_at:
+            yield data_at, hole_at
+        pos = hole_at
+
+
+def installed_bytes(mdir):
+    """What a machine directory takes once copied: a disk's data by its build-time map (the
+    installer's Choose Macs window counts the same), else allocated blocks; other files whole."""
+    total = 0
+    for name in machine_files(mdir, False):
+        path = os.path.join(mdir, name)
+        extents = load_extents(path) if name == 'disk.img' else None
+        total += sum(n for _, n in extents) if extents is not None else os.stat(path).st_blocks * 512
+    return total
+
+
+def sparse_copy(src, dst, progress):
+    """Copy src to dst writing only non-zero 4 KiB blocks; holes stay holes.
+
+    dst is sized first and written with pwrite, so it never grows by seeking
+    (XFS keeps the speculative preallocation it makes past EOF inside such a
+    file: a 32 GiB Mac OS disk with 375 MiB of data took 680 MiB).  Reads
+    follow the build-time extent map when one matches src (squashfs reports no
+    holes, so the embedded disk would otherwise be read in full), else
+    SEEK_DATA/SEEK_HOLE.  Returns (method, bytes written).
+    """
+    size = os.path.getsize(src)
+    block = 1 << 20
+    zero = bytes(block)
+    extents = load_extents(src)
+    written = 0
+    with open(src, 'rb', buffering=0) as fin, open(dst, 'wb') as fout:
+        fd, out = fin.fileno(), fout.fileno()
+        os.ftruncate(out, size)
+        last = 0.0
+        for start, end in data_regions(fd, size, extents):
+            pos = start
+            while pos < end:
+                chunk = os.pread(fd, min(block - pos % block, end - pos), pos)
+                if not chunk:
+                    break
+                if chunk != zero[:len(chunk)]:
+                    run = None
+                    for i in range(0, len(chunk), GRANULE):
+                        if chunk[i:i + GRANULE] != zero[:min(GRANULE, len(chunk) - i)]:
+                            run = i if run is None else run
+                        elif run is not None:
+                            written += os.pwrite(out, chunk[run:i], pos + run)
+                            run = None
+                    if run is not None:
+                        written += os.pwrite(out, chunk[run:], pos + run)
+                pos += len(chunk)
+                if time.monotonic() - last > 0.5:
+                    last = time.monotonic()
+                    progress(pos, size)
+        os.fsync(out)
+    progress(size, size)
+    return ('extent map' if extents is not None else 'scan'), written
+
+
+SEED_NAMES = ('install-seed.json', 'install-seed.applied.json')
+
+
+def machine_files(mdir, skip_seed):
+    """The files of a machine directory that are installed: not the build-time data map,
+    and not an old per-machine install seed when the seed comes from --seed."""
+    out = []
+    for f in sorted(os.listdir(mdir)):
+        if not os.path.isfile(os.path.join(mdir, f)):
+            continue
+        if f.endswith(EXTENTS_SUFFIX) and os.path.isfile(os.path.join(mdir, f[:-len(EXTENTS_SUFFIX)])):
+            continue
+        if skip_seed and f in SEED_NAMES:
+            continue
+        out.append(f)
+    return out
+
+
+def unique_id(mid, machines_root, taken):
+    candidate, n = mid, 2
+    while candidate in taken or os.path.exists(os.path.join(machines_root, candidate)):
+        candidate = f'{mid[:44]}-{n}'
+        n += 1
+    return candidate
+
+
+def install_machines(machine_dirs, data, explicit_id=None, seed=None, report=emit):
+    """Copy every machine directory to data/machines/<id>/ (ids made unique) and the seed to
+    data/config/install-seed.json. Returns [(source dir, id)]."""
+    machines_root = os.path.join(data, 'machines')
+    os.makedirs(machines_root, exist_ok=True)
+    plan = []
+    for i, mdir in enumerate(machine_dirs):
+        meta, generated = machine_meta(mdir, explicit_id if i == 0 else None)
+        if not MACHINE_ID_RE.match(meta['id']):
+            raise InstallError('invalid machine identifier')
+        plan.append((mdir, meta, generated, machine_files(mdir, bool(seed))))
+    total = sum(os.path.getsize(os.path.join(mdir, f)) for mdir, _, _, files in plan for f in files) or 1
+    copied = 0
+    done, renamed, taken = [], {}, set()
+    for n, (mdir, meta, generated, files) in enumerate(plan, 1):
+        mid = unique_id(meta['id'], machines_root, taken)
+        if mid != meta['id']:
+            renamed.setdefault(meta['id'], mid)
+            meta = dict(meta, id=mid)
+            generated = True        # machine.json must name the new id
+        taken.add(mid)
+        name = meta.get('name', 'Mac OS')
+        label = f"Copying {name}…" + (f" ({n} of {len(plan)})" if len(plan) > 1 else '')
+        mdest = os.path.join(machines_root, mid)
+        os.makedirs(mdest)
+        report('machine', copied / total, label, machine_dir=mdir)
+        for fname in files:
+            src = os.path.join(mdir, fname)
+            last = [0.0]
+
+            def progress(done_bytes, size, base=copied):
+                if time.monotonic() - last[0] > 0.5 or done_bytes == size:
+                    last[0] = time.monotonic()
+                    report('machine', (base + done_bytes) / total, label)
+            how, wrote = sparse_copy(src, os.path.join(mdest, fname), progress)
+            log(f'{mid}/{fname}: {wrote} bytes written ({how})')
+            copied += os.path.getsize(src)
+        if generated:
+            with open(os.path.join(mdest, 'machine.json'), 'w') as f:
+                json.dump(meta, f, indent=2)
+        if not os.path.exists(os.path.join(mdest, 'state.json')):
+            with open(os.path.join(mdest, 'state.json'), 'w') as f:
+                json.dump({'clean': True, 'last_exit': None}, f)
+        report('machine', copied / total, f'{name} copied', machine_dir=mdir, machine_id=mid)
+        done.append((mdir, mid))
+    if seed:
+        with open(seed) as f:
+            doc = json.load(f)
+        settings = doc.get('settings') if isinstance(doc, dict) else None
+        if isinstance(settings, dict) and settings.get('machine.active') in renamed:
+            settings['machine.active'] = renamed[settings['machine.active']]
+        os.makedirs(os.path.join(data, 'config'), exist_ok=True)
+        tmp = os.path.join(data, 'config', '.install-seed.json.tmp')
+        with open(tmp, 'w') as f:
+            json.dump(doc, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, os.path.join(data, 'config', 'install-seed.json'))
+    return done
+
+
+def machine_meta(mdir, explicit_id):
+    path = os.path.join(mdir, 'machine.json')
+    if os.path.isfile(path):
+        with open(path) as f:
+            meta = json.load(f)
+        template = meta.get('template') or {}
+        profile = template.get('guestOS', 'classic')
+        if template.get('machineFamily') == 'powerMacOSX' or profile != 'classic' or meta.get('schema_version') == 3:
+            if profile not in ('macosx-10.2', 'macosx-10.3', 'macosx-10.4') or \
+                    template.get('machineFamily') != 'powerMacOSX' or meta.get('schema_version') != 3 or \
+                    meta.get('family') != 'powermac' or meta.get('guest_os') != profile:
+                raise InstallError('the OS X machine type and operating-system profile do not match')
+        return meta, False
+    with open(os.path.join(mdir, 'config.json'), 'rb') as f:
+        raw = f.read(65536)
+    template = None
+    try:  # hostd's own sanitiser when available, so the record matches a catalog import
+        sys.path.insert(0, f'{LIB}/hostd')
+        from retroboot.catalog import sanitize_template_config  # noqa: E402
+        template = sanitize_template_config(raw)
+    except Exception as error:  # hostd absent or older: keep the plain parsed template
+        if getattr(error, 'code', None) in ('unsupported', 'unsafe_archive'):
+            raise InstallError(str(error)) from error
+        log(f'hostd template sanitiser unavailable ({type(error).__name__}); storing parsed config')
+        template = json.loads(raw)
+    name = str(template.get('name') or 'Mac OS')[:100]
+    mid = explicit_id or re.sub(r'[^a-z0-9-]+', '-', name.lower()).strip('-')[:48] or 'mac-os'
+    meta = {'schema_version': 1, 'id': mid, 'name': name, 'os_version': None, 'disk': 'disk.img',
+            'created': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'source': {'kind': 'installer', 'path': os.path.realpath(mdir)}, 'template': template}
+    if isinstance(template, dict) and template.get('machineFamily') == 'quadra800':
+        # A 68k Mac (hostd machines.family_fields): its ROM and PRAM travel in its directory;
+        # schema 2, which a RetroBoot from before 68k Macs leaves out instead of starting on mac99.
+        meta.update(schema_version=2, family='quadra800', rom='Quadra800.rom', pram='pram.img')
+    profile = template.get('guestOS', 'classic') if isinstance(template, dict) else 'classic'
+    if profile != 'classic' or (isinstance(template, dict) and template.get('machineFamily') == 'powerMacOSX'):
+        if profile not in ('macosx-10.2', 'macosx-10.3', 'macosx-10.4') or \
+                template.get('machineFamily') != 'powerMacOSX':
+            raise InstallError('the OS X machine type and operating-system profile do not match')
+        meta.update(schema_version=3, family='powermac', guest_os=profile, nvram='nvram.img')
+    return meta, True
+
+
+def record_installed_boot_display(esp, data, fallback_seed=''):
+    """Use the copied Mac IDs and final install seed for the first installed boot.
+
+    The running installer's Mac library is a different one. In particular an OS X
+    choice must produce its gray background before the first installed power-on.
+    """
+    final_seed = os.path.join(data, 'config', 'install-seed.json')
+    seed = final_seed if os.path.isfile(final_seed) else fallback_seed
+    argv = [f'{LIB}/image/rb-bootdisplay', '--esp', esp, '--timing', 'none', '--art', 'none',
+            '--machines', os.path.join(data, 'machines')] + \
+           (['--settings', seed] if seed and os.path.isfile(seed) else ['--pixel-scale', 'auto'])
+    run(argv + ['--initial'])
+    if os.path.exists('/sys/kernel/boot_params/data'):
+        run(argv)
+
+
+NM_DIR = 'network/connections'
+
+
+def copy_network_profiles(src_dir, data):
+    """Keyfiles from the live system to RBDATA/network/connections (0700/0600)."""
+    dest = os.path.join(data, NM_DIR)
+    os.makedirs(dest, mode=0o700, exist_ok=True)
+    os.chmod(os.path.dirname(dest), 0o700)
+    os.chmod(dest, 0o700)
+    count = 0
+    for name in sorted(os.listdir(src_dir)):
+        src = os.path.join(src_dir, name)
+        if not name.endswith('.nmconnection') or os.path.islink(src) or not os.path.isfile(src):
+            continue
+        with open(src, 'rb') as f:
+            data_bytes = f.read(65536)
+        fd = os.open(os.path.join(dest, name), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.geteuid() == 0:
+            os.chown(os.path.join(dest, name), 0, 0)
+        count += 1
+    return count
+
+
+BT_DIR = 'bluetooth'
+BT_NAME = re.compile(r'^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$')
+
+
+def copy_bluetooth(src_dir, data, max_files=2048, max_bytes=8 << 20):
+    """BlueZ's store to RBDATA/bluetooth: adapter and device directories named by
+    address, regular files only (no links), 0700/0600 root. Returns the number of
+    devices with keys (an ``info`` file)."""
+    dest = os.path.join(data, BT_DIR)
+    os.makedirs(dest, mode=0o700, exist_ok=True)
+    os.chmod(dest, 0o700)
+    devices = files = total = 0
+    for root, dirs, names in os.walk(src_dir):
+        rel = os.path.relpath(root, src_dir)
+        depth = 0 if rel == '.' else rel.count(os.sep) + 1
+        # <adapter>/<device>/ (and the adapter's cache/), nothing deeper than three levels
+        dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(root, d)) and depth < 3 and
+                         (depth > 0 or BT_NAME.match(d)))
+        target = dest if rel == '.' else os.path.join(dest, rel)
+        os.makedirs(target, mode=0o700, exist_ok=True)
+        os.chmod(target, 0o700)
+        for name in sorted(names):
+            src = os.path.join(root, name)
+            if depth == 0 or os.path.islink(src) or not os.path.isfile(src):
+                continue
+            size = os.path.getsize(src)
+            if files >= max_files or total + size > max_bytes:
+                raise InstallError('the Bluetooth pairing directory is unexpectedly large')
+            with open(src, 'rb') as f:
+                data_bytes = f.read()
+            out = os.path.join(target, name)
+            fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.geteuid() == 0:
+                os.chown(out, 0, 0)
+            files += 1
+            total += size
+            if name == 'info' and depth == 2:
+                devices += 1
+    return devices
+
+
+def configure_identity(root, hostname):
+    with open(f'{root}/etc/hostname', 'w') as f:
+        f.write(hostname + '\n')
+    with open(f'{root}/etc/hosts', 'w') as f:
+        f.write(f'127.0.0.1\tlocalhost\n127.0.1.1\t{hostname}\n::1\t\tlocalhost ip6-localhost ip6-loopback\n')
+    with open(f'{root}/etc/machine-id', 'w') as f:
+        f.write(uuid.uuid4().hex + '\n')
+
+
+def populate_data(args, data):
+    """RBDATA's directories, the Macs, the seed, Wi-Fi profiles and Bluetooth pairings."""
+    for sub in ('logs', 'machines', 'config', 'share', 'checkpoints', 'state'):
+        os.makedirs(f'{data}/{sub}', exist_ok=True)
+    os.chmod(f'{data}/state', 0o700)
+    os.makedirs(f'{data}/logs/journal', exist_ok=True)
+    install_machines(args.machine_dir, data, args.machine_id, args.seed)
+    emit('machine', 1, 'Mac OS copied' if args.machine_dir else 'Ready for Mac OS')
+    if args.network_profiles:
+        log(f'network profiles copied: {copy_network_profiles(args.network_profiles, data)}')
+    if args.bluetooth:
+        log(f'Bluetooth pairings copied: {copy_bluetooth(args.bluetooth, data)}')
+
+
+def install(args):
+    if args.board == 'rpi':
+        return install_rpi(args)
+    emit('validate', 0, 'Checking the destination disk…')
+    disk = validate(args)
+    emit('validate', 1, f"Installing on {disk['model']}")
+    if args.dry_run:
+        emit('finish', 1, 'Dry run: nothing was written.')
+        return
+    os.makedirs(WORK, exist_ok=True)
+    mounts = []
+    try:
+        emit('partition', 0, 'Erasing the disk…')
+        parts = partition(args.target)
+        emit('partition', 1, 'Disk erased')
+
+        emit('format', 0, 'Preparing volumes…')
+        run(['mkfs.vfat', '-F', '32', '-n', 'RBEFI', parts[1]])
+        run(['mkfs.ext4', '-F', '-q', '-L', 'RBROOT_A', '-E', 'lazy_itable_init=0,lazy_journal_init=0', parts[3]])
+        emit('format', 0.4, 'Preparing volumes…')
+        run(['mkfs.ext4', '-F', '-q', '-L', 'RBROOT_B', '-E', 'lazy_itable_init=0,lazy_journal_init=0', parts[4]])
+        run(['mkfs.xfs', '-f', '-q', '-L', 'RBDATA', '-m', 'reflink=1', parts[5]])
+        emit('format', 1, 'Volumes ready')
+
+        root = f'{WORK}/root'
+        mount(parts[3], root); mounts.append(root)
+        emit('system', 0, 'Copying RetroBoot…')
+        copy_system(args.source_root, root)
+        os.chmod(root, 0o755)   # an image built under umask 077 had a 0700 / (nothing but root worked)
+        emit('system', 1, 'RetroBoot copied')
+
+        emit('configure', 0, 'Configuring…')
+        configure_identity(root, args.hostname or 'retroboot')
+        esp = f'{WORK}/esp'
+        mount(parts[1], esp, 'vfat'); mounts.append(esp)
+        run(['cp', '-r', f'{BOOT}/esp/.', f'{esp}/'])
+        # System slots (ARCHITECTURE 13): slot a active, its kernel arguments on the ESP.
+        with open(f'{BOOT}/boot.json') as f:
+            cmdline = json.load(f)['kernel_cmdline']
+        with open(os.path.join(args.source_root, 'usr/lib/retroboot/release.json')) as f:
+            rel = json.load(f)
+        run([sys.executable, '-I', f'{LIB}/hostd/retroboot/update/slotenv.py', 'init-esp', esp, cmdline,
+             str(rel.get('version', '')), str(rel.get('build_id', ''))])
+        run(['sync'])
+        emit('configure', 1, 'Configured')
+
+        emit('bootloader', 0, 'Installing the startup software…')
+        devmap = f'{WORK}/device.map'
+        with open(devmap, 'w') as f:
+            f.write(f'(hd0) {args.target}\n')
+        # grub-bios-setup derives a root device from the directory holding boot.img
+        # and core.img; the live overlay has none, so use the copy just written to
+        # RBROOT_A on the target disk (identical files).
+        bios_dir = f'{root}{BOOT}/i386-pc'
+        run([f'{bios_dir}/grub-bios-setup', '-d', bios_dir, '-m', devmap, '-s', args.target])
+        nvram = 'not applicable (BIOS)'
+        if os.path.isdir('/sys/firmware/efi/efivars') and shutil.which('efibootmgr'):
+            try:
+                listing = run(['efibootmgr'])
+                for line in listing.splitlines():
+                    m = re.match(r'^Boot([0-9A-Fa-f]{4})\*?\s+RetroBoot\b', line)
+                    if m:
+                        run(['efibootmgr', '-q', '-b', m.group(1), '-B'])
+                run(['efibootmgr', '-q', '-c', '-d', args.target, '-p', '1', '-L', 'RetroBoot',
+                     '-l', '\\EFI\\retroboot\\grubx64.efi'])
+                # Skip the firmware's boot-option countdown where the firmware honours it.
+                run(['efibootmgr', '-q', '-t', '0'])
+                nvram = 'entry created'
+            except InstallError as error:  # the removable path still boots
+                nvram = f'skipped ({error})'
+        log(f'UEFI NVRAM: {nvram}')
+        emit('bootloader', 1, 'Startup software installed')
+
+        data = f'{WORK}/data'
+        mount(parts[5], data, 'xfs'); mounts.append(data)
+        populate_data(args, data)
+        seed = args.seed or (os.path.join(args.machine_dir[0], 'install-seed.json') if args.machine_dir else '')
+        record_installed_boot_display(esp, data, seed)
+
+        emit('finish', 0, 'Finishing…')
+        run(['sync'])
+        # The user is told to remove the medium next: make sure the live system no
+        # longer reads from it (no-op when not running from removable media).
+        if os.path.isdir('/run/retroboot/live/medium'):
+            run([f'{LIB}/image/rb-live-toram'])
+    finally:
+        for path in reversed(mounts):
+            subprocess.run(['umount', path], stderr=subprocess.DEVNULL)
+    emit('finish', 1, 'Installation complete')
+
+
+# --- Raspberry Pi (--board rpi; ARCHITECTURE 8.2, rpi_layout.py) ---------------------
+
+def part_node(disk, number):
+    p = rpi_layout.sysfs_partitions(disk).get(number)
+    return f"/dev/{p['name']}" if p else None
+
+
+def partx(disk, action, number, check=True):
+    argv = ['partx', action, '--nr', str(number), disk]
+    if check:
+        run(argv)
+    else:
+        log('$ ' + ' '.join(argv))
+        subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def partition_free_space(disk, plan):
+    """Add RBROOT_A and RBDATA in the free space after the installer, replacing an earlier
+    installation there. The disk stays in use (the live system reads its payload), so the
+    table is written directly and the kernel is told partition by partition (BLKPG through
+    partx); the installer's own partitions are never touched. Returns ({number: node},
+    {"root", "data", "boot"}: PARTUUIDs)."""
+    layout = rpi_layout.free_space_layout(plan)
+    for num in plan['remove']:
+        node = part_node(disk, num)
+        if node:
+            run(['wipefs', '-a', '-q', node])
+    if plan['table'] == 'dos':
+        s0 = rpi_layout.read_sector0(disk)
+        info = rpi_layout.mbr_parse(s0)
+        disk_id = info['disk_id']
+        if not disk_id:            # PARTUUIDs need a disk signature
+            disk_id = int.from_bytes(os.urandom(4), 'little') or 1
+            s0 = s0[:440] + disk_id.to_bytes(4, 'little') + s0[444:]
+        for num in plan['remove']:
+            if num <= 4:
+                s0 = rpi_layout.mbr_set(s0, num, 0, 0, 0)
+        for num, start, end, _, _ in layout:
+            if num in info['entries'] and num not in plan['remove']:
+                raise InstallError(f'partition slot {num} is in use')
+            s0 = rpi_layout.mbr_set(s0, num, rpi_layout.LINUX_MBR_TYPE, start // rpi_layout.SECTOR,
+                                    (end - start) // rpi_layout.SECTOR)
+        rpi_layout.write_sector0(disk, s0)
+        uuids = {'boot': rpi_layout.mbr_partuuid(disk_id, 1)}
+    else:
+        argv = ['sgdisk']
+        for num in plan['remove']:
+            argv += ['-d', str(num)]
+        for num, start, end, _, _ in layout:
+            argv += ['-n', f'{num}:{start // rpi_layout.SECTOR}:{end // rpi_layout.SECTOR - 1}', '-t', f'{num}:8300']
+        # sgdisk cannot make the kernel re-read a disk in use; that is done below with partx.
+        log('$ ' + ' '.join(argv + [disk]))
+        r = subprocess.run(argv + [disk], capture_output=True, text=True)
+        log((r.stdout + r.stderr).strip()[-500:])
+        uuids = {'boot': rpi_layout.gpt_partuuid(disk, 1, log)}
+        for num, start, end, _, _ in layout:
+            out = run(['sgdisk', '-i', str(num), disk])
+            m = re.search(r'^First sector: (\d+).*\n^Last sector: (\d+)', out, re.M)
+            if not m or int(m.group(1)) * 512 != start or (int(m.group(2)) + 1) * 512 != end:
+                raise InstallError(f'partition {num} was not created as planned')
+    for num in plan['remove']:
+        partx(disk, '--delete', num, check=False)
+    for num, *_ in layout:
+        if part_node(disk, num):
+            partx(disk, '--delete', num, check=False)
+        partx(disk, '--add', num)
+    run(['udevadm', 'settle', '--timeout=20'])
+    nodes = {}
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        kernel = rpi_layout.sysfs_partitions(disk)
+        if all(num in kernel and os.path.exists(f"/dev/{kernel[num]['name']}") for num, *_ in layout):
+            for num, start, end, _, _ in layout:
+                if (kernel[num]['start'], kernel[num]['start'] + kernel[num]['size']) != (start, end):
+                    raise InstallError(f'the kernel sees partition {num} differently than written')
+                nodes[num] = f"/dev/{kernel[num]['name']}"
+            break
+        time.sleep(0.2)
+    else:
+        raise InstallError('new partitions did not appear')
+    (root_num, *_), (data_num, *_) = layout
+    if plan['table'] == 'dos':
+        uuids.update(root=rpi_layout.mbr_partuuid(disk_id, root_num), data=rpi_layout.mbr_partuuid(disk_id, data_num))
+    else:
+        uuids.update(root=rpi_layout.gpt_partuuid(disk, root_num, log), data=rpi_layout.gpt_partuuid(disk, data_num, log))
+    return nodes, uuids
+
+
+def bootdisplay_cmdline(path, seed):
+    """The splash's startup arguments in a cmdline.txt (rb-bootdisplay-rpi, as installed)."""
+    tool = f'{LIB}/image/rb-bootdisplay-rpi'
+    if not os.path.exists(tool):
+        log('rb-bootdisplay-rpi missing: startup arguments left at the image defaults')
+        return
+    try:
+        run([tool, '--cmdline', path, '--timing', 'none'] +
+            (['--settings', seed] if seed and os.path.isfile(seed) else []))
+    except InstallError as error:   # the defaults in the template still boot
+        log(f'rb-bootdisplay-rpi: {error}')
+
+
+def restore_installer_config(boot):
+    """A card with RetroBoot installed beside the installer: put the installer's own
+    config.txt back first, so that any interruption from here on leaves a card that
+    starts the installer, and drop the old system's boot files."""
+    cfg = os.path.join(boot, 'config.txt')
+    with open(cfg) as f:
+        current = f.read()
+    if rpi_layout.is_installed_config(current):
+        saved = os.path.join(boot, rpi_layout.INSTALLER_CONFIG)
+        if not os.path.isfile(saved):
+            raise InstallError("the installer's own config.txt was not kept on this card")
+        with open(saved, 'rb') as f:
+            rpi_layout.write_file(cfg, f.read())
+        log('installer config.txt restored')
+    for name in ('tryboot.txt',):
+        try:
+            os.unlink(os.path.join(boot, name))
+        except FileNotFoundError:
+            pass
+    old = os.path.join(boot, rpi_layout.OS_PREFIX)
+    if os.path.isdir(old):
+        shutil.rmtree(old)
+    rpi_layout.fsync_dir(boot)
+
+
+def write_rpi_os_files(boot, prefix, source, root_partuuid, seed):
+    """kernel8.img, initramfs8, device trees, overlays and cmdline.txt of the installed root
+    below boot/prefix; returns the cmdline."""
+    kf = rpi_layout.kernel_files(source)
+    dest = os.path.join(boot, prefix) if prefix else boot
+    rpi_layout.copy_files(rpi_layout.os_files(kf), dest)
+    rpi_layout.copy_display_files(source, boot, keep_selection=bool(prefix))
+    with open(os.path.join(source, 'usr/lib/retroboot/boot/cmdline.txt.in')) as f:
+        cmdline = rpi_layout.cmdline_for(f.read(), root_partuuid)
+    path = os.path.join(dest, 'cmdline.txt')
+    rpi_layout.write_file(path, cmdline.encode())
+    bootdisplay_cmdline(path, seed)
+    with open(path) as f:
+        return f.read().strip()
+
+
+def switch_to_installed(boot, source):
+    """The last step on a free-space card: tryboot.txt is the installer's configuration (kept
+    as retroboot/installer-config.txt too), config.txt the installed system's."""
+    cfg = os.path.join(boot, 'config.txt')
+    with open(cfg, 'rb') as f:
+        current = f.read()
+    if rpi_layout.is_installed_config(current.decode('utf-8', 'replace')):
+        raise InstallError("config.txt is not the installer's")   # restore_installer_config ran first
+    rpi_layout.write_file(os.path.join(boot, rpi_layout.INSTALLER_CONFIG), current)
+    rpi_layout.write_file(os.path.join(boot, 'tryboot.txt'), current)
+    with open(os.path.join(source, 'usr/lib/retroboot/boot/config.txt')) as f:
+        installed = rpi_layout.installed_config(f.read())
+    rpi_layout.write_file(cfg, installed.encode())
+
+
+def loops_on_medium():
+    found = []
+    try:
+        names = sorted(os.listdir('/sys/block'))
+    except OSError:
+        return found
+    for name in names:
+        backing = f'/sys/block/{name}/loop/backing_file'
+        if name.startswith('loop') and os.path.exists(backing):
+            with open(backing) as f:
+                path = f.read().strip()
+            if path.startswith('/run/retroboot/live/medium/'):
+                found.append(path)
+    return found
+
+
+def mem_available():
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def release_medium(args):
+    """Let the user take the medium out before restarting (rb-live-toram copies the images
+    the live system reads into RAM) when there is memory for it: 'released'; 'kept' for
+    a free-space installation (the card stays); 'in-use' when the copy would not fit
+    (a 2 GB Raspberry Pi with large Macs embedded): shut down before removing it."""
+    if not os.path.isdir('/run/retroboot/live/medium'):
+        return 'released'
+    if args.mode == 'free-space':
+        return 'kept'
+    if os.path.exists('/run/retroboot/live/medium-released'):
+        return 'released'
+    need = sum(os.path.getsize(p) for p in loops_on_medium() if os.path.exists(p))
+    avail = mem_available()
+    if need + 512 * 1024 ** 2 > avail:
+        log(f'installer images ({need} bytes) not copied to RAM: {avail} bytes available')
+        return 'in-use'
+    run([f'{LIB}/image/rb-live-toram'])
+    return 'released'
+
+
+def install_rpi(args):
+    emit('validate', 0, 'Checking the destination disk…')
+    disk = validate(args)
+    free = args.mode == 'free-space'
+    emit('validate', 1, f"Installing on {disk['model']}" + (' (free space after the installer)' if free else ''))
+    if args.dry_run:
+        emit('finish', 1, 'Dry run: nothing was written.')
+        return
+    os.makedirs(WORK, exist_ok=True)
+    mounts = []
+    boot = None
+    medium = 'in-use'
+    try:
+        if free:
+            plan = disk['plan']
+            boot = BootPartition(f"/dev/{plan['boot_partition']}")
+            bmnt = boot.open(write=True)
+            emit('partition', 0, 'Preparing the free space…')
+            restore_installer_config(bmnt)
+            nodes, uuids = partition_free_space(args.target, plan)
+            (root_num, *_), (data_num, *_) = rpi_layout.free_space_layout(plan)
+            root_dev, data_dev = nodes[root_num], nodes[data_num]
+            emit('partition', 1, 'Free space ready')
+        else:
+            emit('partition', 0, 'Erasing the disk…')
+            parts = partition(args.target, RPI_LAYOUT)
+            root_dev, data_dev = parts[3], parts[5]
+            uuids = {'root': rpi_layout.gpt_partuuid(args.target, 3, log)}
+            emit('partition', 1, 'Disk erased')
+
+        emit('format', 0, 'Preparing volumes…')
+        if not free:
+            run(['mkfs.vfat', '-F', '32', '-n', 'RETROBOOT', parts[1]])
+        run(['mkfs.ext4', '-F', '-q', '-L', 'RBROOT_A', '-E', 'lazy_itable_init=0,lazy_journal_init=0', root_dev])
+        emit('format', 0.4, 'Preparing volumes…')
+        if not free:
+            run(['mkfs.ext4', '-F', '-q', '-L', 'RBROOT_B', '-E', 'lazy_itable_init=0,lazy_journal_init=0', parts[4]])
+        run(['mkfs.xfs', '-f', '-q', '-L', 'RBDATA', '-m', 'reflink=1', data_dev])
+        emit('format', 1, 'Volumes ready')
+
+        root = f'{WORK}/root'
+        mount(root_dev, root); mounts.append(root)
+        emit('system', 0, 'Copying RetroBoot…')
+        copy_system(args.source_root, root)
+        os.chmod(root, 0o755)
+        emit('system', 1, 'RetroBoot copied')
+
+        emit('configure', 0, 'Configuring…')
+        configure_identity(root, args.hostname or 'retroboot')
+        if free:
+            with open(f'{root}/etc/fstab') as f:
+                fstab = f.read()
+            try:
+                fstab = rpi_layout.fstab_by_partuuid(fstab, uuids['root'], uuids['data'], uuids['boot'])
+            except rpi_layout.LayoutError as error:
+                raise InstallError(str(error)) from None
+            with open(f'{root}/etc/fstab', 'w') as f:
+                f.write(fstab)
+        run(['sync'])
+        emit('configure', 1, 'Configured')
+
+        emit('bootloader', 0, 'Installing the startup software…')
+        if free:
+            cmdline = write_rpi_os_files(bmnt, rpi_layout.OS_PREFIX, args.source_root, uuids['root'], args.seed)
+        else:
+            esp = f'{WORK}/esp'
+            mount(parts[1], esp, 'vfat'); mounts.append(esp)
+            rpi_layout.copy_files(rpi_layout.firmware_files(args.source_root), esp)
+            cmdline = write_rpi_os_files(esp, '', args.source_root, uuids['root'], args.seed)
+            with open(os.path.join(args.source_root, 'usr/lib/retroboot/boot/config.txt'), 'rb') as f:
+                rpi_layout.write_file(os.path.join(esp, 'config.txt'), f.read())
+            with open(os.path.join(args.source_root, 'usr/lib/retroboot/release.json')) as f:
+                rel = json.load(f)
+            # the slot files of image/rpi's make-disk.sh (slot a active; updates are unavailable on a Pi)
+            run([sys.executable, '-I', f'{LIB}/hostd/retroboot/update/slotenv.py', 'init-esp', esp,
+                 rpi_layout.slot_cmdline(cmdline), str(rel.get('version', '')), str(rel.get('build_id', ''))])
+        log(f'kernel command line: {cmdline}')
+        run(['sync'])
+        emit('bootloader', 1, 'Startup software installed')
+
+        data = f'{WORK}/data'
+        mount(data_dev, data, 'xfs'); mounts.append(data)
+        populate_data(args, data)
+
+        emit('finish', 0, 'Finishing…')
+        run(['sync'])
+        if free:
+            # last of all: from now on the card starts RetroBoot (the installer once, by tryboot)
+            switch_to_installed(bmnt, args.source_root)
+            run(['sync'])
+        medium = release_medium(args)
+    except rpi_layout.LayoutError as error:
+        raise InstallError(str(error)) from None
+    finally:
+        for path in reversed(mounts):
+            subprocess.run(['umount', path], stderr=subprocess.DEVNULL)
+        if boot is not None:
+            boot.close()
+    emit('finish', 1, 'Installation complete', medium=medium)
+
+
+def data_partition(target, args=None):
+    """The partition of target labelled RBDATA with XFS (written by install()); on a
+    free-space card the XFS file system labelled RBDATA after the installer."""
+    if args is not None and args.board == 'rpi' and args.mode == 'free-space':
+        disk = next((d for d in list_disks() if d['path'] == target), None)
+        plan = (disk or {}).get('free_space') or {}
+        kernel = rpi_layout.sysfs_partitions(target)
+        cands = [f"/dev/{kernel[n]['name']}" for n in plan.get('remove') or [] if n in kernel]
+        out = run(['lsblk', '-J', '-p', '-o', 'NAME,LABEL,FSTYPE,TYPE', target])
+        tree = json.loads(out)['blockdevices'][0]
+        found = [c['name'] for c in tree.get('children') or [] if c.get('type') == 'part' and
+                 c['name'] in cands and c.get('label') == 'RBDATA' and c.get('fstype') == 'xfs']
+        if len(found) != 1:
+            raise InstallError('the card has no RetroBoot data volume after the installer')
+        return found[0]
+    out = run(['lsblk', '-J', '-p', '-o', 'NAME,PARTLABEL,FSTYPE,TYPE', target])
+    tree = json.loads(out)['blockdevices'][0]
+    found = [c['name'] for c in tree.get('children') or []
+             if c.get('type') == 'part' and c.get('partlabel') == 'RBDATA' and c.get('fstype') == 'xfs']
+    if len(found) != 1:
+        raise InstallError('the disk has no RetroBoot data volume')
+    return found[0]
+
+
+def check_target(target, args=None):
+    if os.geteuid() != 0:
+        raise InstallError('must run as root')
+    match = [d for d in list_disks() if d['path'] == target]
+    if not match:
+        raise InstallError(f'{target} is not a disk reported by list-disks (exact path required)')
+    free = args is not None and args.board == 'rpi' and args.mode == 'free-space'
+    if match[0]['is_boot_medium'] and not free:
+        raise InstallError('refusing to use the disk RetroBoot is running from')
+    if free and not match[0]['is_boot_medium']:
+        raise InstallError('free space is only used on the disk the installer runs from')
+    st = os.stat(target)
+    if not stat.S_ISBLK(st.st_mode) or os.path.realpath(target) != target:
+        raise InstallError('target must be a block device path, not a link')
+
+
+def mount_data(args):
+    """--mount-data DIR: the new disk's RBDATA at DIR, read-write, for Macs the installer
+    downloads onto it."""
+    check_target(args.target, args)
+    part = data_partition(args.target, args)
+    path = args.mount_data
+    if os.path.ismount(path):
+        raise InstallError(f'{path} is already a mount point')
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    mount(part, path, 'xfs')
+    emit('mount', 1, 'Data volume ready', path=path)
+
+
+def unmount_data(args):
+    path = args.unmount_data
+    if os.path.ismount(path):
+        check_target(args.target, args)
+        part = data_partition(args.target, args)
+        src = run(['findmnt', '-n', '-o', 'SOURCE', '--mountpoint', path]).strip()
+        if os.path.realpath(src) != os.path.realpath(part):
+            raise InstallError(f'{path} is not the data volume of {args.target}')
+        run(['sync'])
+        run(['umount', path])
+    emit('mount', 1, 'Data volume closed', path=path)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--target', required=True)
+    ap.add_argument('--machine-dir', action='append', default=[],
+                    help='guest machine directory to install (repeatable)')
+    ap.add_argument('--seed', help="hostd's install seed (RBDATA/config/install-seed.json)")
+    ap.add_argument('--mount-data', help="mount the target's RBDATA here (after an installation)")
+    ap.add_argument('--unmount-data', help='sync and unmount what --mount-data mounted')
+    ap.add_argument('--hostname')
+    ap.add_argument('--machine-id')
+    ap.add_argument('--network-profiles', help='directory of NetworkManager keyfiles to carry over')
+    ap.add_argument('--bluetooth', help="BlueZ's pairing directory (/var/lib/bluetooth) to carry over")
+    ap.add_argument('--board', choices=('x86', 'rpi'), default='x86',
+                    help='x86 (GRUB, the default) or rpi (Raspberry Pi 4/5 layouts, ARCHITECTURE 8.2)')
+    ap.add_argument('--mode', choices=('disk', 'free-space'), default='disk',
+                    help='rpi: erase DEV (disk) or use the free space after the installer on its own card')
+    ap.add_argument('--source-root', default=LIVE_ROOT, help=argparse.SUPPRESS)
+    ap.add_argument('--dry-run', action='store_true')
+    args = ap.parse_args()
+    if args.mode == 'free-space' and args.board != 'rpi':
+        ap.error('--mode free-space needs --board rpi')
+    try:
+        if args.mount_data:
+            mount_data(args)
+        elif args.unmount_data:
+            unmount_data(args)
+        else:
+            install(args)
+        return 0
+    except Exception as error:  # report every failure in the contract's error form
+        log(f'{type(error).__name__}: {error}')
+        message = str(error) if isinstance(error, InstallError) else f'Unexpected error: {type(error).__name__}'
+        sys.stdout.write(json.dumps({'phase': 'error', 'progress': _last, 'message': message}) + '\n')
+        sys.stdout.flush()
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,2 @@
+# a72dvfs variant: the A72 SRAM LDO regulator (variants/a72dvfs/0001-a72-dvfs.patch).
+CONFIG_REGULATOR_MT6797_SRAMLDO_B=y

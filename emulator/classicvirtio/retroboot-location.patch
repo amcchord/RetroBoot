@@ -1,0 +1,142 @@
+diff --git a/device-input.c b/device-input.c
+index 4e625d2..7337791 100644
+--- a/device-input.c
++++ b/device-input.c
+@@ -6,6 +6,8 @@
+ #include <Events.h>
+ #include <LowMem.h>
+ #include <MixedMode.h>
++#include <NameRegistry.h>
++#include <OSUtils.h>
+ #include <Quickdraw.h>
+ #include <Types.h>
+ 
+@@ -81,6 +83,107 @@ DriverDescription TheDriverDescription = {
+ 	{{kServiceCategoryNdrvDriver, kNdrvTypeIsGeneric, {0x00, 0x10, 0x80, 0x00}}}} //v0.1
+ };
+ 
++// RetroBoot: Mac OS's time zone.  The Mac clock already runs on local time
++// (QEMU -rtc base=localtime), but mac99's NVRAM, which holds XPRAM, is volatile,
++// so Mac OS would never know which zone that is.  hostd passes the zone as an
++// Open Firmware option, which Mac OS copies into the Name Registry:
++//     -prom-env retroboot-location=LATITUDE,LONGITUDE,GMTDELTA[,WHEN,NEXTDELTA]
++// hexadecimal longs exactly as in MachineLocation (Fracts of 90 degrees;
++// gmtDelta's low 24 bits are the offset in seconds including daylight saving,
++// its high byte 0x80 when daylight saving is in effect).  The optional pair is
++// the zone's next change (daylight saving starting or ending): the Mac clock's
++// reading at that moment and the gmtDelta from then on; the driver then looks
++// once a minute (accRun) and, when it is time, moves the clock and gmtDelta as
++// Mac OS's own Date & Time does.  This driver is in every RetroBoot machine,
++// with or without the shared folder, and starts long before anything reads
++// the location.  No option: nothing changes.
++static short inputRefNum;
++static struct {
++	bool pending;
++	unsigned long when; // the Mac clock's reading at the next change
++	long fromDelta, toDelta; // gmtDelta before and after it
++} zoneChange;
++
++static long deltaSeconds(long gmtDelta) {
++	long s = gmtDelta & 0xffffff;
++	return (s & 0x800000) ? s - 0x1000000 : s;
++}
++
++static void checkZoneChange(void) {
++	if (!zoneChange.pending) return;
++	unsigned long now = 0;
++	GetDateTime(&now);
++	if (now < zoneChange.when) return;
++
++	zoneChange.pending = false;
++	(*GetDCtlEntry(inputRefNum))->dCtlFlags &= ~dNeedTimeMask;
++
++	MachineLocation loc;
++	ReadLocation(&loc);
++	if (loc.u.gmtDelta != zoneChange.fromDelta) {
++		printf("Zone change skipped: Mac OS's time zone was changed\n");
++		return;
++	}
++	SetDateTime(now + deltaSeconds(zoneChange.toDelta) - deltaSeconds(zoneChange.fromDelta));
++	loc.u.gmtDelta = zoneChange.toDelta;
++	WriteLocation(&loc);
++	printf("Zone change at %08lx: gmtDelta %08lx\n", now, zoneChange.toDelta);
++}
++
++static void seedLocation(void) {
++	RegEntryID options;
++	char text[64] = {};
++	RegPropertyValueSize size = sizeof text - 1;
++
++	RegistryEntryIDInit(&options);
++	if (RegistryCStrEntryLookup(NULL, "Devices:device-tree:options", &options) != noErr) return;
++	OSStatus err = RegistryPropertyGet(&options, "retroboot-location", text, &size);
++	RegistryEntryIDDispose(&options);
++	if (err != noErr) return;
++	text[size < sizeof text ? size : sizeof text - 1] = 0;
++
++	unsigned long field[5] = {};
++	int n = 0, digits = 0;
++	for (const char *p = text; *p; p++) {
++		int d;
++		if (*p == ',') {
++			if (digits == 0 || ++n > 4) return;
++			digits = 0;
++			continue;
++		} else if (*p >= '0' && *p <= '9') {
++			d = *p - '0';
++		} else if (*p >= 'a' && *p <= 'f') {
++			d = *p - 'a' + 10;
++		} else if (*p >= 'A' && *p <= 'F') {
++			d = *p - 'A' + 10;
++		} else {
++			return;
++		}
++		if (++digits > 8) return;
++		field[n] = field[n] << 4 | d;
++	}
++	if ((n != 2 && n != 4) || digits == 0) {
++		printf("Ignoring retroboot-location \"%s\"\n", text);
++		return;
++	}
++
++	MachineLocation loc = {.latitude = field[0], .longitude = field[1]};
++	loc.u.gmtDelta = field[2];
++	WriteLocation(&loc);
++	printf("Mac OS location set: %08lx %08lx %08lx\n", field[0], field[1], field[2]);
++
++	if (n == 4) {
++		zoneChange.when = field[3];
++		zoneChange.fromDelta = field[2];
++		zoneChange.toDelta = field[4];
++		zoneChange.pending = true;
++		DCtlHandle dce = GetDCtlEntry(inputRefNum);
++		(*dce)->dCtlDelay = 60 * 60; // look once a minute
++		(*dce)->dCtlFlags |= dNeedTimeMask;
++		printf("Next zone change at %08lx: gmtDelta %08lx\n", field[3], field[4]);
++	}
++}
++
+ // Remember that this only needs to allow/deny the request, cleanup.c handles the rest
+ int DriverStop(void) {
+ 	printf("Stopping\n");
+@@ -91,6 +194,9 @@ int DriverStart(short refNum) {
+ 	InitLog();
+ 	sprintf(LogPrefix, "Input(%d) ", refNum);
+ 
++	inputRefNum = refNum;
++	seedLocation();
++
+ 	if (!VInit(refNum)) {
+ 		printf("Transport layer failure\n");
+ 		goto openErr;
+@@ -138,6 +244,10 @@ int DriverWrite(IOParam *pb) {
+ }
+ 
+ int DriverCtl(CntrlParam *pb) {
++	if (pb->csCode == accRun) {
++		checkZoneChange();
++		return noErr;
++	}
+ 	return controlErr;
+ }
+ 

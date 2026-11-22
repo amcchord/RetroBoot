@@ -1,0 +1,21 @@
+# RetroBoot on the Gemini PDA: the USB gadget network (g_ether, usb0) as a fallback path,
+# at gemini-debian's address. Read-only profile (NetworkManager reads
+# /usr/lib/NetworkManager/system-connections besides the keyfile directory); never the
+# default route, so Wi-Fi keeps it.
+[connection]
+id=retroboot-usb0
+uuid=6d3a3c2e-4b8f-4e55-9a2c-52b1d9c0e182
+type=ethernet
+interface-name=usb0
+autoconnect=true
+autoconnect-priority=-10
+
+[ethernet]
+
+[ipv4]
+method=manual
+address1=@USB0_ADDRESS@
+never-default=true
+
+[ipv6]
+method=disabled

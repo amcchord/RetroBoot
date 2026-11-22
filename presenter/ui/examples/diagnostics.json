@@ -1,0 +1,31 @@
+{
+  "id": "diagnostics",
+  "kind": "window",
+  "title": "Diagnostics",
+  "width": 480,
+  "items": [
+    {"type": "group", "label": "Mac OS", "items": [
+      {"type": "text", "text": "State: running since 10:42 (responsive)"},
+      {"type": "text", "text": "Machine: Power Mac G4, 512 MB, Mac OS 9.2.1"},
+      {"type": "text", "text": "Last start: startup screen after 6.2 s, Finder after 21 s"}
+    ]},
+    {"type": "group", "label": "This Computer", "items": [
+      {"type": "text", "text": "RetroBoot 0.2.0 (build 4f1c2a9e)"},
+      {"type": "text", "text": "Display: Virtual-1, 1920 × 1080 at 60 Hz, scale 2"},
+      {"type": "text", "text": "Ethernet: 192.168.1.42; Wi-Fi: not connected"},
+      {"type": "text", "text": "Storage: 412 GB free of 476 GB"}
+    ]},
+    {"type": "group", "label": "Recent Events", "items": [
+      {"type": "text", "style": "small", "text": "10:42:07  Mac OS reached its startup screen"},
+      {"type": "text", "style": "small", "text": "10:41:58  Mac OS started (session 6c1e)"},
+      {"type": "text", "style": "small", "text": "10:40:12  Display settings confirmed"},
+      {"type": "text", "style": "small", "text": "09:15:44  Clean shutdown verified; checkpoint saved"},
+      {"type": "text", "style": "small", "text": "09:02:31  Wi-Fi profile “HomeNet” removed"}
+    ]},
+    {"type": "checkbox", "id": "include_logs", "label": "Include system logs in the evidence bundle", "value": true},
+    {"type": "buttons", "items": [
+      {"id": "bundle", "label": "Save Evidence…", "align": "left"},
+      {"id": "cancel", "label": "Done", "default": true}
+    ]}
+  ]
+}

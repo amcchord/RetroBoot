@@ -1,0 +1,10 @@
+# Modules listed here are copied into the initramfs *and loaded unconditionally*
+# at every boot, before the root file system is mounted. Nothing is listed: on a
+# Celeron N4100 the forced `modprobe amdgpu` alone took 6.0 s of the kernel phase
+# on a machine without an AMD GPU (3.9 s on an N5105), and the root mount waited
+# for it (image/reports/hostboot-2026-10-12.md).
+#
+# The KMS drivers for the splash and the live installer's modules are added
+# without being loaded by hooks/retroboot-modules; udev loads a KMS driver when
+# its device is present, and the live script (scripts/retroboot-live) loads the
+# installer's own.

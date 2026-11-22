@@ -1,0 +1,17 @@
+--- a/target/ppc/fpu_helper.c
++++ b/target/ppc/fpu_helper.c
+@@ -461,8 +461,12 @@
+
+     if (cs->exception_index == POWERPC_EXCP_PROGRAM &&
+         (env->error_code & POWERPC_EXCP_FP)) {
+-        /* Deferred floating-point exception after target FPR update */
+-        if (fp_exceptions_enabled(env)) {
++        /* FPSCR writes may have disabled or cleared a pending exception. */
++        if (!(env->fpscr & FP_FEX)) {
++            cs->exception_index = POWERPC_EXCP_NONE;
++            env->error_code = 0;
++        } else if (fp_exceptions_enabled(env)) {
++            /* Deferred exception after target FPR update. */
+             raise_exception_err_ra(env, cs->exception_index,
+                                    env->error_code, raddr);
+         }

@@ -1,0 +1,358 @@
+#!/bin/busybox sh
+# RetroBoot initrd /init for the Planet Computers Gemini PDA.
+#
+# LK boots p22 `boot` (kernel + this ramdisk) unless para says "boot-recovery". This
+# script mounts the eMMC `linux` partition (Gemian's root; RetroBoot lives in its
+# /retroboot directory), keeps a boot-attempt counter beside it and either hands over
+# to RetroBoot's systemd or asks LK to boot Gemian's recovery slot (p1) instead.
+#
+#   1. proc, sysfs, devtmpfs, tmpfs /run. Messages go to the serial console only
+#      (the kernel's only console is ttyS0; the panel keeps LK's logo) and to /dev/kmsg.
+#   2. LK off-mode charging (/chosen atag,boot mode 8 or 9): /lib/retroboot/charger.sh
+#      waits; holding Esc/On continues this boot, unplugging powers off.
+#   3. Partitions by GPT PARTNAME on one disk (eMMC numbering is not stable): linux, para.
+#   4. e2fsck -p linux, then -y if preen mode cannot fix it; mount it rw.
+#   5. para already "boot-recovery" → LK ignored it: stop (never loop) unless charging.
+#   6. /.retroboot-boot-attempts ≥ 3, or no /retroboot/sbin/init → write
+#      "boot-recovery" + NULs (32 bytes) to para, reset the counter, reboot.
+#   7. Otherwise count the attempt, bind /retroboot to /newroot, drop the outer mount,
+#      move /dev /proc /sys /run, switch_root to /sbin/init.
+#
+# RetroBoot userspace sets the counter back to 0 once healthy. Contract: README.md.
+
+PATH=/sbin:/bin
+export PATH
+umask 022
+
+RB_ROOT_SUBDIR=retroboot
+RB_COUNTER=.retroboot-boot-attempts
+RB_NOTE=.retroboot-fallback
+RB_LOG_FILE=.retroboot-initrd.log
+RB_MAX_ATTEMPTS=3
+RB_WAIT_S=30
+RB_EMERGENCY_S=600
+LINUX_MNT=/mnt/linux
+NEWROOT=/newroot
+RUNDIR=/run/retroboot-initrd
+
+/bin/busybox mkdir -p /proc /sys /dev /run /tmp "$LINUX_MNT" "$NEWROOT"
+/bin/busybox mount -t proc -o nosuid,nodev,noexec proc /proc
+/bin/busybox mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+/bin/busybox mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev
+/bin/busybox mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+[ -c /dev/console ] && exec </dev/console >/dev/console 2>&1
+mkdir -p "$RUNDIR"
+# Userspace writes to /dev/kmsg are rate-limited by default; this script logs a
+# few dozen lines in a burst. Restored before the handoff.
+echo on > /proc/sys/kernel/printk_devkmsg 2>/dev/null
+
+RB_VERSION=$(cat /lib/retroboot/initrd-version 2>/dev/null)
+RB_BOOT_MODE=none
+RB_LINUX_DEV=
+RB_PARA_DEV=
+RB_LINUX_MOUNTED=0
+RB_ATTEMPT=
+RB_FSCK_RC=
+
+rb_log() {
+    echo "rb-initrd: $*"
+    echo "<5>rb-initrd: $*" > /dev/kmsg 2>/dev/null
+}
+
+# Test kernels may shorten the emergency timer; the device's cmdline is compiled in.
+for w in $(cat /proc/cmdline); do
+    case "$w" in rb.emergency_s=[0-9]*) RB_EMERGENCY_S=${w#rb.emergency_s=} ;; esac
+done
+
+# ---- LK boot mode ------------------------------------------------------------------
+# /chosen "atag,boot" = 3 u32 {size 3, tag 0x41000802, mode}; this LK writes them
+# little-endian (upstream verified on glass); accept big-endian too. 8 =
+# KERNEL_POWER_OFF_CHARGING_BOOT, 9 = LOW_POWER_OFF_CHARGING_BOOT. Without the
+# property, LK's androidboot.bootreason=usb also means a charger boot.
+rb_boot_mode() {
+    f=/proc/device-tree/chosen/atag,boot
+    if [ -f "$f" ]; then
+        set -- $(od -An -tu1 -j8 -N4 "$f" 2>/dev/null)
+        if [ $# -eq 4 ]; then
+            if [ "$2$3$4" = 000 ]; then echo "$1"; return; fi
+            if [ "$1$2$3" = 000 ]; then echo "$4"; return; fi
+        fi
+        echo unknown
+        return
+    fi
+    if tr '\0 ' '\n\n' < /proc/device-tree/chosen/bootargs 2>/dev/null | grep -qx 'androidboot.bootreason=usb'; then
+        echo usb
+        return
+    fi
+    echo none
+}
+
+# ---- Partitions by PARTNAME ----------------------------------------------------------
+# One line per named partition: "<disk> <partname> /dev/<node>".
+rb_list_parts() {
+    for ue in /sys/class/block/*/uevent; do
+        [ -f "$ue" ] || continue
+        name=; node=
+        while IFS='=' read -r k v; do
+            case "$k" in PARTNAME) name=$v ;; DEVNAME) node=$v ;; esac
+        done < "$ue"
+        [ -n "$name" ] && [ -n "$node" ] || continue
+        disk=$(basename "$(readlink -f "${ue%/uevent}/..")")
+        echo "$disk $name /dev/$node"
+    done
+}
+
+# Sets RB_LINUX_DEV and RB_PARA_DEV from the disk that has both (an mmcblk disk first).
+rb_find_parts() {
+    i=0
+    while :; do
+        rb_list_parts > /tmp/parts
+        best=$(awk '$2=="linux"{l[$1]=$3} $2=="para"{p[$1]=$3}
+                    END{for (d in l) if (d in p) print (d ~ /^mmcblk/ ? 0 : 1), d, l[d], p[d]}' /tmp/parts | sort | head -n 1)
+        if [ -n "$best" ]; then
+            set -- $best
+            RB_LINUX_DEV=$3; RB_PARA_DEV=$4
+            rb_log "partitions on $2: linux=$RB_LINUX_DEV para=$RB_PARA_DEV (after ${i}x0.25 s)"
+            return 0
+        fi
+        i=$((i + 1))
+        [ "$i" -ge $((RB_WAIT_S * 4)) ] && break
+        sleep 0.25
+    done
+    # Partial results: a lone para still allows the fallback; a lone linux allows a boot.
+    RB_PARA_DEV=$(awk '$2=="para"{print $3; exit}' /tmp/parts)
+    RB_LINUX_DEV=$(awk '$2=="linux"{print $3; exit}' /tmp/parts)
+    rb_log "no disk has both linux and para after ${RB_WAIT_S} s (linux=${RB_LINUX_DEV:-none} para=${RB_PARA_DEV:-none})"
+    rb_log "named partitions: $(awk '{printf "%s:%s ", $3, $2}' /tmp/parts)"
+    return 1
+}
+
+# ---- para (LK's 32-byte command at offset 0) ------------------------------------------
+rb_para_ref() {  # the exact 32 bytes: "boot-recovery" and 19 NULs
+    dd if=/dev/zero of=/tmp/para.ref bs=32 count=1 2>/dev/null
+    printf 'boot-recovery' | dd of=/tmp/para.ref bs=32 count=1 conv=notrunc 2>/dev/null
+}
+
+rb_para_is_recovery() {
+    [ -n "$RB_PARA_DEV" ] || return 1
+    dd if="$RB_PARA_DEV" of=/tmp/para.now bs=32 count=1 2>/dev/null || return 1
+    cmp -s /tmp/para.now /tmp/para.ref
+}
+
+rb_write_para() {
+    [ -n "$RB_PARA_DEV" ] || return 1
+    [ "$(wc -c < /tmp/para.ref)" -eq 32 ] || return 1
+    dd if=/tmp/para.ref of="$RB_PARA_DEV" bs=32 count=1 conv=notrunc,fsync 2>/dev/null || return 1
+    sync
+    blockdev --flushbufs "$RB_PARA_DEV" 2>/dev/null
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+    rb_para_is_recovery
+}
+
+# ---- Logs kept on the linux filesystem (readable from Gemian too) -------------------------
+rb_persist_log() {
+    [ "$RB_LINUX_MOUNTED" = 1 ] || return 0
+    f=$LINUX_MNT/$RB_LOG_FILE
+    {
+        echo "# RetroBoot initrd $RB_VERSION, kernel $(uname -r), uptime $(cut -d' ' -f1 /proc/uptime) s"
+        dmesg
+        if [ -s /tmp/fsck.out ]; then echo "# e2fsck output"; cat /tmp/fsck.out; fi
+    } > "$f.new" 2>/dev/null
+    [ -f "$f" ] && mv -f "$f" "$f.1"
+    mv -f "$f.new" "$f"
+    sync
+}
+
+rb_write_counter() {  # rb_write_counter N
+    echo "$1" > "$LINUX_MNT/$RB_COUNTER.new" && mv -f "$LINUX_MNT/$RB_COUNTER.new" "$LINUX_MNT/$RB_COUNTER"
+    sync
+}
+
+# ---- Failure paths ----------------------------------------------------------------
+# No way to reach Gemian automatically: never reboot-loop. Serial shell, then power off.
+rb_emergency() {
+    rb_log "EMERGENCY: $*"
+    rb_persist_log
+    if [ "$RB_LINUX_MOUNTED" = 1 ]; then
+        mount -o remount,ro "$LINUX_MNT" 2>/dev/null
+    fi
+    sync
+    rb_log "serial shell for ${RB_EMERGENCY_S} s, then power off. For Gemian, hold Esc/On and the silver button at power-on."
+    ( sleep "$RB_EMERGENCY_S"; sync; poweroff -f ) &
+    setsid cttyhack sh
+    sync
+    poweroff -f
+    while :; do sleep 60; done
+}
+
+rb_fallback() {
+    rb_log "FALLBACK to Gemian (recovery slot p1): $*"
+    if [ "$RB_LINUX_MOUNTED" = 1 ]; then
+        {
+            echo "time_uptime=$(cut -d' ' -f1 /proc/uptime)"
+            echo "reason=$*"
+            echo "attempts=${RB_ATTEMPT:-unknown}"
+            echo "initrd=$RB_VERSION"
+        } > "$LINUX_MNT/$RB_NOTE" 2>/dev/null
+        # A fresh start for the next deliberate RetroBoot boot (para cleared from Gemian).
+        rb_write_counter 0
+        rb_persist_log
+        umount "$LINUX_MNT" 2>/dev/null || mount -o remount,ro "$LINUX_MNT" 2>/dev/null
+        RB_LINUX_MOUNTED=0
+    fi
+    [ -n "$RB_PARA_DEV" ] || rb_emergency "no para partition: cannot request recovery"
+    rb_write_para || rb_emergency "writing boot-recovery to $RB_PARA_DEV failed verification"
+    rb_log "para=$RB_PARA_DEV now reads boot-recovery; rebooting"
+    sync
+    sleep 1
+    reboot -f
+    sleep 5
+    rb_emergency "reboot -f returned"
+}
+
+# ---- Root filesystem helpers ---------------------------------------------------------
+# Resolve PATH inside ROOT, following symlinks (absolute ones relative to ROOT).
+rb_resolve_in_root() {
+    root=$1; rest=$2; out=; hops=0
+    while :; do
+        rest=${rest#/}
+        [ -n "$rest" ] || break
+        comp=${rest%%/*}
+        if [ "$comp" = "$rest" ]; then rest=; else rest=${rest#*/}; fi
+        case "$comp" in
+            ''|.) continue ;;
+            ..) out=${out%/*}; continue ;;
+        esac
+        if [ -L "$root$out/$comp" ]; then
+            hops=$((hops + 1))
+            [ "$hops" -le 40 ] || return 1
+            link=$(readlink "$root$out/$comp")
+            case "$link" in /*) out= ;; esac
+            rest=$link/$rest
+        else
+            out=$out/$comp
+        fi
+    done
+    echo "${out:-/}"
+}
+
+rb_root_has_init() {
+    r=$LINUX_MNT/$RB_ROOT_SUBDIR
+    [ -d "$r" ] || return 1
+    p=$(rb_resolve_in_root "$r" /sbin/init) || return 1
+    [ -f "$r$p" ] && [ -x "$r$p" ]
+}
+
+rb_fsck() {
+    : > /tmp/fsck.out
+    rb_log "e2fsck -p $RB_LINUX_DEV"
+    e2fsck -p "$RB_LINUX_DEV" > /tmp/fsck.p 2>&1
+    rc=$?
+    cat /tmp/fsck.p; cat /tmp/fsck.p >> /tmp/fsck.out
+    if [ "$rc" -ge 4 ]; then
+        rb_log "e2fsck -p exit $rc: running e2fsck -y"
+        e2fsck -y "$RB_LINUX_DEV" > /tmp/fsck.y 2>&1
+        rc=$?
+        cat /tmp/fsck.y; cat /tmp/fsck.y >> /tmp/fsck.out
+    fi
+    RB_FSCK_RC=$rc
+    rb_log "e2fsck exit $rc ($(tail -n 1 /tmp/fsck.out))"
+}
+
+rb_mount_linux() {
+    if mount -t ext4 -o rw "$RB_LINUX_DEV" "$LINUX_MNT"; then
+        RB_LINUX_MOUNTED=1
+        return 0
+    fi
+    rb_log "mounting $RB_LINUX_DEV failed: e2fsck -y and retry"
+    e2fsck -y "$RB_LINUX_DEV" >> /tmp/fsck.out 2>&1
+    if mount -t ext4 -o rw "$RB_LINUX_DEV" "$LINUX_MNT"; then
+        RB_LINUX_MOUNTED=1
+        return 0
+    fi
+    return 1
+}
+
+rb_handoff() {
+    {
+        echo "RB_INITRD_VERSION=$RB_VERSION"
+        echo "RB_BOOT_MODE=$RB_BOOT_MODE"
+        echo "RB_LINUX_DEV=$RB_LINUX_DEV"
+        echo "RB_PARA_DEV=$RB_PARA_DEV"
+        echo "RB_ROOT_SUBDIR=$RB_ROOT_SUBDIR"
+        echo "RB_COUNTER_FILE=/$RB_COUNTER"
+        echo "RB_BOOT_ATTEMPT=$RB_ATTEMPT"
+        echo "RB_FSCK_RC=$RB_FSCK_RC"
+    } > "$RUNDIR/state"
+    mount --bind "$LINUX_MNT/$RB_ROOT_SUBDIR" "$NEWROOT" || rb_fallback "bind mount of /$RB_ROOT_SUBDIR failed"
+    rb_log "attempt $RB_ATTEMPT of $RB_MAX_ATTEMPTS: switching to /$RB_ROOT_SUBDIR/sbin/init on $RB_LINUX_DEV"
+    rb_persist_log
+    # Only the bind mount keeps the filesystem; systemd sees a single / mount.
+    umount -l "$LINUX_MNT"
+    RB_LINUX_MOUNTED=0
+    echo ratelimit > /proc/sys/kernel/printk_devkmsg 2>/dev/null
+    for m in run sys proc dev; do
+        if [ -d "$NEWROOT/$m" ]; then
+            mount --move "/$m" "$NEWROOT/$m" || umount -l "/$m"
+        else
+            umount -l "/$m"
+        fi
+    done
+    exec switch_root "$NEWROOT" /sbin/init
+}
+
+# ---- Main ------------------------------------------------------------------------------
+rb_log "RetroBoot initrd $RB_VERSION, kernel $(uname -r)"
+rb_para_ref
+
+RB_BOOT_MODE=$(rb_boot_mode)
+case "$RB_BOOT_MODE" in
+    8|9|usb)
+        if [ -f /lib/retroboot/charger.sh ]; then
+            . /lib/retroboot/charger.sh
+            rb_charger_main
+        fi
+        ;;
+esac
+
+rb_find_parts
+if [ -z "$RB_LINUX_DEV" ]; then
+    if [ -n "$RB_PARA_DEV" ]; then rb_fallback "no partition named linux"; fi
+    rb_emergency "no eMMC partitions named linux or para"
+fi
+[ -n "$RB_PARA_DEV" ] || rb_log "WARNING: no para partition; a failed boot cannot fall back to Gemian"
+
+if rb_para_is_recovery; then
+    case "$RB_BOOT_MODE" in
+        8|9|usb)
+            rb_log "para requests recovery after a charger boot: rebooting into it"
+            sync; reboot -f; sleep 5 ;;
+    esac
+    rb_emergency "LK booted p22 although para requests boot-recovery (not looping)"
+fi
+
+rb_fsck
+rb_mount_linux || rb_fallback "cannot mount $RB_LINUX_DEV (e2fsck exit $RB_FSCK_RC)"
+
+if [ -f "$LINUX_MNT/$RB_NOTE" ]; then
+    rb_log "previous fallback: $(tr '\n' ' ' < "$LINUX_MNT/$RB_NOTE")"
+    mv -f "$LINUX_MNT/$RB_NOTE" "$LINUX_MNT/$RB_NOTE.1"
+fi
+
+n=0
+if [ -f "$LINUX_MNT/$RB_COUNTER" ]; then
+    read -r n < "$LINUX_MNT/$RB_COUNTER"
+    case "$n" in
+        ''|*[!0-9]*) rb_log "counter /$RB_COUNTER unreadable ('$n'): treating as 0"; n=0 ;;
+    esac
+fi
+RB_ATTEMPT=$n
+if [ "$n" -ge "$RB_MAX_ATTEMPTS" ]; then
+    rb_fallback "$n boot attempts without a healthy RetroBoot"
+fi
+rb_root_has_init || rb_fallback "/$RB_ROOT_SUBDIR/sbin/init missing on $RB_LINUX_DEV"
+
+RB_ATTEMPT=$((n + 1))
+rb_write_counter "$RB_ATTEMPT"
+rb_handoff
+rb_emergency "switch_root failed"

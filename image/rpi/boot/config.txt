@@ -1,0 +1,56 @@
+# RetroBoot for Raspberry Pi (image/rpi/boot/config.txt).
+# Written by the image build; the boot partition is FAT (partition 1, PARTLABEL RBEFI).
+# Nothing here changes the board's bootloader EEPROM.
+
+[all]
+# 64-bit kernel with 4 KiB pages on both boards (the emulator package was qualified on
+# 4 KiB-page hosts). Pi 5's own kernel_2712.img (16 KiB pages) is not installed.
+arm_64bit=1
+kernel=kernel8.img
+initramfs initramfs8 followkernel
+
+# Linux stays invisible: no rainbow splash, no firmware warnings, no overscan border.
+disable_splash=1
+avoid_warnings=1
+disable_overscan=1
+boot_delay=0
+
+# The Pi 4's 3.5 mm jack (bcm2835 headphones): the base device tree's audio parameter turns
+# snd_bcm2835.enable_headphones=1 on in the kernel arguments. It must come before any
+# dtoverlay= line: a dtparam= after one sets that overlay's parameter instead (vc4-kms-v3d
+# has its own "audio", HDMI audio, on by default). Raspberry Pi OS uses the same order.
+dtparam=audio=on
+
+# KMS display driver (vc4) for HDMI with up to two outputs, HDMI audio included; Linux (the
+# presenter) picks the mode from the EDID itself instead of a mode passed by the firmware.
+dtoverlay=vc4-kms-v3d
+[pi02]
+# Leave memory for the 68040 Mac and RetroBoot on the 512 MB Zero 2 W.
+dtparam=cma-64
+# Full KMS uses CMA; the cut-down GPU firmware needs only 16 MB here.
+gpu_mem=16
+[all]
+max_framebuffers=2
+disable_fw_kms_setup=1
+
+# Display presets below control official DSI detection and Pimoroni DPI panels.
+camera_auto_detect=0
+
+# Serial console (the firmware points serial0, and console=serial0 in cmdline.txt, at it):
+# Pi 4: GPIO 14/15 (pins 8/10), the mini UART ttyS0. Pi 5: serial0 is GPIO 14/15 or the 3-pin
+# debug connector depending on firmware and cable. console=ttyAMA10 (the Pi 5's debug
+# connector) comes second: a fallback when serial0 gives no console; a Pi 4 doesn't have it.
+# Kernel messages are off (quiet loglevel=0); the debug flavor logs in on the kernel console.
+enable_uart=1
+
+[pi4]
+# Full Pi 4 clock (1.8 GHz on boards that support it).
+arm_boost=1
+
+[pi02]
+# The Zero 2 W USB connector supplies host input and USB storage.
+dtoverlay=dwc2,dr_mode=host
+
+[all]
+# Display selection lives on the FAT partition; see DISPLAY-SETUP.txt.
+include retroboot/display.txt

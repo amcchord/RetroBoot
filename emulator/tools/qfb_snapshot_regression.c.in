@@ -1,0 +1,137 @@
+/* Compile the actual prepared mac_qfb.c draw path with a controlled snapshot
+ * boundary. The stub preserves QEMU's snapshot range assertions; the boundary
+ * injects the register/surface interleaving without an Apple ROM or guest disk. */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef uint64_t ram_addr_t;
+#define MiB (1024 * 1024)
+#define QFB_VRAM_SIZE (32 * MiB)
+#define QFB_MODE_BASE 0x10
+#define TARGET_PAGE_SIZE 4096
+#define TARGET_PAGE_MASK (~(ram_addr_t)(TARGET_PAGE_SIZE - 1))
+#define DIRTY_MEMORY_VGA 1
+#define g_free free
+#define rgb_to_pixel32(r, g, b) (((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (b))
+
+typedef struct MemoryRegion { int unused; } MemoryRegion;
+typedef struct DisplaySurface { uint8_t *data; int width, height, stride; } DisplaySurface;
+typedef struct Console { DisplaySurface *surface; } Console;
+typedef struct DirtyBitmapSnapshot { ram_addr_t start, end; } DirtyBitmapSnapshot;
+typedef struct QfbState {
+    MemoryRegion mem_vram;
+    Console *con;
+    uint8_t *vram;
+    uint32_t width, height, stride, regs[64];
+    uint8_t depth;
+    uint8_t palette_red[256], palette_green[256], palette_blue[256];
+    uint8_t gamma_red[256], gamma_green[256], gamma_blue[256];
+} QfbState;
+typedef void qfb_draw_line_func(QfbState *, uint8_t *, uint32_t, int);
+
+static QfbState *device;
+static DisplaySurface replacement;
+static const char *change;
+static bool dirty = true;
+static int snapshots, invalidations, updates, queries;
+static DisplaySurface *qemu_console_surface(Console *con) { return con->surface; }
+static uint8_t *surface_data(DisplaySurface *s) { return s->data; }
+static int surface_stride(DisplaySurface *s) { return s->stride; }
+static ram_addr_t memory_region_get_ram_addr(MemoryRegion *m) { (void)m; return 0; }
+static bool physical_memory_get_dirty_flag(ram_addr_t addr, unsigned client)
+{
+    assert(addr < QFB_VRAM_SIZE && client == DIRTY_MEMORY_VGA);
+    return dirty;
+}
+static void memory_region_set_dirty(MemoryRegion *m, ram_addr_t base, ram_addr_t len)
+{
+    (void)m;
+    assert(base == 0 && len == QFB_VRAM_SIZE);
+    dirty = true;
+    invalidations++;
+}
+static bool memory_region_snapshot_get_dirty(MemoryRegion *m, DirtyBitmapSnapshot *s, ram_addr_t addr, int len)
+{
+    (void)m;
+    assert(addr >= s->start);
+    assert(addr + len <= s->end); /* retain the actual physmem contract */
+    queries++;
+    return true;
+}
+static DirtyBitmapSnapshot *memory_region_snapshot_and_clear_dirty(MemoryRegion *m,
+        ram_addr_t first, ram_addr_t len, unsigned client)
+{
+    (void)m;
+    assert(client == DIRTY_MEMORY_VGA && first + len <= QFB_VRAM_SIZE);
+    DirtyBitmapSnapshot *s = calloc(1, sizeof(*s));
+    const ram_addr_t align = TARGET_PAGE_SIZE * 64;
+    s->start = first & ~(align - 1);
+    s->end = (first + len + align - 1) & ~(align - 1);
+    snapshots++;
+    dirty = false;
+    /* Inject a mode/surface update at the dirty snapshot boundary. */
+    if (change && !strcmp(change, "base")) device->regs[QFB_MODE_BASE >> 2] = 16 * MiB;
+    if (change && !strcmp(change, "width")) { device->width = 3840; device->stride = 3840; }
+    if (change && !strcmp(change, "height")) device->height = 2160;
+    if (change && !strcmp(change, "depth")) { device->depth = 24; device->stride = device->width * 4; }
+    if (change && !strcmp(change, "stride")) device->stride += 128;
+    if (change && !strcmp(change, "surface")) device->con->surface = &replacement;
+    return s;
+}
+static void dpy_gfx_update(Console *con, int x, int y, int w, int h)
+{
+    assert(x == 0 && y >= 0 && w == (int)device->width);
+    assert(y + h <= con->surface->height);
+    updates++;
+}
+
+/* @ACTUAL_QFB_DRAW_PATH@ */
+
+static void allocate_surface(DisplaySurface *s, int width, int height)
+{
+    s->width = width; s->height = height; s->stride = width * 4;
+    s->data = malloc((size_t)s->stride * height);
+    assert(s->data);
+    memset(s->data, 0xcc, (size_t)s->stride * height);
+}
+
+int main(int argc, char **argv)
+{
+    assert(argc == 2);
+    QfbState s = {.width = 1280, .height = 800, .depth = 8, .stride = 1280};
+    DisplaySurface surface;
+    allocate_surface(&surface, s.width, s.height);
+    allocate_surface(&replacement, s.width, s.height);
+    Console con = {.surface = &surface};
+    s.con = &con; s.vram = malloc(QFB_VRAM_SIZE); device = &s;
+    assert(s.vram); memset(s.vram, 0x01, QFB_VRAM_SIZE);
+    for (int i = 0; i < 256; i++) {
+        s.palette_red[i] = s.palette_green[i] = s.palette_blue[i] = i;
+        s.gamma_red[i] = s.gamma_green[i] = s.gamma_blue[i] = i;
+    }
+    change = strcmp(argv[1], "unchanged") && strcmp(argv[1], "idle") && strcmp(argv[1], "wrap") ? argv[1] : NULL;
+    if (!strcmp(argv[1], "idle")) dirty = false;
+    if (!strcmp(argv[1], "wrap")) s.regs[QFB_MODE_BASE >> 2] = QFB_VRAM_SIZE - 512;
+    qfb_draw_graphic(&s);
+    if (change) {
+        assert(updates == 0 && queries == 0); /* discard the incoherent snapshot */
+        assert(invalidations == 1 && dirty); /* next refresh cannot lose the redraw */
+        change = NULL;
+        DisplaySurface *active = con.surface;
+        free(active->data);
+        allocate_surface(active, s.width, s.height);
+        qfb_draw_graphic(&s);
+        assert(updates > 0 && queries > 0 && snapshots == 2);
+    } else if (!strcmp(argv[1], "idle")) {
+        assert(snapshots == 0 && queries == 0 && updates == 0);
+    } else {
+        assert(snapshots == 1 && queries > 0 && updates > 0);
+    }
+    free(surface.data); free(replacement.data); free(s.vram);
+    printf("%s: pass\n", argv[1]);
+    return 0;
+}

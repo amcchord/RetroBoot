@@ -1,0 +1,197 @@
+#!/usr/bin/python3 -I
+"""Raspberry Pi: keep the splash's startup arguments in cmdline.txt (rb-bootdisplay's job on x86).
+
+On x86, rb-bootdisplay records the boot framebuffer for GRUB (display.cfg, background PNG)
+and GRUB passes the startup arguments to Linux. The Pi has no GRUB and no boot framebuffer
+record (/sys/kernel/boot_params is x86 only): the GPU firmware hands cmdline.txt on the boot
+partition to the kernel as it is, and the initramfs splash (rb-splash) draws first. So this
+rewrites only the `retroboot.*` startup arguments in cmdline.txt, from the same inputs
+rb-bootdisplay uses (its functions, imported from /usr/lib/retroboot/image/rb-bootdisplay):
+
+  retroboot.progress     startup.progress_indicator (default on)
+  retroboot.guest_size   display.guest_size, or ATI's 640x480 when the next launch uses it
+  retroboot.pixel_scale  display.pixel_scale
+  retroboot.startup_ms   hostd's learned cut-over time (same hysteresis: max(1.5 s, 15 %))
+  retroboot.rotation     the user rotation from the presenter's /run/retroboot/display.json
+  retroboot.checker_scale  the DPI-aware pattern scale rb-presenter reports for the
+                         presenter's scanout (only when display.json describes it)
+
+Every other argument (root=PARTUUID, console, quiet ...) is kept byte for byte. Only when
+something changed is cmdline.txt replaced (temp file, fsync, rename, directory fsync); a
+missing or read-only boot partition never fails the boot. Mac OS's own startup icon does
+not reach the Pi splash (the firmware loads one initramfs): the splash shows RetroBoot's
+fallback art with the same geometry until the presenter takes over.
+
+The command line is the one config.txt names: `cmdline=` (default cmdline.txt) under
+`os_prefix=`, both from config.txt's [all] sections. A system installed beside the
+installer on its own card (ARCHITECTURE 8.2) has `os_prefix=retroboot/os/`, so its
+retroboot/os/cmdline.txt is kept and the installer's cmdline.txt is never touched.
+`--cmdline FILE` names the file directly (install-to-disk, before config.txt switches).
+
+usage: rb-bootdisplay-rpi [--esp DIR | --cmdline FILE] [--dry-run] [--settings FILE]
+                          [--display FILE] [--timing FILE|none] [--graphics FILE]
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+import tempfile
+
+BOOTDISPLAY = '/usr/lib/retroboot/image/rb-bootdisplay'
+KEYS = ('retroboot.progress', 'retroboot.guest_size', 'retroboot.checker_scale', 'retroboot.startup_ms',
+        'retroboot.rotation', 'retroboot.pixel_scale')
+
+
+def load_bootdisplay(path=BOOTDISPLAY):
+    loader = importlib.machinery.SourceFileLoader('rb_bootdisplay', path)
+    spec = importlib.util.spec_from_loader('rb_bootdisplay', loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def cmdline_path(esp):
+    """The kernel command line file config.txt names (os_prefix + cmdline, [all] sections
+    only; a leading / is relative to the boot partition and bypasses the prefix)."""
+    prefix, name, active = '', 'cmdline.txt', True
+    try:
+        with open(os.path.join(esp, 'config.txt'), errors='replace') as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    for raw in lines:
+        line = raw.split('#', 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            active = line.lower() == '[all]'
+            continue
+        key, sep, value = line.partition('=')
+        if not active or not sep:
+            continue
+        key, value = key.strip().lower(), value.strip()
+        if key == 'os_prefix':
+            prefix = value
+        elif key == 'cmdline' and value:
+            name = value
+    if name.startswith('/'):
+        rel = name.lstrip('/')
+    else:
+        rel = prefix + name
+    rel = os.path.normpath(rel)
+    if rel.startswith('..') or os.path.isabs(rel):
+        rel = 'cmdline.txt'
+    return os.path.join(esp, rel)
+
+
+def parse(cmdline):
+    words = cmdline.split()
+    values = {}
+    for w in words:
+        k, _, v = w.partition('=')
+        if k in KEYS:
+            values[k] = v
+    return words, values
+
+
+def render(words, values):
+    """Keep every non-startup word in place; startup words follow, in KEYS order."""
+    kept = [w for w in words if w.partition('=')[0] not in KEYS]
+    return ' '.join(kept + [f'{k}={values[k]}' for k in KEYS if values.get(k) not in (None, '')]) + '\n'
+
+
+def scanout(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        w, h = (int(v) for v in data.get('scanout') or [])
+        return {'width': w, 'height': h} if w > 0 and h > 0 else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def checker_scale(bd, fb, scale, extra):
+    """The pattern scale rb-presenter draws for this scanout (it owns the DPI rule)."""
+    try:
+        with tempfile.TemporaryDirectory(dir='/run') as tmp:
+            _gen, info = bd.write_checker(fb['width'], fb['height'], scale, os.path.join(tmp, 'c.png'), extra)
+        return int((info or {}).get('checker_scale') or 0) or None
+    except Exception:
+        return None
+
+
+def write_atomic(path, data):
+    tmp = path + '.new'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    fd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def main(argv, bd=None):
+    bd = bd or load_bootdisplay()
+    opt = bd.option
+    esp = opt(argv, '--esp', '/boot/efi')
+    path = opt(argv, '--cmdline', None) or cmdline_path(esp)
+    settings = opt(argv, '--settings', bd.SETTINGS)
+    try:
+        with open(path) as f:
+            current = f.read()
+    except OSError as exc:
+        print(json.dumps({'changed': False, 'error': str(exc)}))
+        return 0
+    words, old = parse(current)
+    pixel_scale = bd.configured_pixel_scale(settings)
+    progress, guest_size = bd.configured_startup(settings)
+    guest_size = bd.startup_card_size(opt(argv, '--graphics', bd.GRAPHICS), settings) or guest_size
+    try:
+        recorded = int(old.get('retroboot.startup_ms') or 0)
+    except ValueError:
+        recorded = 0
+    startup_ms = bd.learned_startup_ms(opt(argv, '--timing', bd.TIMING), recorded)
+    values = {'retroboot.progress': 'on' if progress else 'off', 'retroboot.guest_size': guest_size,
+              'retroboot.pixel_scale': pixel_scale,
+              'retroboot.startup_ms': str(startup_ms) if startup_ms else None,
+              'retroboot.rotation': old.get('retroboot.rotation'),
+              'retroboot.checker_scale': old.get('retroboot.checker_scale')}
+    display = opt(argv, '--display', bd.DISPLAY)
+    fb = scanout(display)
+    if fb:
+        mm, rot, user_rot = bd.presenter_display(display, fb)
+        values['retroboot.rotation'] = str(user_rot)
+        lw, lh = (fb['height'], fb['width']) if rot in (90, 270) else (fb['width'], fb['height'])
+        scale = bd.effective_scale(lw, lh, pixel_scale)
+        extra = ['--pixel-scale', pixel_scale, '--checker', 'auto', '--rotation', str(rot),
+                 '--progress', 'off', '--guest-size', guest_size] + (['--mm', f'{mm[0]}x{mm[1]}'] if mm else [])
+        cs = checker_scale(bd, fb, scale, extra)
+        if cs:
+            values['retroboot.checker_scale'] = str(cs)
+    new = render(words, values)
+    summary = {k: values[k] for k in KEYS}
+    if new == (current if current.endswith('\n') else current + '\n'):
+        print(json.dumps({'changed': False, **summary}))
+        return 0
+    if '--dry-run' in argv:
+        print(json.dumps({'changed': True, 'dry_run': True, **summary}))
+        return 0
+    if len(new) > 4000:            # the firmware truncates longer command lines
+        print(json.dumps({'changed': False, 'error': 'cmdline too long', **summary}))
+        return 0
+    try:
+        write_atomic(path, new.encode())
+    except OSError as exc:
+        print(json.dumps({'changed': False, 'error': str(exc), **summary}))
+        return 0
+    print(json.dumps({'changed': True, **summary}))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,14 @@
+{
+  "id": "install-progress",
+  "kind": "window",
+  "title": "Installing RetroBoot",
+  "width": 440,
+  "items": [
+    {"type": "text", "style": "emphasis", "text": "Installing on “Samsung SSD 980”…"},
+    {"type": "progress", "value": 0.42},
+    {"type": "text", "style": "small", "text": "Copying the Mac OS system: 2.1 GB of 5.0 GB. About 3 minutes remaining."},
+    {"type": "buttons", "items": [
+      {"id": "cancel", "label": "Stop", "disabled": true}
+    ]}
+  ]
+}

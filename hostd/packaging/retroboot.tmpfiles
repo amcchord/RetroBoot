@@ -1,0 +1,17 @@
+# /usr/lib/tmpfiles.d/retroboot.conf
+# Runtime: QEMU (rbguest) creates its QMP sockets and screendumps here; sticky bit
+# keeps it from replacing presenter.sock or display.sock.
+d /run/retroboot              1775 root    rbguest -
+d /run/retroboot/guest        0755 root    root    -
+d /run/retroboot/screens      0770 root    rbguest -
+d /run/retroboot/media        0700 root    root    -
+# Data partition (RBDATA)
+d /var/lib/retroboot              0755 root    root   -
+d /var/lib/retroboot/config       0755 root    root   -
+d /var/lib/retroboot/state        0700 root    root   -
+d /var/lib/retroboot/machines     2770 root    rbdata -
+d /var/lib/retroboot/share        2775 rbguest rbdata -
+d /var/lib/retroboot/checkpoints  0750 root    root   -
+d /var/lib/retroboot/downloads    0750 root    root   -
+d /var/lib/retroboot/media        2750 root    rbdata -
+d /var/lib/retroboot/logs         0755 root    root   -

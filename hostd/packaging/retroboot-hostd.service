@@ -1,0 +1,28 @@
+[Unit]
+Description=RetroBoot host service
+Documentation=file:///usr/lib/retroboot/hostd/README.md
+# Startup never waits for networking (ARCHITECTURE 6).
+After=local-fs.target systemd-tmpfiles-setup.service systemd-sysusers.service
+# hostd starts beside the presenter, not after it: its own start (Python, settings,
+# devices) overlaps the presenter's display handoff, which took up to 2.3 s on an
+# N5105 laptop. hostd connects to presenter.sock as soon as it appears and starts
+# Mac OS only once the presenter has reported its display. The guest isolation
+# table is ordered before retroboot-guest.service, not before hostd
+# (image/reports/hostboot-2026-10-12.md).
+Wants=retroboot-presenter.service
+
+[Service]
+Type=exec
+Environment=PYTHONPATH=/usr/lib/retroboot/hostd
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m retroboot.hostd
+# hostd restarts never stop the guest: retroboot-guest.service is a separate unit
+# and a running guest is adopted on start.
+Restart=always
+RestartSec=1
+KillMode=mixed
+TimeoutStopSec=20
+SyslogIdentifier=retroboot-hostd
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Grow RetroBoot data partition to fill the disk
+DefaultDependencies=no
+RequiresMountsFor=/var/lib/retroboot
+ConditionPathIsMountPoint=/var/lib/retroboot
+After=var-lib-retroboot.mount
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/retroboot/image/rb-growdata
+Nice=10
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

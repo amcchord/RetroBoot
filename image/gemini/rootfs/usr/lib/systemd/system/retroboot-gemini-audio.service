@@ -1,0 +1,19 @@
+# RetroBoot on the Gemini PDA: playback route at boot, and the speaker amplifiers on only
+# while the codec drives its headphone lines, i.e. while Mac OS runs (rb-gemini-audio reads
+# the DAPM state in debugfs; output saved by `rb-gemini-audio speaker|headphone|toggle`,
+# speaker by default).
+[Unit]
+Description=Gemini audio route and speaker amplifiers
+After=sound.target alsa-restore.service systemd-udevd.service sys-kernel-debug.mount
+Wants=sound.target sys-kernel-debug.mount
+
+[Service]
+ExecStartPre=/usr/lib/retroboot/gemini/rb-gemini-audio route
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-audio watch
+ExecStopPost=-/usr/lib/retroboot/gemini/rb-gemini-audio amps 0
+Restart=on-failure
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

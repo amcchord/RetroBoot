@@ -1,0 +1,14 @@
+{
+  "id": "installer-progress",
+  "kind": "window",
+  "title": "RetroBoot",
+  "width": 460,
+  "items": [
+    {"type": "text", "text": "Installing RetroBoot", "style": "emphasis"},
+    {"type": "text", "text": "Mac OS 9.2.1 (v4): Downloading… 312 of 497 MB"},
+    {"type": "progress", "value": 0.71},
+    {"type": "text", "text": "Mac OS 9.2.2 Deluxe v4: installed", "style": "small"},
+    {"type": "text", "text": "Mac OS 9.2.2 (v5): installed", "style": "small"},
+    {"type": "text", "text": "Mac OS 9.2.1 (v4): downloading… 63 %", "style": "small"}
+  ]
+}

@@ -1,0 +1,299 @@
+diff --git a/hw/nvram/mac_nvram.c b/hw/nvram/mac_nvram.c
+index ef25cb1..cbfa7b8 100644
+--- a/hw/nvram/mac_nvram.c
++++ b/hw/nvram/mac_nvram.c
+@@ -40,6 +40,97 @@
+ #define DEF_SYSTEM_SIZE 0xc10
+ #define DEF_MACOS_SIZE  0x510
+
++#define CORE99_BANK_SIZE 8192
++#define CORE99_FLASH_SIZE (2 * CORE99_BANK_SIZE)
++
++/* Core99's public driver uses Intel byte-program/erase/status commands.
++ * Keep this separate from the classic byte-interleaved RAM interface. */
++static bool macio_nvram_persist(MacIONVRAMState *s, uint32_t offset,
++                                uint32_t length)
++{
++    if (s->blk && blk_pwrite(s->blk, offset, length, s->data + offset, 0) < 0) {
++        error_report("%s: write of NVRAM data to backing store failed",
++                     blk_name(s->blk));
++        return false;
++    }
++    return true;
++}
++
++static void macio_nvram_flash_write(MacIONVRAMState *s, uint32_t addr,
++                                     uint8_t value)
++{
++    unsigned bank = addr / CORE99_BANK_SIZE;
++    uint32_t start = bank * CORE99_BANK_SIZE;
++
++    if (s->flash_cmd[bank] == 0x40) {
++        uint8_t old = s->data[addr];
++        s->flash_status[bank] = 0x80;
++        if (addr != s->flash_program_addr[bank]) {
++            s->flash_status[bank] |= 0x30;
++        } else {
++            s->data[addr] &= value;
++            if ((value & ~old) || !macio_nvram_persist(s, addr, 1)) {
++                s->flash_status[bank] |= 0x10;
++            }
++        }
++        s->flash_cmd[bank] = 0x70;
++        return;
++    }
++    if (value == 0xff) {
++        s->flash_cmd[bank] = 0xff;
++        return;
++    }
++    if (s->flash_cmd[bank] == 0x20) {
++        s->flash_status[bank] = 0x80;
++        if (value == 0xd0) {
++            memset(s->data + start, 0xff, CORE99_BANK_SIZE);
++            if (!macio_nvram_persist(s, start, CORE99_BANK_SIZE)) {
++                s->flash_status[bank] |= 0x20;
++            }
++        } else {
++            s->flash_status[bank] |= 0x30;
++        }
++        s->flash_cmd[bank] = 0x70;
++        return;
++    }
++    switch (value) {
++    case 0x40:
++        s->flash_program_addr[bank] = addr;
++        s->flash_cmd[bank] = value;
++        break;
++    case 0x20:
++    case 0x70:
++    case 0x90:
++        s->flash_cmd[bank] = value;
++        break;
++    case 0x50:
++        s->flash_status[bank] = 0x80;
++        s->flash_cmd[bank] = 0x70;
++        break;
++    default:
++        s->flash_status[bank] = 0xb0;
++        s->flash_cmd[bank] = 0x70;
++        break;
++    }
++}
++
++static uint8_t macio_nvram_flash_read(MacIONVRAMState *s, uint32_t addr)
++{
++    unsigned bank = addr / CORE99_BANK_SIZE;
++
++    if (s->flash_cmd[bank] == 0x90) {
++        switch (addr % CORE99_BANK_SIZE) {
++        case 0: return 0x89; /* Intel/Micron top boot flash */
++        case 1: return 0x98;
++        default: return 0;
++        }
++    }
++    if (s->flash_cmd[bank] != 0xff) {
++        return s->flash_status[bank];
++    }
++    return s->data[addr];
++}
++
+ /* macio style NVRAM device */
+ static void macio_nvram_writeb(void *opaque, hwaddr addr,
+                                uint64_t value, unsigned size)
+@@ -48,6 +139,10 @@ static void macio_nvram_writeb(void *opaque, hwaddr addr,
+
+     addr = (addr >> s->it_shift) & (s->size - 1);
+     trace_macio_nvram_write(addr, value);
++    if (s->osx_flash) {
++        macio_nvram_flash_write(s, addr, value);
++        return;
++    }
+     s->data[addr] = value;
+     if (s->blk) {
+         if (blk_pwrite(s->blk, addr, 1, &s->data[addr], 0) < 0) {
+@@ -64,7 +159,7 @@ static uint64_t macio_nvram_readb(void *opaque, hwaddr addr,
+     uint32_t value;
+
+     addr = (addr >> s->it_shift) & (s->size - 1);
+-    value = s->data[addr];
++    value = s->osx_flash ? macio_nvram_flash_read(s, addr) : s->data[addr];
+     trace_macio_nvram_read(addr, value);
+
+     return value;
+@@ -82,10 +177,13 @@ static const MemoryRegionOps macio_nvram_ops = {
+
+ static const VMStateDescription vmstate_macio_nvram = {
+     .name = "macio_nvram",
+-    .version_id = 1,
++    .version_id = 2,
+     .minimum_version_id = 1,
+     .fields = (const VMStateField[]) {
+         VMSTATE_VBUFFER_UINT32(data, MacIONVRAMState, 0, NULL, size),
++        VMSTATE_UINT8_ARRAY_V(flash_cmd, MacIONVRAMState, 2, 2),
++        VMSTATE_UINT8_ARRAY_V(flash_status, MacIONVRAMState, 2, 2),
++        VMSTATE_UINT32_ARRAY_V(flash_program_addr, MacIONVRAMState, 2, 2),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+@@ -93,6 +191,9 @@ static const VMStateDescription vmstate_macio_nvram = {
+
+ static void macio_nvram_reset(DeviceState *dev)
+ {
++    MacIONVRAMState *s = MACIO_NVRAM(dev);
++    memset(s->flash_cmd, 0xff, sizeof(s->flash_cmd));
++    memset(s->flash_status, 0x80, sizeof(s->flash_status));
+ }
+
+ /* A supplied OS X image must contain at least one complete flash bank.
+@@ -123,11 +224,42 @@ static bool macio_nvram_osx_valid(const uint8_t *data, uint32_t size)
+     return false;
+ }
+
++static bool macio_nvram_flash_valid(const uint8_t *data)
++{
++    for (unsigned offset = 0; offset < CORE99_FLASH_SIZE;
++         offset += CORE99_BANK_SIZE) {
++        const uint8_t *bank = data + offset;
++        ChrpNvramPartHdr header;
++
++        if (bank[0] != 0x5a || lduw_be_p(bank + 2) != 2) {
++            continue;
++        }
++        memcpy(&header, bank, sizeof(header));
++        chrp_nvram_finish_partition(&header, 32);
++        if (header.checksum == bank[1] &&
++            (uint32_t)ldl_be_p(bank + 16) ==
++            (uint32_t)adler32(1, bank + 20, CORE99_BANK_SIZE - 20)) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static void macio_nvram_realizefn(DeviceState *dev, Error **errp)
+ {
+     SysBusDevice *d = SYS_BUS_DEVICE(dev);
+     MacIONVRAMState *s = MACIO_NVRAM(dev);
+
++    if (s->osx_flash) {
++        if (s->osx_partitions) {
++            error_setg(errp, "osx-flash and legacy osx-partitions are exclusive");
++            return;
++        }
++        s->size = CORE99_FLASH_SIZE;
++        s->it_shift = 0;
++        memset(s->flash_cmd, 0xff, sizeof(s->flash_cmd));
++        memset(s->flash_status, 0x80, sizeof(s->flash_status));
++    }
+     s->data = g_malloc0(s->size);
+
+     if (s->blk) {
+@@ -149,6 +281,11 @@ static void macio_nvram_realizefn(DeviceState *dev, Error **errp)
+             error_setg(errp, "can't read-nvram contents");
+             return;
+         }
++        if (s->osx_flash && !macio_nvram_flash_valid(s->data)) {
++            error_setg(errp, "Core99 NVRAM has no valid flash bank; "
++                       "restore its checkpoint");
++            return;
++        }
+         if (s->osx_partitions && !macio_nvram_osx_valid(s->data, s->size)) {
+             error_setg(errp, "OS X NVRAM has no valid flash bank; "
+                        "restore its checkpoint");
+@@ -173,6 +310,7 @@ static const Property macio_nvram_properties[] = {
+     DEFINE_PROP_UINT32("it_shift", MacIONVRAMState, it_shift, 0),
+     DEFINE_PROP_DRIVE("drive", MacIONVRAMState, blk),
+     DEFINE_PROP_BOOL("osx-partitions", MacIONVRAMState, osx_partitions, false),
++    DEFINE_PROP_BOOL("osx-flash", MacIONVRAMState, osx_flash, false),
+ };
+
+ static void macio_nvram_class_init(ObjectClass *oc, const void *data)
+@@ -257,10 +395,42 @@ static void pmac_format_nvram_partition_osx(MacIONVRAMState *nvr, int off,
+     stl_be_p(&data[16], adler32(0, &data[20], len - 20));
+ }
+
++static void pmac_format_core99_flash(MacIONVRAMState *nvr)
++{
++    for (unsigned i = 0; i < 2; i++) {
++        uint8_t *bank = nvr->data + i * CORE99_BANK_SIZE;
++        ChrpNvramPartHdr *header = (ChrpNvramPartHdr *)bank;
++        MacIONVRAMState view = *nvr;
++        unsigned offset;
++
++        /* A 32-byte CHRP partition, followed by ordinary OF partitions. */
++        header->signature = 0x5a;
++        memcpy(header->name, "wwwwwwwwwwww", 12);
++        chrp_nvram_finish_partition(header, 32);
++        stl_be_p(bank + 20, i + 1);
++        view.data = bank + 32;
++        pmac_format_nvram_partition_of(&view, 0, CORE99_BANK_SIZE - 32);
++        for (offset = 32; offset < CORE99_BANK_SIZE;) {
++            ChrpNvramPartHdr *part = (ChrpNvramPartHdr *)(bank + offset);
++            unsigned length = lduw_be_p(&part->len) * 16;
++            if (part->signature == 0x7f) {
++                memcpy(part->name, "wwwwwwwwwwww", 12);
++                chrp_nvram_finish_partition(part, length);
++            }
++            offset += length;
++        }
++        stl_be_p(bank + 16, adler32(1, bank + 20, CORE99_BANK_SIZE - 20));
++    }
++}
++
+ /* Set up NVRAM with classic or OS X partitions. */
+ void pmac_format_nvram_partition(MacIONVRAMState *nvr, int len)
+ {
+-    if (nvr->osx_partitions) {
++    if (nvr->osx_flash) {
++        if (!nvr->blk) {
++            pmac_format_core99_flash(nvr);
++        }
++    } else if (nvr->osx_partitions) {
+         /* Match upstream mac99: OS X expects a second flash bank at 4 KiB.
+          * Its OF bank has no APL,MacOS75 partition (the classic layout
+          * needs more than one bank).  Never overwrite a supplied image. */
+diff --git a/hw/ppc/mac_newworld.c b/hw/ppc/mac_newworld.c
+index 678fd45..5325a68 100644
+--- a/hw/ppc/mac_newworld.c
++++ b/hw/ppc/mac_newworld.c
+@@ -510,8 +510,13 @@ static void ppc_core99_init(MachineState *machine)
+     qdev_prop_set_uint32(dev, "size", MACIO_NVRAM_SIZE);
+     qdev_prop_set_uint32(dev, "it_shift", 1);
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+-    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, nvram_addr);
+     nvr = MACIO_NVRAM(dev);
++    if (nvr->osx_flash) {
++        /* OpenBIOS maps its ROM window read-only.  Native flash needs
++         * writable byte commands there and in the guest kernel. */
++        nvram_addr = 0xFFE00000;
++    }
++    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, nvram_addr);
+     pmac_format_nvram_partition(nvr, MACIO_NVRAM_SIZE);
+     /* No PCI init: the BIOS will do it */
+
+@@ -562,6 +567,10 @@ static void ppc_core99_init(MachineState *machine)
+     fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_CLOCKFREQ, CLOCKFREQ);
+     fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_BUSFREQ, BUSFREQ);
+     fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_NVRAM_ADDR, nvram_addr);
++    if (nvr->osx_flash) {
++        fw_cfg_add_file(fw_cfg, "etc/retroboot/osx-nvram-flash",
++                        g_memdup2("\1", 1), 1);
++    }
+
+     /* MacOS NDRV VGA driver */
+     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, NDRV_VGA_FILENAME);
+diff --git a/include/hw/nvram/mac_nvram.h b/include/hw/nvram/mac_nvram.h
+index b51b4f9..84d68fe 100644
+--- a/include/hw/nvram/mac_nvram.h
++++ b/include/hw/nvram/mac_nvram.h
+@@ -42,6 +42,10 @@ struct MacIONVRAMState {
+     uint32_t size;
+     uint32_t it_shift;
+     bool osx_partitions;
++    bool osx_flash;
++    uint8_t flash_cmd[2];
++    uint8_t flash_status[2];
++    uint32_t flash_program_addr[2];
+
+     MemoryRegion mem;
+     uint8_t *data;

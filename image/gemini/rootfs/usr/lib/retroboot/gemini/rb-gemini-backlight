@@ -1,0 +1,34 @@
+#!/bin/sh
+# rb-gemini-backlight: the Gemini panel's backlight (DISP_PWM0 through the kernel's
+# pwm-backlight, /sys/class/backlight).
+#
+#   rb-gemini-backlight get          brightness in percent
+#   rb-gemini-backlight set PERCENT  0..100
+#   rb-gemini-backlight default      BACKLIGHT_PERCENT from /etc/default/retroboot-gemini
+#                                    (what retroboot-gemini-backlight.service runs at boot)
+# The backlight is the largest power draw: at full brightness a 500 mA USB port cannot
+# charge the battery (gemini-debian picked 10 %; RetroBoot starts at 40 %, readable
+# indoors, and the charger rule raises the input limit to 2.5 A).
+set -u
+BACKLIGHT_PERCENT=40
+[ -r /etc/default/retroboot-gemini ] && . /etc/default/retroboot-gemini
+dev() {
+  for d in /sys/class/backlight/*; do [ -w "$d/brightness" ] && { echo "$d"; return 0; }; done
+  return 1
+}
+wait_dev() { for _ in 1 2 3 4 5 6 7 8 9 10; do dev && return 0; sleep 1; done; dev; }
+set_pct() {
+  case "$1" in ''|*[!0-9]*) echo "brightness must be 0..100" >&2; exit 2 ;; esac
+  [ "$1" -le 100 ] || { echo "brightness must be 0..100" >&2; exit 2; }
+  d=$(wait_dev) || { echo "rb-gemini-backlight: no backlight device" >&2; exit 1; }
+  max=$(cat "$d/max_brightness")
+  v=$(( $1 * max / 100 )); [ "$1" -gt 0 ] && [ "$v" -lt 1 ] && v=1
+  echo "$v" > "$d/brightness"
+  echo "rb-gemini-backlight: ${d##*/} $1 % ($v/$max)"
+}
+case "${1:-}" in
+get) d=$(dev) || exit 1; echo $(( $(cat "$d/brightness") * 100 / $(cat "$d/max_brightness") )) ;;
+set) set_pct "${2:-}" ;;
+default) set_pct "$BACKLIGHT_PERCENT" ;;
+*) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

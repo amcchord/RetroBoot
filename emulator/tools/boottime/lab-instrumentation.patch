@@ -1,0 +1,752 @@
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -18,6 +18,9 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/rb-stats.h"
++unsigned long long rb_stats[32];
++int rb_pending_sr, rb_pending_tlbie;
+ #include "qemu/qemu-print.h"
+ #include "qapi/error.h"
+ #include "qapi/type-helpers.h"
+@@ -242,11 +245,17 @@
+                tb->cs_base == s.cs_base &&
+                tb->flags == s.flags &&
+                tb_cflags(tb) == s.cflags)) {
++        RB_STAT(RBS_JC_HIT);
+         goto hit;
+     }
++    RB_STAT(RBS_JC_MISS);
++    if (tb && jc->array[hash].pc == s.pc) {
++        RB_STAT(RBS_JC_MISS_FLAGS);
++    }
+ 
+     tb = tb_htable_lookup(cpu, s);
+     if (tb == NULL) {
++        RB_STAT(RBS_HT_MISS);
+         return NULL;
+     }
+ 
+@@ -376,6 +385,8 @@
+     CPUState *cpu = env_cpu(env);
+     TranslationBlock *tb;
+ 
++    RB_STAT(RBS_LOOKUP_PTR);
++
+     /*
+      * By definition we've just finished a TB, so I/O is OK.
+      * Avoid the possibility of calling cpu_io_recompile() if
+@@ -408,6 +419,8 @@
+                                        uint32_t flags)
+ {
+     CPUState *cpu = env_cpu(env);
++
++    RB_STAT(RBS_LOOKUP_PTR_FAST);
+     TCGTBCPUState s = {
+         .pc = pc,
+         .flags = flags,
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/rb-stats.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/target-info.h"
+ #include "accel/tcg/cpu-ops.h"
+@@ -366,8 +367,31 @@
+     }
+ }
+ 
++#include <execinfo.h>
++static void rb_flush_bt(void)
++{
++    static FILE *f;
++    static int state;
++    if (!state) {
++        const char *p = getenv("RB_FLUSHBT");
++        state = 2;
++        if (p && (f = fopen(p, "w"))) {
++            state = 1;
++        }
++    }
++    if (state == 1 && (rb_stats[RBS_TLB_FLUSH] % 97) == 0) {
++        void *bt[10];
++        int n = backtrace(bt, 10);
++        fflush(f);
++        backtrace_symbols_fd(bt, n, fileno(f));
++        fputs("--\n", f);
++    }
++}
++
+ static void tlb_flush_by_mmuidx_async_work(CPUState *cpu, run_on_cpu_data data)
+ {
++    RB_STAT(RBS_TLB_FLUSH);
++    rb_flush_bt();
+     MMUIdxMap asked = data.host_int;
+     MMUIdxMap all_dirty, work, to_clean;
+     int64_t now = get_clock_realtime();
+@@ -504,6 +528,141 @@
+     tlb_flush_vtlb_page_mask_locked(cpu, mmu_idx, page, -1);
+ }
+ 
++/*
++ * RetroBoot: partial TLB flushes by scanning.  @match decides per page
++ * address; the TLB lock is held.  An mmu_idx that holds a large page is
++ * flushed whole, as tlb_flush_page_locked() does.
++ */
++typedef bool (*RBTlbMatch)(vaddr page, const void *opaque);
++
++static bool rb_entry_matches(CPUTLBEntry *e, RBTlbMatch match, const void *opaque)
++{
++    uint64_t a[3] = { e->addr_read, e->addr_write, e->addr_code };
++    int i;
++
++    for (i = 0; i < 3; i++) {
++        if (!(a[i] & TLB_INVALID_MASK) && match(a[i] & TARGET_PAGE_MASK, opaque)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static void rb_tlb_flush_scan_locked(CPUState *cpu, RBTlbMatch match,
++                                     const void *opaque)
++{
++    int mmu_idx;
++
++    for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
++        CPUTLBDesc *d = &cpu->neg.tlb.d[mmu_idx];
++        CPUTLBDescFast *f = &cpu->neg.tlb.f[mmu_idx];
++        size_t n, i, used;
++        int k;
++
++        if (!(cpu->neg.tlb.c.dirty & (1 << mmu_idx))) {
++            continue;
++        }
++        if (d->large_page_addr != -1) {
++            tlb_flush_one_mmuidx_locked(cpu, mmu_idx, get_clock_realtime());
++            continue;
++        }
++        n = tlb_n_entries(f);
++        used = 0;
++        for (i = 0; i < n; i++) {
++            CPUTLBEntry *e = &f->table[i];
++            if (rb_entry_matches(e, match, opaque)) {
++                memset(e, -1, sizeof(*e));
++            } else if (!tlb_entry_is_empty(e)) {
++                used++;
++            }
++        }
++        /* recount: the resize heuristic reads it (victim swaps make it drift) */
++        d->n_used_entries = used;
++        for (k = 0; k < CPU_VTLB_SIZE; k++) {
++            CPUTLBEntry *e = &d->vtable[k];
++            if (rb_entry_matches(e, match, opaque)) {
++                memset(e, -1, sizeof(*e));   /* victim entries are not counted */
++            }
++        }
++    }
++}
++
++/* Jump cache: TBs that start in a matching page or in the page before one. */
++static void rb_jmp_cache_scan(CPUState *cpu, RBTlbMatch match, const void *opaque)
++{
++    CPUJumpCache *jc = cpu->tb_jmp_cache;
++    int i;
++
++    if (unlikely(!jc)) {
++        return;
++    }
++    for (i = 0; i < TB_JMP_CACHE_SIZE; i++) {
++        if (qatomic_read(&jc->array[i].tb)) {
++            vaddr page = jc->array[i].pc & TARGET_PAGE_MASK;
++            if (match(page, opaque) || match(page + TARGET_PAGE_SIZE, opaque)) {
++                qatomic_set(&jc->array[i].tb, NULL);
++            }
++        }
++    }
++}
++
++static bool rb_match_classes(vaddr page, const void *opaque)
++{
++    uint64_t classes = *(const uint64_t *)opaque;
++    return (classes >> ((page >> TARGET_PAGE_BITS) & 63)) & 1;
++}
++
++void tlb_flush_page_classes(CPUState *cpu, uint64_t classes)
++{
++    assert_cpu_is_self(cpu);
++    if (rb_exp() & 8) {
++        classes = UINT64_MAX;       /* lab: scan everything (tests the scan) */
++    } else if (rb_exp() & 16) {
++        tlb_flush(cpu);             /* lab: class path, full flush */
++        return;
++    } else if (classes == UINT64_MAX) {
++        tlb_flush(cpu);
++        return;
++    }
++    qemu_spin_lock(&cpu->neg.tlb.c.lock);
++    if (rb_exp() & 64) {
++        int i;
++        for (i = 0; i < NB_MMU_MODES; i++) {
++            tlb_mmu_flush_locked(&cpu->neg.tlb.d[i], &cpu->neg.tlb.f[i]);
++        }
++    } else {
++        rb_tlb_flush_scan_locked(cpu, rb_match_classes, &classes);
++    }
++    qemu_spin_unlock(&cpu->neg.tlb.c.lock);
++    if (rb_exp() & 32) {
++        tcg_flush_jmp_cache(cpu);
++    } else {
++        rb_jmp_cache_scan(cpu, rb_match_classes, &classes);
++    }
++}
++
++typedef struct { vaddr lo, hi; } RBRange;
++
++static bool rb_match_range(vaddr page, const void *opaque)
++{
++    const RBRange *r = opaque;
++    return page >= r->lo && page < r->hi;
++}
++
++void tlb_flush_range_scan(CPUState *cpu, vaddr addr, vaddr len)
++{
++    RBRange r = { addr & TARGET_PAGE_MASK, addr + len };
++
++    assert_cpu_is_self(cpu);
++    if (r.hi < r.lo) {
++        r.hi = (vaddr)-1;
++    }
++    qemu_spin_lock(&cpu->neg.tlb.c.lock);
++    rb_tlb_flush_scan_locked(cpu, rb_match_range, &r);
++    qemu_spin_unlock(&cpu->neg.tlb.c.lock);
++    rb_jmp_cache_scan(cpu, rb_match_range, &r);
++}
++
+ static void tlb_flush_page_locked(CPUState *cpu, int midx, vaddr page)
+ {
+     vaddr lp_addr = cpu->neg.tlb.d[midx].large_page_addr;
+@@ -536,6 +695,7 @@
+                                              vaddr addr,
+                                              MMUIdxMap idxmap)
+ {
++    RB_STAT(RBS_TLB_FLUSH_PAGE);
+     int mmu_idx;
+ 
+     assert_cpu_is_self(cpu);
+@@ -725,6 +885,8 @@
+ static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
+                                               TLBFlushRangeData d)
+ {
++    RB_STAT(RBS_TLB_FLUSH_RANGE);
++    RB_STAT_ADD(RBS_TLB_RANGE_PAGES, d.len / TARGET_PAGE_SIZE);
+     int mmu_idx;
+ 
+     assert_cpu_is_self(cpu);
+diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/rb-stats.h"
+ 
+ #include "trace.h"
+ #include "disas/disas.h"
+@@ -260,6 +261,7 @@
+ /* Called with mmap_lock held for user mode emulation.  */
+ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+ {
++    RB_STAT(RBS_TB_GEN);
+     CPUArchState *env = cpu_env(cpu);
+     TranslationBlock *tb, *existing_tb;
+     tb_page_addr_t phys_pc, phys_p2;
+@@ -630,6 +632,7 @@
+  */
+ void tcg_flush_jmp_cache(CPUState *cpu)
+ {
++    RB_STAT(RBS_JC_FLUSH);
+     CPUJumpCache *jc = cpu->tb_jmp_cache;
+ 
+     /* During early initialization, the cache may not yet be allocated. */
+diff --git a/hw/ppc/mac_newworld.c b/hw/ppc/mac_newworld.c
+--- a/hw/ppc/mac_newworld.c
++++ b/hw/ppc/mac_newworld.c
+@@ -75,6 +75,9 @@
+ #include "hw/usb/usb.h"
+ #include "hw/core/sysbus.h"
+ #include "trace.h"
++#include "qemu/timer.h"
++#include "hw/core/cpu.h"
++#include "qemu/rb-stats.h"
+ 
+ #define MAX_IDE_BUS 2
+ #define CFG_ADDR 0xf0000510
+@@ -130,6 +133,171 @@
+ }
+ 
+ /* PowerPC Mac99 hardware initialisation */
++/*
++ * RetroBoot boottime lab only (not shipped): guest register sampler.
++ * RB_PCSAMPLE=FILE [RB_PCSAMPLE_US=1000] records, every period of host time,
++ * the vCPU state at its next TB boundary (async_run_on_cpu), also while it
++ * naps, as fixed 192-byte records (RB_PCSAMPLE_PEEK: up to 4 virtual
++ * addresses read per sample; RB_PCSAMPLE_DUMP: one memory dump).
++ */
++typedef struct RBSample {
++    uint64_t rt_ns, vm_ns;
++    uint32_t nip, lr, ctr, msr, srr0, srr1, dec, halted;
++    uint32_t gpr[32];
++    uint32_t peek[4];
++} RBSample;
++
++static uint32_t rb_ps_peek_addr[4];
++static int rb_ps_npeek;
++static uint32_t rb_ps_dump_ptr, rb_ps_dump_len;
++static int64_t rb_ps_dump_at;
++static char *rb_ps_dump_path;
++
++static FILE *rb_ps_file;
++static QEMUTimer *rb_ps_timer;
++static int64_t rb_ps_period_ns;
++static CPUState *rb_ps_cpu;
++static bool rb_ps_pending;
++static unsigned rb_ps_count;
++
++static void rb_ps_sample(CPUState *cs, run_on_cpu_data data)
++{
++    PowerPCCPU *cpu = POWERPC_CPU(cs);
++    CPUPPCState *env = &cpu->env;
++    RBSample s;
++    int i;
++
++    memset(&s, 0, sizeof(s));
++    s.rt_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    s.vm_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    s.nip = env->nip;
++    s.lr = env->lr;
++    s.ctr = env->ctr;
++    s.msr = env->msr;
++    s.srr0 = env->spr[SPR_SRR0];
++    s.srr1 = env->spr[SPR_SRR1];
++    s.dec = cpu_ppc_load_decr(env);
++    s.halted = cs->halted;
++    for (i = 0; i < 32; i++) {
++        s.gpr[i] = env->gpr[i];
++    }
++    for (i = 0; i < rb_ps_npeek; i++) {
++        uint8_t b[4];
++        if (cpu_memory_rw_debug(cs, rb_ps_peek_addr[i], b, 4, false) == 0) {
++            s.peek[i] = ldl_be_p(b);
++        } else {
++            s.peek[i] = 0xdeadbeef;
++        }
++    }
++    if (rb_ps_dump_path && s.rt_ns >= rb_ps_dump_at) {
++        uint8_t b[4];
++        uint32_t base, len;
++        if (cpu_memory_rw_debug(cs, rb_ps_dump_ptr, b, 4, false) == 0) {
++            base = ldl_be_p(b);
++            if (cpu_memory_rw_debug(cs, rb_ps_dump_len, b, 4, false) == 0) {
++                len = ldl_be_p(b);
++                if (len > 0 && len < (16 << 20)) {
++                    uint8_t *buf = g_malloc(len);
++                    if (cpu_memory_rw_debug(cs, base, buf, len, false) == 0) {
++                        FILE *f = fopen(rb_ps_dump_path, "wb");
++                        if (f) {
++                            fwrite(&base, 4, 1, f);
++                            fwrite(buf, len, 1, f);
++                            fclose(f);
++                        }
++                    }
++                    g_free(buf);
++                }
++            }
++        }
++        g_free(rb_ps_dump_path);
++        rb_ps_dump_path = NULL;
++    }
++    fwrite(&s, sizeof(s), 1, rb_ps_file);
++    if ((++rb_ps_count & 255) == 0) {
++        fflush(rb_ps_file);
++    }
++    rb_ps_pending = false;
++}
++
++static void rb_ps_tick(void *opaque)
++{
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    if (!rb_ps_pending) {
++        rb_ps_pending = true;
++        async_run_on_cpu(rb_ps_cpu, rb_ps_sample, RUN_ON_CPU_NULL);
++    }
++    timer_mod(rb_ps_timer, now + rb_ps_period_ns);
++}
++
++static void rb_ps_flush(void)
++{
++    if (rb_ps_file) {
++        fflush(rb_ps_file);
++    }
++}
++
++static FILE *rb_st_file;
++static QEMUTimer *rb_st_timer;
++
++static void rb_st_tick(void *opaque)
++{
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    int i;
++    fprintf(rb_st_file, "%lld", (long long)now);
++    for (i = 0; i < RBS_N; i++) {
++        fprintf(rb_st_file, " %llu", rb_stats[i]);
++    }
++    fputc('\n', rb_st_file);
++    fflush(rb_st_file);
++    timer_mod(rb_st_timer, now + 100 * 1000000LL);
++}
++
++static void rb_ps_init(CPUState *cs)
++{
++    const char *st = getenv("RB_TCGSTATS");
++    if (st && *st && (rb_st_file = fopen(st, "w"))) {
++        rb_st_timer = timer_new_ns(QEMU_CLOCK_REALTIME, rb_st_tick, NULL);
++        timer_mod(rb_st_timer, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + 100 * 1000000LL);
++    }
++    const char *path = getenv("RB_PCSAMPLE");
++    const char *us = getenv("RB_PCSAMPLE_US");
++    if (!path || !*path) {
++        return;
++    }
++    rb_ps_file = fopen(path, "wb");
++    if (!rb_ps_file) {
++        error_report("RB_PCSAMPLE: cannot open %s", path);
++        return;
++    }
++    setvbuf(rb_ps_file, NULL, _IOFBF, 1 << 20);
++    atexit(rb_ps_flush);
++    rb_ps_cpu = cs;
++    {
++        const char *pk = getenv("RB_PCSAMPLE_PEEK");
++        const char *dp = getenv("RB_PCSAMPLE_DUMP");
++        while (pk && *pk && rb_ps_npeek < 4) {
++            char *end;
++            rb_ps_peek_addr[rb_ps_npeek++] = strtoul(pk, &end, 16);
++            pk = (*end == ',') ? end + 1 : NULL;
++        }
++        if (dp) {
++            /* PTR_VADDR,LEN_VADDR,AFTER_MS,PATH */
++            char **v = g_strsplit(dp, ",", 4);
++            if (v[0] && v[1] && v[2] && v[3]) {
++                rb_ps_dump_ptr = strtoul(v[0], NULL, 16);
++                rb_ps_dump_len = strtoul(v[1], NULL, 16);
++                rb_ps_dump_at = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + atoll(v[2]) * 1000000LL;
++                rb_ps_dump_path = g_strdup(v[3]);
++            }
++            g_strfreev(v);
++        }
++    }
++    rb_ps_period_ns = (us ? atoll(us) : 1000) * 1000;
++    rb_ps_timer = timer_new_ns(QEMU_CLOCK_REALTIME, rb_ps_tick, NULL);
++    timer_mod(rb_ps_timer, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + rb_ps_period_ns);
++}
++
+ static void ppc_core99_init(MachineState *machine)
+ {
+     Core99MachineState *core99_machine = CORE99_MACHINE(machine);
+@@ -536,6 +704,7 @@
+     }
+ 
+     qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
++    rb_ps_init(CPU(cpu));
+ }
+ 
+ /*
+diff --git a/include/exec/cputlb.h b/include/exec/cputlb.h
+--- a/include/exec/cputlb.h
++++ b/include/exec/cputlb.h
+@@ -105,6 +105,26 @@
+  * MMU indexes.
+  */
+ void tlb_flush_page(CPUState *cpu, vaddr addr);
++/**
++ * tlb_flush_page_classes:
++ * @cpu: CPU whose TLB should be flushed
++ * @classes: bit n set flushes every page with (vaddr >> TARGET_PAGE_BITS) % 64 == n
++ *
++ * RetroBoot: flush the congruence classes a 32-bit PowerPC tlbie selects
++ * (EA bits 14-19 on the 750/7400 TLBs) instead of the whole TLB, with the
++ * jump-cache entries of TBs that start in (or run into) those pages.
++ */
++void tlb_flush_page_classes(CPUState *cpu, uint64_t classes);
++/**
++ * tlb_flush_range_scan:
++ * @cpu: CPU whose TLB should be flushed
++ * @addr: start of the virtual range
++ * @len: length of the range
++ *
++ * RetroBoot: flush only the TLB and jump-cache entries inside [addr, addr+len)
++ * by scanning them (for large ranges that QEMU would otherwise flush whole).
++ */
++void tlb_flush_range_scan(CPUState *cpu, vaddr addr, vaddr len);
+ 
+ /**
+  * tlb_flush_page_all_cpus_synced:
+diff --git a/system/physmem.c b/system/physmem.c
+--- a/system/physmem.c
++++ b/system/physmem.c
+@@ -3078,10 +3078,30 @@
+     tlb_flush(cpu);
+ }
+ 
++#include <execinfo.h>
+ static void tcg_commit(MemoryListener *listener)
+ {
+     CPUAddressSpace *cpuas;
+     CPUState *cpu;
++    {
++        static FILE *f;
++        static int state;
++        static unsigned long n;
++        if (!state) {
++            const char *p = getenv("RB_COMMITBT");
++            state = 2;
++            if (p && (f = fopen(p, "w"))) {
++                state = 1;
++            }
++        }
++        if (state == 1 && (n++ % 53) == 0) {
++            void *bt[16];
++            int k = backtrace(bt, 16);
++            fflush(f);
++            backtrace_symbols_fd(bt, k, fileno(f));
++            fputs("--\n", f);
++        }
++    }
+ 
+     assert(tcg_enabled());
+     /* since each CPU stores ram addresses in its TLB cache, we must
+diff --git a/target/ppc/cpu.h b/target/ppc/cpu.h
+--- a/target/ppc/cpu.h
++++ b/target/ppc/cpu.h
+@@ -1342,6 +1342,8 @@
+     uint32_t tlb_need_flush; /* Delayed flush needed */
+ #define TLB_NEED_LOCAL_FLUSH   0x1
+ #define TLB_NEED_GLOBAL_FLUSH  0x2
++#define TLB_NEED_CLASS_FLUSH   0x4 /* RetroBoot: tlbie_classes only */
++    uint64_t tlbie_classes;  /* RetroBoot: congruence classes to flush */
+ #endif
+ 
+     /* Other registers */
+diff --git a/target/ppc/excp_helper.c b/target/ppc/excp_helper.c
+--- a/target/ppc/excp_helper.c
++++ b/target/ppc/excp_helper.c
+@@ -17,6 +17,7 @@
+  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
+  */
+ #include "qemu/osdep.h"
++#include "qemu/rb-stats.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/log.h"
+ #include "system/memory.h"
+@@ -835,8 +836,52 @@
+     powerpc_do_plugin_vcpu_interrupt_cb(env_cpu(env), excp, last_pc);
+ }
+ 
++/* RetroBoot boottime lab only: RB_PROGLOG=FILE logs program exceptions. */
++static FILE *rb_proglog_file;
++static int rb_proglog_state;
++static unsigned long rb_proglog_n;
++
++static void rb_proglog(PowerPCCPU *cpu)
++{
++    CPUPPCState *env = &cpu->env;
++    uint32_t rec[6];
++    uint8_t b[4];
++
++    if (rb_proglog_state == 0) {
++        const char *f = getenv("RB_PROGLOG");
++        rb_proglog_state = 2;
++        if (f && *f && (rb_proglog_file = fopen(f, "wb"))) {
++            rb_proglog_state = 1;
++        }
++    }
++    if (rb_proglog_state != 1 || rb_proglog_n++ > 4000000) {
++        return;
++    }
++    rec[0] = (uint32_t)(qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1000);
++    rec[1] = env->nip;
++    rec[2] = env->error_code;
++    rec[3] = (cpu_memory_rw_debug(env_cpu(env), env->nip, b, 4, false) == 0) ? ldl_be_p(b) : 0xffffffff;
++    rec[4] = env->lr;
++    rec[5] = env->msr;
++    fwrite(rec, sizeof(rec), 1, rb_proglog_file);
++    if ((rb_proglog_n & 4095) == 0) {
++        fflush(rb_proglog_file);
++    }
++}
++
+ static void powerpc_excp_74xx(PowerPCCPU *cpu, int excp)
+ {
++    RB_STAT(RBS_EXCP_ALL);
++    switch (excp) {
++    case POWERPC_EXCP_DSI: RB_STAT(RBS_EXCP_DSI); break;
++    case POWERPC_EXCP_ISI: RB_STAT(RBS_EXCP_ISI); break;
++    case POWERPC_EXCP_EXTERNAL: RB_STAT(RBS_EXCP_EXT); break;
++    case POWERPC_EXCP_PROGRAM: RB_STAT(RBS_EXCP_PROG); rb_proglog(cpu); break;
++    case POWERPC_EXCP_FPU: RB_STAT(RBS_EXCP_FPU); break;
++    case POWERPC_EXCP_DECR: RB_STAT(RBS_EXCP_DEC); break;
++    case POWERPC_EXCP_SYSCALL: RB_STAT(RBS_EXCP_SC); break;
++    default: RB_STAT(RBS_EXCP_OTHER); break;
++    }
+     CPUPPCState *env = &cpu->env;
+     target_ulong msr, new_msr, vector;
+     uint64_t last_pc = env->nip;
+diff --git a/target/ppc/helper_regs.c b/target/ppc/helper_regs.c
+--- a/target/ppc/helper_regs.c
++++ b/target/ppc/helper_regs.c
+@@ -18,6 +18,8 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/rb-stats.h"
++#include "hw/core/cpu.h"
+ #include "cpu.h"
+ #include "qemu/main-loop.h"
+ #include "exec/cputlb.h"
+@@ -376,10 +378,16 @@
+ {
+     CPUState *cs = env_cpu(env);
+ 
++    if (global && (env->tlb_need_flush & TLB_NEED_GLOBAL_FLUSH) &&
++        (rb_exp() & 1) && CPU_NEXT(first_cpu) == NULL) {
++        /* RetroBoot: one CPU, so the "global" flush is the local one */
++        env->tlb_need_flush &= ~TLB_NEED_GLOBAL_FLUSH;
++        global = false;
++    }
+     /* Handle global flushes first */
+     if (global && (env->tlb_need_flush & TLB_NEED_GLOBAL_FLUSH)) {
+-        env->tlb_need_flush &= ~TLB_NEED_GLOBAL_FLUSH;
+-        env->tlb_need_flush &= ~TLB_NEED_LOCAL_FLUSH;
++        env->tlb_need_flush &= ~(TLB_NEED_GLOBAL_FLUSH | TLB_NEED_LOCAL_FLUSH | TLB_NEED_CLASS_FLUSH);
++        env->tlbie_classes = 0;
+         tlb_flush_all_cpus_synced(cs);
+         return;
+     }
+@@ -387,7 +395,23 @@
+     /* Then handle local ones */
+     if (env->tlb_need_flush & TLB_NEED_LOCAL_FLUSH) {
+         env->tlb_need_flush &= ~TLB_NEED_LOCAL_FLUSH;
++        if (rb_pending_sr && rb_pending_tlbie) {
++            RB_STAT(RBS_FLUSH_BOTH);
++        } else if (rb_pending_sr) {
++            RB_STAT(RBS_FLUSH_SR);
++        } else if (rb_pending_tlbie) {
++            RB_STAT(RBS_FLUSH_TLBIE);
++        }
++        rb_pending_sr = rb_pending_tlbie = 0;
++        env->tlb_need_flush &= ~TLB_NEED_CLASS_FLUSH;
++        env->tlbie_classes = 0;
+         tlb_flush(cs);
++    } else if (env->tlb_need_flush & TLB_NEED_CLASS_FLUSH) {
++        uint64_t classes = env->tlbie_classes;
++        env->tlb_need_flush &= ~TLB_NEED_CLASS_FLUSH;
++        env->tlbie_classes = 0;
++        rb_pending_tlbie = 0;
++        tlb_flush_page_classes(cs, classes);
+     }
+ }
+ #endif /* !CONFIG_USER_ONLY */
+diff --git a/target/ppc/mmu_helper.c b/target/ppc/mmu_helper.c
+--- a/target/ppc/mmu_helper.c
++++ b/target/ppc/mmu_helper.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/rb-stats.h"
+ #include "qemu/units.h"
+ #include "cpu.h"
+ #include "system/kvm.h"
+@@ -149,6 +150,7 @@
+ static inline void do_invalidate_BAT(CPUPPCState *env, target_ulong BATu,
+                                      target_ulong mask)
+ {
++    RB_STAT(RBS_BAT_CHANGE);
+     CPUState *cs = env_cpu(env);
+     target_ulong base, end;
+ 
+@@ -157,9 +159,13 @@
+     qemu_log_mask(CPU_LOG_MMU, "Flush BAT from " TARGET_FMT_lx
+                   " to " TARGET_FMT_lx " (" TARGET_FMT_lx ")\n",
+                   base, end, mask);
++    if (rb_exp() & 4) {
++        tlb_flush_range_scan(cs, base, end - base);
++    } else {
+     tlb_flush_range_by_mmuidx(cs, base, end - base,
+                               (1u << NB_MMU_MODES) - 1,
+                               TARGET_LONG_BITS);
++    }
+     qemu_log_mask(CPU_LOG_MMU, "Flush done\n");
+ }
+ #endif
+@@ -300,6 +306,13 @@
+         ppc6xx_tlb_invalidate_virt(env, addr, 1);
+         break;
+     case POWERPC_MMU_32B:
++        RB_STAT(RBS_TLBIE);
++        rb_pending_tlbie = 1;
++        if (rb_exp() & 2) {
++            env->tlbie_classes |= 1ULL << ((addr >> TARGET_PAGE_BITS) & 63);
++            env->tlb_need_flush |= TLB_NEED_CLASS_FLUSH;
++            break;
++        }
+         /*
+          * Actual CPUs invalidate entire congruence classes based on
+          * the geometry of their TLBs and some OSes take that into
+@@ -355,6 +368,8 @@
+ #endif
+     if (env->sr[srnum] != value) {
+         env->sr[srnum] = value;
++        RB_STAT(RBS_SR_CHANGE);
++        rb_pending_sr = 1;
+         /*
+          * Invalidating 256MB of virtual memory in 4kB pages is way
+          * longer than flushing the whole TLB.
+diff --git a/include/qemu/rb-stats.h b/include/qemu/rb-stats.h
+new file mode 100644
+--- /dev/null
++++ b/include/qemu/rb-stats.h
+@@ -0,0 +1,25 @@
++/* RetroBoot boottime lab only: TCG event counters (not shipped). */
++#ifndef RB_STATS_H
++#define RB_STATS_H
++enum {
++    RBS_LOOKUP_PTR, RBS_LOOKUP_PTR_FAST, RBS_JC_HIT, RBS_JC_MISS, RBS_HT_MISS,
++    RBS_JC_FLUSH, RBS_TLB_FLUSH, RBS_TLB_FLUSH_PAGE, RBS_TLB_FLUSH_RANGE, RBS_TLB_RANGE_PAGES,
++    RBS_TB_GEN, RBS_EXCP_ALL, RBS_EXCP_DSI, RBS_EXCP_ISI, RBS_EXCP_EXT, RBS_EXCP_PROG,
++    RBS_EXCP_FPU, RBS_EXCP_DEC, RBS_EXCP_SC, RBS_EXCP_OTHER, RBS_JC_MISS_FLAGS, RBS_EXEC_LOOP_TB,
++    RBS_TLBIE, RBS_SR_CHANGE, RBS_FLUSH_SR, RBS_FLUSH_TLBIE, RBS_FLUSH_BOTH, RBS_BAT_CHANGE,
++    RBS_N
++};
++extern unsigned long long rb_stats[32];
++extern int rb_pending_sr, rb_pending_tlbie;
++#define RB_STAT(i) (rb_stats[i]++)
++#define RB_STAT_ADD(i, n) (rb_stats[i] += (n))
++static inline int rb_exp(void)
++{
++    static int v = -1;
++    if (v < 0) {
++        const char *e = getenv("RB_EXP");
++        v = e ? atoi(e) : 0;
++    }
++    return v;
++}
++#endif

@@ -1,0 +1,106 @@
+# RetroBoot appliance rootfs packages (both flavors). One package per line.
+# Base system
+systemd
+systemd-sysv
+udev
+dbus
+kmod
+procps
+initramfs-tools
+busybox
+zstd
+linux-image-amd64
+# Firmware and microcode (non-free-firmware). Intel for the N150 target, plus
+# broad x86 laptop/mini-PC coverage: AMD graphics (amdgpu) and CPU microcode, laptop
+# speaker amplifiers (Cirrus Logic), and the common Wi-Fi/Ethernet/Bluetooth families (MediaTek mt76/mt7921/mt7925,
+# Realtek rtw88/rtw89/r8169 NIC, Qualcomm Atheros ath9k/ath10k/ath11k/ath12k,
+# Broadcom brcmfmac). License notes: image/scripts/make-manifest.py.
+firmware-intel-graphics
+firmware-iwlwifi
+firmware-sof-signed
+intel-microcode
+firmware-amd-graphics
+amd64-microcode
+firmware-mediatek
+firmware-realtek
+firmware-atheros
+firmware-misc-nonfree
+firmware-brcm80211
+# Cirrus Logic CS35L41/CS35L56 speaker amplifiers behind HD Audio codecs (ThinkPad
+# Z13/Z16, many Lenovo/HP/ASUS/Dell laptops): DSP firmware and per-model tuning, e.g.
+# cirrus/cs35l41-dsp1-spk-prot-17aa22f1*. Without it the amplifiers run in DSP bypass.
+firmware-cirrus
+wireless-regdb
+# Boot loader payloads (GRUB EFI/BIOS module trees; RetroBoot ships its own quiet build too)
+grub-efi-amd64-bin
+grub-pc-bin
+efibootmgr
+# Storage and installer backend
+e2fsprogs
+xfsprogs
+dosfstools
+gdisk
+cloud-guest-utils
+rsync
+util-linux
+# Offline Mac OS volume repair for hostd (non-free; APSL)
+hfsprogs
+# Classic Mac archives (StuffIt etc.) for the media library (apps/rbapps; LGPL-2.1)
+unar
+# Networking and management
+network-manager
+wpasupplicant
+avahi-daemon
+systemd-timesyncd
+ca-certificates
+openssl
+# Bluetooth keyboards, mice, trackpads and game controllers (hostd/retroboot/bluetooth.py):
+# BlueZ with only its input plugins (etc/systemd/system/bluetooth.service.d) and hostd's
+# D-Bus client. Adapter firmware comes from the packages above: Intel (firmware-iwlwifi:
+# ibt-* for the AC 7265/AX200 family), Realtek (firmware-realtek: rtl_bt/, e.g. RTL8821CE),
+# MediaTek (firmware-mediatek), Qualcomm Atheros (firmware-atheros); btusb, btintel and
+# btrtl are in linux-image-amd64.
+bluez
+python3-dbus-fast
+# Audio
+alsa-utils
+# ALSA UCM profiles: Sound Open Firmware laptop codecs (e.g. Everest ES8336) need their
+# routing set before any sound plays (hostd/retroboot/audio.py ucm_prepare; BSD-3-Clause)
+alsa-ucm-conf
+# hostd runtime
+python3
+python3-aiohttp
+python3-cryptography
+python3-qrcode
+# Modern Web Helper (webproxy/, retroboot-webproxy.service): HTML parsing and the
+# simplified view, image conversion (WebP, PNG, JPEG; SVG through CairoSVG) and the
+# nftables redirect of Mac OS's web and DNS traffic while the helper runs.
+python3-lxml
+python3-readability
+python3-pil
+python3-cairosvg
+nftables
+# Platinum asset bundle: TrueType rasterization of the guest's Charcoal (rbplatinum, ctypes)
+libfreetype6
+# rb-presenter runtime
+libdrm2
+libinput10
+libudev1
+libxkbcommon0
+libpng16-16t64
+# QEMU (linux-ppc package) runtime; extended from the artifact's ldd at build time
+libglib2.0-0t64
+libpixman-1-0
+libslirp0
+libasound2t64
+zlib1g
+libfdt1
+libzstd1
+# Emulated ATI Radeon (display.graphics = ati-radeon, experimental): QEMU dlopen()s
+# EGL/GLES to draw the card's 3D on the host GPU through Mesa (render node, EGL
+# surfaceless). About 2 MB beside the Mesa libraries the image already carries.
+libegl1
+libegl-mesa0
+libgles2
+libglvnd0
+libgl1-mesa-dri

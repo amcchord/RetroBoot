@@ -1,0 +1,302 @@
+diff --git a/hw/display/ati.c b/hw/display/ati.c
+--- a/hw/display/ati.c
++++ b/hw/display/ati.c
+@@ -145,8 +145,14 @@
+     uint64_t data[128];
+     uint32_t srcoff;
+ 
+-    if ((s->regs.cur_offset & BIT(31)) || s->cursor_guest_mode) {
+-        return; /* Do not update cursor if locked or rendered by guest */
++    if (s->regs.cur_offset & BIT(31)) {
++        return;
++    }
++    if (s->cursor_guest_mode) {
++        /* Cursor pixels can change at the same address on an unlock. */
++        vga_invalidate_scanlines(&s->vga, s->vga.hw_cursor_y,
++                                 s->vga.hw_cursor_y + 63);
++        return;
+     }
+     /* FIXME handle cur_hv_offs correctly */
+     srcoff = s->regs.cur_offset - (s->regs.cur_hv_offs >> 16) -
+@@ -171,22 +177,27 @@
+ {
+     ATIVGAState *s = container_of(vga, ATIVGAState, vga);
+     int size = (s->regs.crtc_gen_cntl & CRTC2_CUR_EN) ? 64 : 0;
++    unsigned mode = (s->regs.crtc_gen_cntl >> 20) & 7;
++    /* CUR_OFFSET already includes the clipped top rows. Horizontal
++     * clipping selects pixels within each row, never preceding VRAM. */
++    uint32_t offset = s->regs.cur_offset & 0x07ffffff;
+ 
+     if (s->regs.cur_offset & BIT(31)) {
+         return; /* Do not update cursor if locked */
+     }
+-    if (s->cursor_size != size ||
++    if (s->cursor_size != size || s->cursor_mode != mode ||
++        s->cursor_hv_offs != s->regs.cur_hv_offs ||
+         vga->hw_cursor_x != s->regs.cur_hv_pos >> 16 ||
+         vga->hw_cursor_y != (s->regs.cur_hv_pos & 0xffff) ||
+-        s->cursor_offset != s->regs.cur_offset - (s->regs.cur_hv_offs >> 16) -
+-        (s->regs.cur_hv_offs & 0xffff) * 16) {
++        s->cursor_offset != offset) {
+         /* Remove old cursor then update and show new one if needed */
+         vga_invalidate_scanlines(vga, vga->hw_cursor_y, vga->hw_cursor_y + 63);
+         vga->hw_cursor_x = s->regs.cur_hv_pos >> 16;
+         vga->hw_cursor_y = s->regs.cur_hv_pos & 0xffff;
+-        s->cursor_offset = s->regs.cur_offset - (s->regs.cur_hv_offs >> 16) -
+-                           (s->regs.cur_hv_offs & 0xffff) * 16;
++        s->cursor_offset = offset;
+         s->cursor_size = size;
++        s->cursor_mode = mode;
++        s->cursor_hv_offs = s->regs.cur_hv_offs;
+         if (size) {
+             vga_invalidate_scanlines(vga,
+                                      vga->hw_cursor_y, vga->hw_cursor_y + 63);
+@@ -206,8 +217,45 @@
+         scr_y > s->regs.crtc_v_total_disp >> 16) {
+         return;
+     }
+-    /* FIXME handle cur_hv_offs correctly */
+-    srcoff = s->cursor_offset + (scr_y - vga->hw_cursor_y) * 16;
++    h = ((s->regs.crtc_h_total_disp >> 16) + 1) * 8;
++    if (vga->hw_cursor_x >= h) {
++        return;
++    }
++    if (ati_is_radeon(s) && (s->cursor_mode == 2 || s->cursor_mode == 3)) {
++        unsigned xorigin = (s->regs.cur_hv_offs >> 16) & 63;
++        unsigned yorigin = s->regs.cur_hv_offs & 63;
++        unsigned row = scr_y - vga->hw_cursor_y;
++        uint64_t source = (uint64_t)s->cursor_offset + row * 256;
++
++        if (row >= 64 - yorigin || source + 256 > vga->vram_size) {
++            return;
++        }
++        dp += vga->hw_cursor_x;
++        for (unsigned i = 0; i < 64 - xorigin && vga->hw_cursor_x + i < h; i++) {
++            const uint8_t *pixel = vga->vram_ptr + source + (i + xorigin) * 4;
++            uint32_t src = vga->big_endian_fb ? ldl_be_p(pixel) : ldl_le_p(pixel);
++            unsigned alpha = src >> 24;
++            uint32_t out = 0xff000000;
++
++            for (unsigned shift = 0; shift < 24; shift += 8) {
++                unsigned value = ((src >> shift) & 255) * alpha +
++                                 ((dp[i] >> shift) & 255) * (255 - alpha);
++                out |= ((value + 127) / 255) << shift;
++            }
++            dp[i] = out;
++        }
++        return;
++    }
++    /* Legacy two-plane monochrome cursor. CUR_OFFSET points to its
++     * first visible row; each plane skips the clipped left pixels. */
++    unsigned xorigin = (s->cursor_hv_offs >> 16) & 63;
++    unsigned yorigin = s->cursor_hv_offs & 63;
++    unsigned row = scr_y - vga->hw_cursor_y;
++
++    if (row >= 64 - yorigin) {
++        return;
++    }
++    srcoff = s->cursor_offset + row * 16;
+     if (srcoff > s->vga.vram_size - 16) {
+         return;
+     }
+@@ -215,8 +263,8 @@
+     h = ((s->regs.crtc_h_total_disp >> 16) + 1) * 8;
+     abits = ldq_be_p(&vga->vram_ptr[srcoff]);
+     xbits = ldq_be_p(&vga->vram_ptr[srcoff + 8]);
+-    mask = BIT_ULL(63);
+-    for (int i = 0; i < 64; i++, mask >>= 1) {
++    mask = BIT_ULL(63) >> xorigin;
++    for (unsigned i = 0; i < 64 - xorigin; i++, mask >>= 1) {
+         if (vga->hw_cursor_x + i >= h) {
+             return; /* end of screen, don't span to next line */
+         }
+@@ -1354,6 +1402,20 @@
+         return;
+     }
+     pci_set_word(dev->config + PCI_DEVICE_ID, s->dev_id);
++    if (s->agp) {
++        int cap;
++        if (!ati_is_radeon(s)) {
++            error_setg(errp, "x-agp requires a Radeon model");
++            return;
++        }
++        cap = pci_add_capability(dev, PCI_CAP_ID_AGP, 0x80, 12, errp);
++        if (cap < 0) {
++            return;
++        }
++        dev->config[cap + 2] = 0x20; /* AGP 2.0, 1x/2x and SBA */
++        pci_set_long(dev->config + cap + 4, 0x1f000203);
++        pci_set_long(dev->wmask + cap + 8, 0xffffffff);
++    }
+ 
+     if (ati_is_radeon(s) &&
+         s->vga.vram_size_mb < 16) {
+@@ -1476,6 +1538,7 @@
+ static const Property ati_vga_properties[] = {
+     DEFINE_PROP_UINT32("vgamem_mb", ATIVGAState, vga.vram_size_mb, 16),
+     DEFINE_PROP_STRING("model", ATIVGAState, model),
++    DEFINE_PROP_BOOL("x-agp", ATIVGAState, agp, false),
+     DEFINE_PROP_UINT16("x-device-id", ATIVGAState, dev_id,
+                        PCI_DEVICE_ID_ATI_RAGE128_PF),
+     DEFINE_PROP_BOOL("guest_hwcursor", ATIVGAState, cursor_guest_mode, false),
+diff --git a/hw/display/ati_int.h b/hw/display/ati_int.h
+index d19d9e8..59e6810 100644
+--- a/hw/display/ati_int.h
++++ b/hw/display/ati_int.h
+@@ -143,6 +143,7 @@ typedef struct ATIAccelStats {
+ 
+ struct ATIVGAState {
+     PCIDevice dev;
++    bool agp;
+     /*
+      * RetroBoot: backing store for every MMIO register that has no explicit
+      * handler, so drivers read back what they wrote (R100 has many such
+@@ -158,6 +159,8 @@ struct ATIVGAState {
+     bool cursor_guest_mode;
+     bool flip_pending;          /* RetroBoot: display start waits for a readback */
+     uint16_t cursor_size;
++    uint8_t cursor_mode;
++    uint32_t cursor_hv_offs;
+     uint32_t cursor_offset;
+     QEMUCursor *cursor;
+     QEMUTimer vblank_timer;
+diff --git a/hw/pci-host/uninorth.c b/hw/pci-host/uninorth.c
+index 10972de..5e57b53 100644
+--- a/hw/pci-host/uninorth.c
++++ b/hw/pci-host/uninorth.c
+@@ -30,6 +30,10 @@
+ #include "hw/pci/pci_host.h"
+ #include "hw/pci-host/uninorth.h"
+ #include "trace.h"
++#include "system/address-spaces.h"
++#include "system/physmem.h"
++
++#define TYPE_UNIN_AGP_IOMMU "unin-agp-iommu"
+ 
+ static int pci_unin_map_irq(PCIDevice *pci_dev, int irq_num)
+ {
+@@ -114,6 +118,61 @@ static char *pci_unin_main_ofw_unit_address(const SysBusDevice *dev)
+     return g_strdup_printf("%x", s->ofw_addr);
+ }
+ 
++/* UniNorth AGP DMA page table.  Register/PTE semantics are described by
++ * Apple's APSL AppleMacRiscPCI and Linux's uninorth-agp driver.  This
++ * compatibility aperture is opt-in on mac99's populated root bus; only
++ * its selected AGP master's DMA uses it, not ordinary PCI peripherals. */
++static IOMMUTLBEntry unin_agp_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
++                                       IOMMUAccessFlags flag, int iommu_idx)
++{
++    UNINHostState *s = container_of(iommu, UNINHostState, agp_iommu);
++    PCIDevice *bridge = s->agp_bridge;
++    uint32_t base = pci_get_long(bridge->config + 0x8c);
++    uint64_t start = pci_get_long(bridge->config + 0x90) & 0xf0000000;
++    uint64_t length = (base & 0xfff) * 4ULL * 1024 * 1024;
++    uint64_t page = addr & ~0xfffULL;
++    IOMMUTLBEntry entry = {
++        .target_as = &address_space_memory,
++        .iova = page, .translated_addr = page,
++        .addr_mask = 0xfff, .perm = IOMMU_RW,
++    };
++
++    if ((pci_get_long(bridge->config + 0x94) & 0x100) &&
++        addr >= start && addr - start < length) {
++        uint64_t pte_addr = (base & ~0xfffULL) + ((addr - start) >> 12) * 4;
++        uint32_t pte = ldl_le_phys(&address_space_memory, pte_addr);
++
++        if (!(pte & 1)) {
++            entry.perm = IOMMU_NONE;
++        } else {
++            entry.translated_addr = pte & ~0xfffULL;
++        }
++    }
++    return entry;
++}
++
++static AddressSpace *unin_agp_dma_space(PCIBus *bus, void *opaque, int devfn)
++{
++    UNINHostState *s = opaque;
++    return devfn == s->agp_devfn ? &s->agp_dma_as : &address_space_memory;
++}
++
++static const PCIIOMMUOps unin_agp_iommu_ops = {
++    .get_address_space = unin_agp_dma_space,
++};
++
++static void unin_agp_iommu_class_init(ObjectClass *klass, const void *data)
++{
++    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
++    imrc->translate = unin_agp_translate;
++}
++
++static const TypeInfo unin_agp_iommu_info = {
++    .parent = TYPE_IOMMU_MEMORY_REGION,
++    .name = TYPE_UNIN_AGP_IOMMU,
++    .class_init = unin_agp_iommu_class_init,
++};
++
+ static void pci_unin_main_realize(DeviceState *dev, Error **errp)
+ {
+     UNINHostState *s = UNI_NORTH_PCI_HOST_BRIDGE(dev);
+@@ -126,7 +185,28 @@ static void pci_unin_main_realize(DeviceState *dev, Error **errp)
+                                    &s->pci_io,
+                                    PCI_DEVFN(11, 0), 4, TYPE_PCI_BUS);
+ 
+-    pci_create_simple(h->bus, PCI_DEVFN(11, 0), "uni-north-pci");
++    s->agp_bridge = pci_create_simple(h->bus, PCI_DEVFN(11, 0), "uni-north-pci");
++    if (s->agp_compat) {
++        PCIDevice *bridge = s->agp_bridge;
++        int cap = pci_add_capability(bridge, PCI_CAP_ID_AGP, 0x80, 12, errp);
++
++        if (cap < 0) {
++            return;
++        }
++        bridge->config[cap + 2] = 0x20;   /* AGP 2.0 */
++        pci_set_long(bridge->config + cap + 4, 0x1f000203); /* 1x/2x, SBA */
++        pci_set_long(bridge->wmask + cap + 8, 0xffffffff);
++        for (int reg = 0x8c; reg <= 0x94; reg += 4) {
++            pci_set_long(bridge->wmask + reg, 0xffffffff);
++        }
++        pci_set_long(bridge->config + 0x98, 1); /* AGP DMA bus is idle */
++        memory_region_init_iommu(&s->agp_iommu, sizeof(s->agp_iommu),
++                                 TYPE_UNIN_AGP_IOMMU, OBJECT(s),
++                                 "unin-agp-dma", UINT64_MAX);
++        address_space_init(&s->agp_dma_as, MEMORY_REGION(&s->agp_iommu),
++                           "unin-agp-dma");
++        pci_setup_iommu(h->bus, &unin_agp_iommu_ops, s);
++    }
+ 
+     /*
+      * DEC 21154 bridge was unused for many years, this comment is
+@@ -426,6 +506,8 @@ static const TypeInfo unin_internal_pci_host_info = {
+ 
+ static const Property pci_unin_main_pci_host_props[] = {
+     DEFINE_PROP_UINT32("ofw-addr", UNINHostState, ofw_addr, -1),
++    DEFINE_PROP_BOOL("x-agp-compat", UNINHostState, agp_compat, false),
++    DEFINE_PROP_UINT32("x-agp-devfn", UNINHostState, agp_devfn, PCI_DEVFN(17, 0)),
+ };
+ 
+ static void pci_unin_main_class_init(ObjectClass *klass, const void *data)
+@@ -549,6 +631,7 @@ static const TypeInfo unin_info = {
+ 
+ static void unin_register_types(void)
+ {
++    type_register_static(&unin_agp_iommu_info);
+     type_register_static(&unin_main_pci_host_info);
+     type_register_static(&u3_agp_pci_host_info);
+     type_register_static(&unin_agp_pci_host_info);
+diff --git a/include/hw/pci-host/uninorth.h b/include/hw/pci-host/uninorth.h
+index 62bd81e..43fa78d 100644
+--- a/include/hw/pci-host/uninorth.h
++++ b/include/hw/pci-host/uninorth.h
+@@ -50,6 +50,11 @@ struct UNINHostState {
+     PCIHostState parent_obj;
+ 
+     uint32_t ofw_addr;
++    bool agp_compat;
++    uint32_t agp_devfn;
++    PCIDevice *agp_bridge;
++    IOMMUMemoryRegion agp_iommu;
++    AddressSpace agp_dma_as;
+     qemu_irq irqs[4];
+     MemoryRegion pci_mmio;
+     MemoryRegion pci_hole;

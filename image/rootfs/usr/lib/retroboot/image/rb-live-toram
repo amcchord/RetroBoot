@@ -1,0 +1,100 @@
+#!/usr/bin/python3 -I
+"""Release the installer medium: move the live squashfs images into RAM.
+
+The live root is an overlay on read-only squashfs images that loop devices read
+from the installer medium. The installer asks the user to remove the medium
+before restarting; afterwards any file not already in the page cache would be
+unreadable (EIO) and even the reboot would hang. This copies each squashfs
+image the loop devices use from the medium into a dedicated tmpfs, checks the
+copy, and switches the loop device to it with LOOP_CHANGE_FD (allowed for
+read-only loop devices and same-size files), then lazily unmounts the medium.
+
+Runs in the background right after the installer boots (the copy is a few
+seconds) and again synchronously from install-to-disk's last phase, so it is
+idempotent. Writes /run/retroboot/live/medium-released when done.
+
+usage: rb-live-toram [--wait]
+"""
+import fcntl
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+
+LIVE = '/run/retroboot/live'
+MEDIUM = f'{LIVE}/medium'
+RAM = f'{LIVE}/ram'
+DONE = f'{LIVE}/medium-released'
+LOCK = f'{LIVE}/toram.lock'
+LOOP_CHANGE_FD = 0x4C06
+
+
+def loops_on_medium():
+    found = []
+    for name in sorted(os.listdir('/sys/block')):
+        backing = f'/sys/block/{name}/loop/backing_file'
+        if name.startswith('loop') and os.path.exists(backing):
+            with open(backing) as f:
+                path = f.read().strip()
+            if path.startswith(MEDIUM + '/'):
+                found.append((f'/dev/{name}', path))
+    return found
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(8 << 20), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def main(argv):
+    if not os.path.isdir(MEDIUM) or os.path.exists(DONE):
+        return 0
+    lockfd = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(lockfd, fcntl.LOCK_EX)          # a second caller waits for the first
+    if os.path.exists(DONE):
+        return 0
+    start = time.monotonic()
+    loops = loops_on_medium()
+    need = sum(os.path.getsize(p) for _, p in loops)
+    os.makedirs(RAM, exist_ok=True)
+    if not os.path.ismount(RAM):
+        subprocess.run(['mount', '-t', 'tmpfs', '-o', f'mode=0700,size={need + (64 << 20)}', 'rb-live-ram', RAM], check=True)
+    switched = []
+    for dev, path in loops:
+        dest = os.path.join(RAM, os.path.basename(path))
+        tmp = dest + '.part'
+        with open(path, 'rb') as src, open(tmp, 'wb') as out:
+            while True:
+                block = src.read(8 << 20)
+                if not block:
+                    break
+                out.write(block)
+        if os.path.getsize(tmp) != os.path.getsize(path) or sha256(tmp) != sha256(path):
+            raise SystemExit(f'rb-live-toram: copy of {path} does not match')
+        os.replace(tmp, dest)
+        newfd = os.open(dest, os.O_RDONLY)
+        loopfd = os.open(dev, os.O_RDONLY)
+        try:
+            fcntl.ioctl(loopfd, LOOP_CHANGE_FD, newfd)
+        finally:
+            os.close(loopfd)
+            os.close(newfd)
+        switched.append({'loop': dev, 'from': path, 'to': dest, 'bytes': os.path.getsize(dest)})
+    leftover = loops_on_medium()
+    if leftover:
+        raise SystemExit(f'rb-live-toram: still reading from the medium: {leftover}')
+    subprocess.run(['umount', '-l', MEDIUM], check=False)
+    record = {'switched': switched, 'seconds': round(time.monotonic() - start, 2)}
+    with open(DONE, 'w') as f:
+        json.dump(record, f)
+    print(json.dumps(record))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

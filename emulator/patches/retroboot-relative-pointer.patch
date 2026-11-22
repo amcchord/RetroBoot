@@ -1,0 +1,93 @@
+RetroBoot: preserve local relative mouse motion for InputSprocket games.
+
+--- a/ui/retroboot.c
++++ b/ui/retroboot.c
+@@ -61,6 +61,7 @@
+     RBD_MSG_RESIZE = 19,
+     RBD_MSG_RELEASE_ALL = 20,
+     RBD_MSG_REFRESH_RATE = 21,
++    RBD_MSG_POINTER_REL = 22,
+ };
+ 
+ typedef struct RBDHeader {
+@@ -114,6 +115,7 @@
+ 
+ typedef struct RetroBootDisplay {
+     DisplayChangeListener dcl;
++    Notifier mouse_mode_notifier;
+     char *socket_path;
+     int fd;
+     QEMUTimer *connect_timer;
+@@ -233,6 +235,23 @@
+     return "real-time";
+ }
+ 
++/* Also advertises relative-message support; an older presenter ignores it. */
++static void rbd_send_pointer_mode(RetroBootDisplay *rbd)
++{
++    if (rbd->fd >= 0) {
++        rbd_send_event(rbd, qemu_input_is_absolute(rbd->dcl.con) ?
++                       "{\"event\":\"pointer-mode\",\"relative\":false}" :
++                       "{\"event\":\"pointer-mode\",\"relative\":true}");
++    }
++}
++
++static void rbd_mouse_mode_changed(Notifier *notify, void *data)
++{
++    RetroBootDisplay *rbd = container_of(notify, RetroBootDisplay,
++                                       mouse_mode_notifier);
++    rbd_send_pointer_mode(rbd);
++}
++
+ static void rbd_send_clock_event(RetroBootDisplay *rbd)
+ {
+     g_autofree char *json = NULL;
+@@ -533,6 +552,14 @@
+     qemu_input_event_sync();
+ }
+ 
++/* Signed deltas have no desktop-edge clamp. USB/ADB devices consume them. */
++static void rbd_pointer_rel(RetroBootDisplay *rbd, int32_t dx, int32_t dy)
++{
++    qemu_input_queue_rel(rbd->dcl.con, INPUT_AXIS_X, CLAMP(dx, -32767, 32767));
++    qemu_input_queue_rel(rbd->dcl.con, INPUT_AXIS_Y, CLAMP(dy, -32767, 32767));
++    qemu_input_event_sync();
++}
++
+ static void rbd_button(RetroBootDisplay *rbd, uint32_t button, bool down)
+ {
+     uint32_t bit;
+@@ -641,6 +668,16 @@
+     if (hdr.len != size - sizeof(hdr)) {
+         warn_report_once("retroboot: ignoring presenter message with "
+                          "inconsistent length");
++        return;
++    }
++
++    if (hdr.type == RBD_MSG_POINTER_REL) {
++        if (hdr.len != sizeof(pair)) {
++            warn_report_once("retroboot: ignoring malformed relative pointer");
++            return;
++        }
++        memcpy(&pair, payload, sizeof(pair));
++        rbd_pointer_rel(rbd, (int32_t)pair.a, (int32_t)pair.b);
+         return;
+     }
+ 
+@@ -756,6 +793,7 @@
+     rbd_flush(rbd);
+     if (rbd->fd >= 0) {
+         rbd_send_clock_event(rbd);
++        rbd_send_pointer_mode(rbd);
+     }
+     if (rbd->handoff_event_pending) {
+         /* Already reported through the clock event's handoff field. */
+@@ -933,6 +971,8 @@
+     rbd->dcl.ops = &rbd_dcl_ops;
+     rbd->dcl.con = con;
+     register_displaychangelistener(&rbd->dcl);
++    rbd->mouse_mode_notifier.notify = rbd_mouse_mode_changed;
++    qemu_add_mouse_mode_change_notifier(&rbd->mouse_mode_notifier);
+     rbd_set_interval(rbd);
+ 
+     rbd->connect_timer = timer_new_ms(QEMU_CLOCK_REALTIME, rbd_try_connect,

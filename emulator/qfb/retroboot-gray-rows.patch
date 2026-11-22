@@ -1,0 +1,48 @@
+RetroBoot: the qfb driver grays rows whose length is a multiple of 4 bytes, not 8 (Quadra 800, nubus-qfb).
+
+qfb_gray_pixels wrote two longwords per step and subtracted 8 from the row
+length, so a row of 100 bytes (800 pixels at 1 bit, the depth the ROM opens
+the card in) ran on from 4 to 2^32 - 4: the fill covered the rest of VRAM and
+bus-errored past it at the gray screen (Sad Mac 0000000F/00000001 on every
+cold start with a width that is not a multiple of 64).  Also: GetPage counted a
+page as width rows instead of height rows.
+
+diff --git a/driver/src/control.cc b/driver/src/control.cc
+index d49fc35..15b2b46 100644
+--- a/driver/src/control.cc
++++ b/driver/src/control.cc
+@@ -24,14 +24,14 @@ void qfb_gray_pixels(HLocker<Locals>& locals, uint32_t page) {
+   }
+   uint32_t* row_pointer = reinterpret_cast<uint32_t*>(locals->vram + QFB_VRAM_SLOT_BASE);
+   row_pointer += page * qfb->height * (qfb->rowbytes / 4);
++  /* RetroBoot: rowbytes is a multiple of 4, not of 8 (an 800-pixel 1-bit row
++     is 100 bytes); the 8-byte loop ran on from 4 to 2^32 - 4 and filled the
++     rest of VRAM, then bus-errored past it at the gray screen. */
++  uint32_t row_words = qfb->rowbytes / 4;
+   for(uint32_t y = 0; y < qfb->height; ++y) {
+-    uint32_t rowbytes_left = qfb->rowbytes;
+     uint32_t* p = row_pointer;
+-    while(rowbytes_left > 0) {
+-      p[0] = a;
+-      p[1] = b;
+-      p += 2;
+-      rowbytes_left -= 8;
++    for(uint32_t i = 0; i < row_words; ++i) {
++      p[i] = (i & 1) ? b : a;
+     }
+     uint32_t new_a = ~b, new_b = ~a;
+     a = new_a; b = new_b;
+diff --git a/driver/src/status.cc b/driver/src/status.cc
+index 7e74998..4c49f7c 100644
+--- a/driver/src/status.cc
++++ b/driver/src/status.cc
+@@ -7,7 +7,8 @@ int qfb_get_mode(CntrlParam* params, DCtlPtr dce) {
+     = *reinterpret_cast<VDSwitchInfoRec**>(params->csParam);
+   si->csMode = locals->cur_mode;
+   si->csData = locals->cur_resolution; /* current DisplayModeID */
+-  si->csPage = (locals->qfb->base - QFB_VRAM_SLOT_BASE) / (locals->qfb->width * locals->qfb->rowbytes);
++  /* RetroBoot: a page is height rows (was width rows). */
++  si->csPage = (locals->qfb->base - QFB_VRAM_SLOT_BASE) / (locals->qfb->height * locals->qfb->rowbytes);
+   si->csBaseAddr = reinterpret_cast<Ptr>(locals->vram + locals->qfb->base);
+   return noErr;
+ }

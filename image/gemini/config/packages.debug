@@ -1,0 +1,9 @@
+# Additional packages for the debug flavor only (Gemini PDA).
+openssh-server
+iproute2
+less
+strace
+usbutils
+ethtool
+i2c-tools
+evtest

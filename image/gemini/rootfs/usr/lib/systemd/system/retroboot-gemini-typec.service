@@ -1,0 +1,18 @@
+# RetroBoot on the Gemini PDA: the left USB-C port's FUSB301A in a mode that takes a
+# charger (dual-role) at every boot; the vendor kernel leaves it source-only, which stops
+# charging until the chip is power-cycled. The right port (no charge path) stays
+# source-only: its kernel driver owns it, or on an older kernel this sets SOURCE
+# (rb-gemini-typec).
+[Unit]
+Description=Gemini USB-C ports: left charges, right source-only
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-typec apply
+
+[Install]
+WantedBy=sysinit.target

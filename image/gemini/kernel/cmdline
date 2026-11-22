@@ -1,0 +1,1 @@
+console=ttyS0,921600n1 earlycon maxcpus=8 nokaslr g_ether.dev_addr=42:00:15:19:82:01 g_ether.host_addr=42:00:15:19:82:00 clk_ignore_unused regulator_ignore_unused consoleblank=0 loglevel=4 panic=10

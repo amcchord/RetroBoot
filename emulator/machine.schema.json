@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://retroboot.local/schemas/machine-v1",
+  "title": "RetroBoot Power Mac prototype machine",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "package_root",
+    "run_dir",
+    "cpu",
+    "ram_mb",
+    "display",
+    "audio",
+    "media",
+    "network",
+    "input",
+    "share",
+    "timing",
+    "nvram"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,47}$"
+    },
+    "package_root": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "run_dir": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "cpu": {
+      "enum": [
+        "g3",
+        "7400"
+      ]
+    },
+    "ram_mb": {
+      "type": "integer",
+      "minimum": 128,
+      "maximum": 1024
+    },
+    "network": {
+      "enum": [
+        "none",
+        "user-sungem",
+        "user-airport"
+      ]
+    },
+    "input": {
+      "enum": [
+        "adb",
+        "virtio-tablet"
+      ]
+    },
+    "timing": {
+      "enum": [
+        "realtime",
+        "icount-finder-experimental"
+      ]
+    },
+    "nvram": {
+      "const": "volatile"
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "width",
+        "height",
+        "depth"
+      ],
+      "properties": {
+        "backend": {
+          "enum": [
+            "vnc",
+            "sdl",
+            "retroboot"
+          ]
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 640,
+          "maximum": 2048
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 480,
+          "maximum": 2048
+        },
+        "depth": {
+          "enum": [
+            15,
+            32
+          ]
+        },
+        "socket": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "retroboot backend only: presenter display socket (default <run_dir>/display.sock)"
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ],
+      "properties": {
+        "backend": {
+          "enum": [
+            "none",
+            "wav",
+            "alsa"
+          ]
+        },
+        "wav_path": {
+          "type": "string",
+          "pattern": "^/"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "wav"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "wav_path"
+            ]
+          }
+        }
+      ]
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disk",
+        "disk_fixture_id",
+        "boot"
+      ],
+      "properties": {
+        "disk": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "cd": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "tools": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "disk_fixture_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,96}$"
+        },
+        "cd_fixture_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,96}$"
+        },
+        "tools_fixture_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,96}$"
+        },
+        "boot": {
+          "enum": [
+            "disk",
+            "cd"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "cd"
+            ]
+          },
+          "then": {
+            "required": [
+              "cd_fixture_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "tools"
+            ]
+          },
+          "then": {
+            "required": [
+              "tools_fixture_id"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "boot": {
+                "const": "cd"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "cd",
+              "cd_fixture_id"
+            ]
+          }
+        }
+      ]
+    },
+    "share": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "tag"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9 _-]{1,31}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "path"
+            ]
+          }
+        }
+      ]
+    },
+    "airport": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "AirPort card bridge (network user-airport only); docs/ARCHITECTURE.md section 10",
+      "properties": {
+        "socket": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "trace": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

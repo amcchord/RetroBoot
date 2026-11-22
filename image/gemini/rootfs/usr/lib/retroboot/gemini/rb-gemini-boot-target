@@ -1,0 +1,26 @@
+#!/bin/sh
+# rb-gemini-boot-target: what the Gemini's bootloader (LK) starts next.
+#
+#   rb-gemini-boot-target status      the para command and what it means
+#   rb-gemini-boot-target gemian      para = "boot-recovery": LK boots the recovery
+#                                     partition, which holds Gemian's boot.img (fallback)
+#   rb-gemini-boot-target retroboot   para = 32 NUL bytes: LK boots PARTNAME=boot (RetroBoot)
+#
+# LK reads a 32-byte command at offset 0 of the GPT partition PARTNAME=para and keeps
+# booting recovery while it says boot-recovery. The initrd writes the same after three
+# unhealthy boots. Run as root; reboot afterwards (systemctl reboot).
+set -u
+. /usr/lib/retroboot/gemini/gemini-part.sh
+para=$(rbg_part para) || { echo "rb-gemini-boot-target: no para partition" >&2; exit 1; }
+case "${1:-status}" in
+status)
+  cmd=$(rbg_para_read "$para")
+  case "$cmd" in
+    '') echo "para ($para): empty: LK boots PARTNAME=boot (RetroBoot)" ;;
+    boot-recovery) echo "para ($para): boot-recovery: LK boots recovery (Gemian)" ;;
+    *) echo "para ($para): '$cmd'" ;;
+  esac ;;
+gemian|recovery) rbg_para_write "$para" boot-recovery && echo "next boot: Gemian (para=boot-recovery)" ;;
+retroboot|boot) rbg_para_clear "$para" && echo "next boot: RetroBoot (para cleared)" ;;
+*) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

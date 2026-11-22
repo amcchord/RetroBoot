@@ -1,0 +1,168 @@
+#!/bin/bash
+# rb-gemini-audio: the Gemini's playback route and its speaker amplifiers.
+#
+#   rb-gemini-audio route        connect playback to the headphone drivers (codec muxes)
+#   rb-gemini-audio speaker      output to the built-in speakers (and the jack); the default
+#   rb-gemini-audio headphone    output to the jack only (speaker amplifiers off)
+#   rb-gemini-audio toggle       switch between the two; prints the new output
+#   rb-gemini-audio status       saved output, amplifier state, playback streams
+#   rb-gemini-audio watch        what retroboot-gemini-audio.service runs (below)
+#   rb-gemini-audio amps 0|1     set the amplifiers directly (diagnostics)
+#
+# Hardware (mt6797-mt6351, as documented by gemini-debian and reimplemented here): the
+# playback stays silent until the AFE connects DL1 to the ADDA and the codec's HPL/HPR
+# muxes select "Audio Playback"; DAPM powers them only while a stream runs, so setting
+# them once at boot costs nothing. The speakers hang off the same headphone drivers
+# through external amplifiers enabled by SoC GPIO 243 and 244 (gpiochip0). There is no
+# jack detection: with the amplifiers on, speakers and jack both play. "headphone" is
+# the switch hook for a jack user (hostd or a key binding can call it).
+#
+# With no stream open the codec powers its headphone drivers down, the lines float and
+# the amplifiers would play board noise. So "watch" (ten times a second) turns the
+# amplifiers on, when the saved output is "speaker", exactly while the codec's headphone
+# drivers are powered (DAPM, debugfs "HPL Power"). The emulator opens and prepares DL1
+# when Mac OS starts and keeps it open until Mac OS stops, and DAPM keeps the drivers on
+# across its stop/prepare cycles, so the amplifiers are on from the start of Mac OS to
+# its end; the drivers go off the moment the stream closes, and the amplifiers follow
+# within a poll. Following the stream state instead cost the start of every sound after
+# a few seconds of silence: the amplifiers came on 40-100 ms into it, so a 0.2 s alert
+# lost most of itself and a short interface click all of it (wave7/gemini-audio,
+# measured with the microphone; with the amplifiers on and no sound the microphone
+# hears nothing above the room). Without debugfs: on while a playback stream of the
+# card is prepared or runs, off 3 s after the last one stops.
+# The saved output survives reboots: /var/lib/retroboot/gemini/audio-output.
+set -u
+STATE=/var/lib/retroboot/gemini/audio-output
+AMPS=(243 244)
+
+card() { # the mt6797 card's number (0 when it can't be told); cached for "watch"
+  [ -n "${CARD:-}" ] && { echo "$CARD"; return; }
+  local n
+  n=$(awk 'tolower($0) ~ /mt6797|mt6351/ && $1 ~ /^[0-9]+$/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+  echo "${n:-0}"
+}
+route() {
+  local c; c=$(card)
+  amixer -q -c "$c" cset name='ADDA_DL_CH1 DL1_CH1' on &&
+  amixer -q -c "$c" cset name='ADDA_DL_CH2 DL1_CH2' on &&
+  amixer -q -c "$c" sset 'HPL Mux' 'Audio Playback' &&
+  amixer -q -c "$c" sset 'HPR Mux' 'Audio Playback'
+}
+amps() { gpioset -c gpiochip0 -t0 "${AMPS[0]}=$1" "${AMPS[1]}=$1"; }
+output() { # saved output (builtins only)
+  local o=
+  [ -r "$STATE" ] && read -r o < "$STATE"
+  [ "$o" = headphone ] && echo headphone || echo speaker
+}
+save() { mkdir -p "${STATE%/*}"; echo "$1" > "$STATE.tmp" && mv -f "$STATE.tmp" "$STATE"; }
+state_active() { # $1 a substream status file: prepared or running
+  local k v
+  [ -r "$1" ] || return 1
+  while read -r k v; do
+    [ "$k" = state: ] || continue
+    # PREPARED counts: the emulator re-prepares after every underrun and its runs can
+    # be shorter than a poll, and ASoC powers the codec path at prepare, so the
+    # amplifiers never meet floating lines.
+    case "$v" in RUNNING|PREPARED|DRAINING|XRUN|PAUSED) return 0 ;; esac
+    return 1
+  done < "$1"
+  return 1
+}
+hp_widget() { # the codec's "HPL Power" DAPM widget in debugfs (empty without debugfs)
+  local f
+  for f in /sys/kernel/debug/asoc/*/*/dapm/"HPL Power"; do
+    [ -r "$f" ] && { echo "$f"; return; }
+  done
+}
+hp_powered() { # the codec's headphone drivers are on (builtins only)
+  local l
+  [ -n "$HPW" ] && [ -r "$HPW" ] && read -r l < "$HPW" && [ "${l#*: On}" != "$l" ]
+}
+HPW=$(hp_widget)
+HOT= POLL=0
+# Is the speaker path live? With debugfs: the codec drives its headphone lines. Without:
+# any playback substream of the card is prepared or running. Builtins only.
+playing() {
+  local c=${CARD:-$(card)} f seen=
+  if [ -n "$HPW" ]; then hp_powered; return; fi
+  # "watch": the substream that was active last is read every poll, the rest every
+  # fifth poll (there are about 20 playback substreams on this card)
+  if [ -n "${WATCH:-}" ]; then
+    [ -n "$HOT" ] && state_active "$HOT" && return 0
+    POLL=$(( (POLL + 1) % 5 )); [ "$POLL" = 1 ] || { [ -n "$HOT" ] && return 1; }
+  fi
+  for f in /proc/asound/card"$c"/pcm*p/sub*/status; do
+    [ -r "$f" ] || continue
+    seen=1
+    state_active "$f" && { HOT=$f; return 0; }
+  done
+  [ -n "$seen" ] && return 1
+  # Kernels without CONFIG_SND_VERBOSE_PROCFS have no status files: a process holding
+  # one of the card's playback PCMs open counts as playing (the emulator keeps its
+  # stream from open to close).
+  held "$c"
+}
+OPENER= SCAN=0
+held_by() { # $1 pid, $2 card: the process has one of the card's playback PCMs open
+  local f d
+  for f in /proc/"$1"/fd/*; do
+    for d in /dev/snd/pcmC"$2"D*p; do
+      [ "$f" -ef "$d" ] && return 0
+    done
+  done
+  return 1
+}
+held() { # $1 card: the last holder first; a full /proc scan at most every 2 s in "watch"
+  local p
+  if [ -n "$OPENER" ] && held_by "$OPENER" "$1"; then return 0; fi
+  OPENER=
+  if [ -n "${WATCH:-}" ]; then SCAN=$(( (SCAN + 1) % 20 )); [ "$SCAN" = 1 ] || return 1; fi
+  for p in /proc/[0-9]*; do
+    held_by "${p#/proc/}" "$1" && { OPENER=${p#/proc/}; return 0; }
+  done
+  return 1
+}
+apply() { # amplifiers for the current output and stream state (used by speaker/headphone)
+  if [ "$(output)" = speaker ] && playing; then amps 1; else amps 0; fi
+}
+
+case "${1:-}" in
+route)
+  for _ in $(seq 20); do route 2>/dev/null && exit 0; sleep 0.5; done
+  route || { echo "rb-gemini-audio: the route controls are missing (kernel without the mt6797 AFE fix?)" >&2; exit 1; } ;;
+speaker|headphone)
+  save "$1"; apply; echo "output: $1" ;;
+toggle)
+  if [ "$(output)" = speaker ]; then "$0" headphone; else "$0" speaker; fi ;;
+status)
+  echo "output: $(output)"
+  echo "card: $(card) ($(cat /proc/asound/card"$(card)"/id 2>/dev/null || echo none))"
+  echo "headphone drivers: $( [ -z "$HPW" ] && echo "unknown (no debugfs)" || { hp_powered && echo on || echo off; })"
+  echo "playing: $(playing && echo yes || echo no)"
+  # --as-is: a plain gpioget requests the lines as inputs, which switches the amplifiers off
+  echo "amplifier lines: $(gpioget -c gpiochip0 --as-is --numeric "${AMPS[@]}" 2>/dev/null || echo unknown)" ;;
+amps)
+  case "${2:-}" in 0|1) amps "$2" ;; *) echo "usage: rb-gemini-audio amps 0|1" >&2; exit 2 ;; esac ;;
+watch)
+  # Fork-free at ten polls a second: builtins only, and read -t on a pipe that never
+  # gets data instead of an external sleep.
+  CARD=$(card); WATCH=1; on=0; idle=0; out=speaker
+  HOT=/proc/asound/card$CARD/pcm0p/sub0/status   # DL1, the emulator's device
+  amps 0
+  trap 'amps 0; exit 0' TERM INT
+  exec {nap}<> <(:)
+  while :; do
+    o=; [ -r "$STATE" ] && read -r o < "$STATE"; [ "$o" = headphone ] && out=headphone || out=speaker
+    if [ "$out" = speaker ] && playing; then
+      idle=0
+      [ "$on" = 1 ] || { amps 1 && on=1; }
+    elif [ "$on" = 1 ]; then
+      idle=$((idle + 1))
+      # off as soon as the codec stops driving the lines (debugfs), at once for
+      # "headphone", else 30 x 0.1 s: 3 s after the last stream stopped
+      if [ -n "$HPW" ] || [ "$idle" -ge 30 ] || [ "$out" = headphone ]; then amps 0; on=0; idle=0; fi
+    fi
+    read -r -t 0.1 -u "$nap" _ || :
+  done ;;
+*) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

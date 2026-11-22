@@ -1,0 +1,102 @@
+#!/bin/sh
+# rb-gemini-boot-ok: mark this boot healthy by resetting the initrd's boot-attempt counter.
+#
+# The initrd of the Gemini boot.img counts boot attempts in a file on the PARTNAME=linux
+# file system, outside /retroboot, and after three unhealthy boots writes
+# para=boot-recovery so that Gemian comes up instead. This runs after multi-user.target
+# (retroboot-gemini-boot-ok.service) and resets the counter once the boot is healthy:
+#   * hostd (retroboot-hostd.service) has been active for 15 s in a row, and
+#   * in the debug flavor, sshd listens on port 22 (the coordinator's only way in).
+# It gives up after HEALTH_TIMEOUT seconds and leaves the counter as it is.
+#
+# The counter's place and format come from the kernel workstream's contract (handoff
+# gemini-kernel.json "contract"), recorded at build time in
+# /usr/lib/retroboot/gemini/boot-counter.conf:
+#   COUNTER_FILE   path of the counter at the root of the linux file system
+#   COUNTER_RESET  what a healthy boot writes ("0": a decimal number and a newline)
+#   LINUX_MOUNT    where that file system's root stays mounted, if anywhere (the initrd
+#                  drops its outer mount, so normally nowhere)
+#   REQUIRE_SSH    1 in the debug flavor
+# As the contract says: the partition is RB_LINUX_DEV from /run/retroboot-initrd/state
+# (else PARTNAME=linux); it is mounted at a private mount point (the same superblock as
+# /, which the kernel allows), the value goes to <counter>.new, which is renamed over
+# the counter, then sync and unmount. An existing mount of the file system's root is
+# used instead when there is one.
+#
+#   rb-gemini-boot-ok            what the unit runs
+#   rb-gemini-boot-ok --now      reset the counter without the health checks
+#   rb-gemini-boot-ok --status   the counter's current value
+set -u
+. /usr/lib/retroboot/gemini/gemini-part.sh
+COUNTER_FILE=/.retroboot-boot-attempts
+COUNTER_RESET=0
+LINUX_MOUNT=
+REQUIRE_SSH=0
+HEALTH_TIMEOUT=240
+[ -r /usr/lib/retroboot/gemini/boot-counter.conf ] && . /usr/lib/retroboot/gemini/boot-counter.conf
+say() { echo "rb-gemini-boot-ok: $*"; }
+
+# The mount point of the linux partition's file-system root, if any (mountinfo field 4
+# is the mount's root inside the file system, field 5 the mount point).
+linux_root_mount() {
+  _dev=$1
+  _mm=$(cat "/sys/class/block/${_dev##*/}/dev" 2>/dev/null) || return 1
+  if [ -n "$LINUX_MOUNT" ] && awk -v mm="$_mm" -v mp="$LINUX_MOUNT" '$3 == mm && $4 == "/" && $5 == mp {f=1} END {exit !f}' /proc/self/mountinfo; then
+    echo "$LINUX_MOUNT"; return 0
+  fi
+  awk -v mm="$_mm" '$3 == mm && $4 == "/" {print $5; exit}' /proc/self/mountinfo | grep .
+}
+
+with_linux_fs() { # runs "$@" with $LFS set to the linux file system's root
+  _dev=$(sed -n 's/^RB_LINUX_DEV=//p' /run/retroboot-initrd/state 2>/dev/null | tr -d "'\"" | head -n1)
+  [ -b "${_dev:-/nonexistent}" ] || _dev=$(rbg_part linux) || { say "no PARTNAME=linux partition"; return 1; }
+  _tmp=
+  if LFS=$(linux_root_mount "$_dev"); then :; else
+    _tmp=/run/retroboot/gemini-linux
+    mkdir -p "$_tmp"
+    mount -o rw,noatime "$_dev" "$_tmp" || { say "cannot mount $_dev"; return 1; }
+    LFS=$_tmp
+  fi
+  "$@"; _rc=$?
+  [ -z "$_tmp" ] || umount "$_tmp" || umount -l "$_tmp"
+  return $_rc
+}
+
+reset_counter() {
+  _f=$LFS$COUNTER_FILE
+  _old=$(cat "$_f" 2>/dev/null || echo none)
+  if [ -z "$COUNTER_RESET" ]; then
+    rm -f "$_f" || return 1
+  else
+    { printf '%s\n' "$COUNTER_RESET" > "$_f.new" && mv -f "$_f.new" "$_f"; } || { say "cannot write $_f"; return 1; }
+  fi
+  sync
+  say "boot healthy: counter $COUNTER_FILE reset ($_old -> ${COUNTER_RESET:-removed})"
+}
+show_counter() { echo "$COUNTER_FILE on the linux file system: $(cat "$LFS$COUNTER_FILE" 2>/dev/null || echo absent)"; }
+
+ssh_listening() { # port 22 (0016) in state LISTEN (0A), IPv4 or IPv6
+  awk 'NR > 1 && $4 == "0A" && $2 ~ /:0016$/ {f=1} END {exit !f}' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
+case "${1:-}" in
+--now) with_linux_fs reset_counter; exit $? ;;
+--status) with_linux_fs show_counter; exit $? ;;
+"") ;;
+*) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
+
+stable=0; waited=0
+while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
+  if [ "$(systemctl is-active retroboot-hostd.service 2>/dev/null)" = active ]; then
+    stable=$((stable + 1))
+  else
+    stable=0
+  fi
+  if [ "$stable" -ge 4 ] && { [ "$REQUIRE_SSH" != 1 ] || ssh_listening; }; then
+    with_linux_fs reset_counter; exit $?
+  fi
+  sleep 5; waited=$((waited + 5))
+done
+say "not healthy after ${HEALTH_TIMEOUT}s (hostd active: $(systemctl is-active retroboot-hostd.service 2>/dev/null)$([ "$REQUIRE_SSH" = 1 ] && { ssh_listening && echo ', sshd listening' || echo ', sshd NOT listening'; })); counter left as it is"
+exit 1

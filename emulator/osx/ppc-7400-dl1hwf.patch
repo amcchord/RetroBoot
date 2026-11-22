@@ -1,0 +1,39 @@
+--- a/target/ppc/cpu_init.c
++++ b/target/ppc/cpu_init.c
+@@ -4156,4 +4156,9 @@
+     register_sdr1_sprs(env);
+     register_74xx_sprs(env);
++#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
++    /* MPC7400UM 3.5.2: DL1HWF clears when the data-cache flush completes. */
++    env->spr_cb[SPR_MSSCR0].oea_write = spr_write_msscr0_7400;
++    env->spr_cb[SPR_MSSCR0].hea_write = spr_write_msscr0_7400;
++#endif
+     vscr_init(env, 0x00010000);
+
+--- a/target/ppc/spr_common.h
++++ b/target/ppc/spr_common.h
+@@ -82,4 +82,5 @@
+ void spr_read_generic(DisasContext *ctx, int gprn, int sprn);
+ void spr_write_generic(DisasContext *ctx, int sprn, int gprn);
++void spr_write_msscr0_7400(DisasContext *ctx, int sprn, int gprn);
+ void spr_write_generic32(DisasContext *ctx, int sprn, int gprn);
+ void spr_core_write_generic(DisasContext *ctx, int sprn, int gprn);
+--- a/target/ppc/translate.c
++++ b/target/ppc/translate.c
+@@ -445,4 +445,16 @@
+ {
+     gen_store_spr(sprn, cpu_gpr[gprn]);
++    spr_store_dump_spr(sprn);
++}
++
++/* MPC7400UM 3.5.2: no dirty guest data cache is modeled, so the
++ * requested hardware flush is complete when the SPR write finishes.
++ * Preserve all other register bits and the source GPR. */
++void spr_write_msscr0_7400(DisasContext *ctx, int sprn, int gprn)
++{
++    TCGv value = tcg_temp_new();
++
++    tcg_gen_andi_tl(value, cpu_gpr[gprn], ~(target_ulong)0x00800000);
++    gen_store_spr(sprn, value);
+     spr_store_dump_spr(sprn);
+ }

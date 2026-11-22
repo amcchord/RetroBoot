@@ -1,0 +1,156 @@
+#!/usr/bin/python3 -I
+"""rb-gemini-typec: keep the Gemini PDA's left USB-C port able to take a charger.
+
+    rb-gemini-typec            apply (what retroboot-gemini-typec.service runs at boot)
+    rb-gemini-typec status     each port's controller: mode, status, partner
+
+Each USB-C port has an ON Semiconductor FUSB301A CC controller at I2C address 0x25:
+- the left port's on the SoC's i2c1;
+- the right port's on i2c0.
+
+Left port (the charging port). The 6.6 kernel has no driver bound to its controller.
+It powers up as SINK (Modes 0x04), which takes a charger. But the vendor Android/Gemian
+kernel programs SOURCE (0x01), and the chips keep their registers across reboots. In
+SOURCE the port shows Rp: a charger, also a source, never turns VBUS on, so the Gemini
+does not charge. This was seen on 2026-10-14 after the device had run Gemian.
+So at every boot, if the left controller is in any mode other than SINK or DRP, it is
+set to DRP (0x10). DRP attaches as a sink to a charger and as a source to a USB device.
+VBUS for a USB device is a separate matter: the charger's OTG boost (GPIO107).
+
+Right port. It has no charge path (Planet: the left port charges) and its own 5 V
+source (GPIO94 and the SW7226 switch, GPIO72). Its controller belongs in SOURCE, as the
+vendor kernel sets it: a charger then never turns VBUS on into it. Never DRP or SINK,
+where a charger would send VBUS into a port that may be sourcing VBUS itself.
+- With the rightport kernel (image/gemini/kernel/variants/rightport) the driver
+  gemini-right-port owns the controller and switches VBUS for USB devices only. This
+  tool then leaves the chip alone and reports the driver's state from sysfs.
+- With an older kernel (no driver bound), apply sets the right controller to SOURCE.
+
+Register map (FUSB301A datasheet, checked on this unit):
+- 0x01 device ID (0x12);
+- 0x02 Modes;
+- 0x11 Status (bit 0 attach, bit 3 VBUS OK);
+- 0x12 Type (bit 3 source attached).
+The left chip, and the right one on an older kernel, have no driver, so the I2C address
+is used with I2C_SLAVE_FORCE; the right chip is not touched when a driver owns it.
+Standard library only, so the product image needs no i2c-tools.
+"""
+import ctypes
+import fcntl
+import os
+import sys
+
+I2C_SLAVE_FORCE = 0x0706
+I2C_SMBUS = 0x0720
+I2C_SMBUS_READ, I2C_SMBUS_WRITE = 1, 0
+I2C_SMBUS_BYTE_DATA = 2
+ADDR = 0x25
+DEVICE_ID = 0x12
+REG_ID, REG_MODES, REG_STATUS, REG_TYPE = 0x01, 0x02, 0x11, 0x12
+MODE_SRC, MODE_SNK, MODE_DRP = 0x01, 0x04, 0x10
+KEEP = (MODE_SNK, MODE_DRP)
+PORTS = (("left", 1), ("right", 0))      # (port, /dev/i2c-N)
+WANT = {"left": None, "right": MODE_SRC}  # None: SINK or DRP kept, anything else -> DRP
+SYS_I2C = "/sys/bus/i2c/devices"
+DEV_I2C = "/dev/i2c-{}"
+
+
+class SmbusData(ctypes.Union):
+    _fields_ = [("byte", ctypes.c_uint8), ("word", ctypes.c_uint16), ("block", ctypes.c_uint8 * 34)]
+
+
+class SmbusIoctl(ctypes.Structure):
+    _fields_ = [("read_write", ctypes.c_uint8), ("command", ctypes.c_uint8),
+                ("size", ctypes.c_uint32), ("data", ctypes.POINTER(SmbusData))]
+
+
+def _xfer(fd, rw, reg, value=0):
+    data = SmbusData()
+    data.byte = value
+    req = SmbusIoctl(rw, reg, I2C_SMBUS_BYTE_DATA, ctypes.pointer(data))
+    fcntl.ioctl(fd, I2C_SMBUS, req)
+    return data.byte
+
+
+def kernel_driver(bus):
+    """Name of the kernel driver bound to the controller on i2c-BUS, or None."""
+    link = os.path.join(SYS_I2C, f"{bus}-{ADDR:04x}", "driver")
+    return os.path.basename(os.readlink(link)) if os.path.islink(link) else None
+
+
+def kernel_state(bus):
+    """The rightport driver's view: state, vbus and registers, from sysfs."""
+    dev = os.path.join(SYS_I2C, f"{bus}-{ADDR:04x}")
+    out = []
+    for name in ("state", "vbus", "regs"):
+        try:
+            with open(os.path.join(dev, name)) as f:
+                out.append(f"{name} {f.read().strip()}")
+        except OSError:
+            pass
+    return "; ".join(out) or "no state"
+
+
+def open_chip(bus):
+    fd = os.open(DEV_I2C.format(bus), os.O_RDWR)
+    try:
+        fcntl.ioctl(fd, I2C_SLAVE_FORCE, ADDR)
+        if _xfer(fd, I2C_SMBUS_READ, REG_ID) != DEVICE_ID:
+            raise OSError("no FUSB301A")
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
+def describe(fd):
+    mode = _xfer(fd, I2C_SMBUS_READ, REG_MODES)
+    status = _xfer(fd, I2C_SMBUS_READ, REG_STATUS)
+    typ = _xfer(fd, I2C_SMBUS_READ, REG_TYPE)
+    name = {MODE_SRC: "source", MODE_SNK: "sink", MODE_DRP: "dual-role"}.get(mode, f"0x{mode:02x}")
+    attached = "nothing attached"
+    if status & 0x01:
+        attached = "charger/host attached" if typ & 0x08 else "device attached"
+    vbus = ", VBUS" if status & 0x08 else ""
+    return mode, f"mode {name} (0x{mode:02x}), {attached}{vbus} (status 0x{status:02x}, type 0x{typ:02x})"
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "apply"
+    if cmd not in ("apply", "status"):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    found = 0
+    for port, bus in PORTS:
+        driver = kernel_driver(bus) if port == "right" else None
+        if driver:
+            found += 1
+            print(f"{port} port (i2c-{bus}): managed by the kernel ({driver}): {kernel_state(bus)}")
+            continue
+        try:
+            fd = open_chip(bus)
+        except OSError as exc:
+            print(f"{port} port (i2c-{bus}): no FUSB301A ({exc})")
+            continue
+        found += 1
+        try:
+            mode, text = describe(fd)
+            want = WANT[port]
+            if want is None and mode not in KEEP:
+                want = MODE_DRP
+            if cmd == "apply" and want is not None and mode != want:
+                _xfer(fd, I2C_SMBUS_WRITE, REG_MODES, want)
+                _, after = describe(fd)
+                role = "dual-role" if want == MODE_DRP else "source"
+                print(f"{port} port (i2c-{bus}): was {text}; set {role}: {after}")
+            else:
+                print(f"{port} port (i2c-{bus}): {text}")
+        except OSError as exc:
+            print(f"{port} port (i2c-{bus}): I2C error: {exc}")
+        finally:
+            os.close(fd)
+    return 0 if found else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

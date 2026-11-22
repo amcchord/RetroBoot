@@ -1,0 +1,8 @@
+#include "Processes.r"
+#include "Retro68.r"
+resource 'SIZE' (-1) {
+    reserved, acceptSuspendResumeEvents, reserved, canBackground, doesActivateOnFGSwitch,
+    backgroundAndForeground, dontGetFrontClicks, ignoreChildDiedEvents, is32BitCompatible,
+    notHighLevelEventAware, onlyLocalHLEvents, notStationeryAware, dontUseTextEditServices,
+    reserved, reserved, reserved, 1024 * 1024, 1024 * 1024
+};

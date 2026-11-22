@@ -1,0 +1,13 @@
+# RetroBoot on the Gemini PDA: panel backlight at boot (BACKLIGHT_PERCENT in
+# /etc/default/retroboot-gemini).
+[Unit]
+Description=Gemini backlight default
+After=systemd-udevd.service systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/retroboot/gemini/rb-gemini-backlight default
+
+[Install]
+WantedBy=multi-user.target

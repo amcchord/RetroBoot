@@ -1,0 +1,127 @@
+RetroBoot: the presenter's RESIZE reaches nubus-qfb every time (Quadra 800, m68k series).
+
+nubus-qfb ignored a ui_info request equal to its latched one, and the boot size
+is latched at realize, so a request for the boot size after the guest had left
+it (a saved mode restored at the Finder) was lost; RetroBoot's display backend
+re-arms such a request through a host-resize-request property, which only
+std-VGA had.  A request is now dropped only when it is latched and shown; the
+write-only property host-resize-request=WxH (readable: latched size and serial)
+and a read-only mode property (WxHxD) are added.
+
+diff --git a/hw/display/mac_qfb.c b/hw/display/mac_qfb.c
+index 6c254226b5..c71c91d4fe 100644
+--- a/hw/display/mac_qfb.c
++++ b/hw/display/mac_qfb.c
+@@ -576,16 +576,19 @@ static const VMStateDescription vmstate_qfb = {
+     }
+ };
+ 
+-/* Called by the UI (under the BQL) when the display window is resized. We do
+-   not change the mode here - the guest owns its resolution - we only publish
+-   the requested geometry into the host-request registers and bump the serial
+-   so the guest's driver notices and performs a Display Manager mode switch. */
+-static void qfb_ui_info(void *opaque, uint32_t head, QemuUIInfo *info)
++/*
++ * Publish a host resize request: latch WIDTH x HEIGHT into the host-request
++ * registers and bump the serial, which the guest's driver polls (accRun,
++ * debounced) before asking the Display Manager for that size.  The guest
++ * owns its resolution; nothing is forced from here.
++ *
++ * RetroBoot: a request equal to the latched one is still published when the
++ * card is not showing that size (the guest has since chosen or restored
++ * another mode, or the latch holds the boot size the guest left), so an
++ * explicit request from the presenter is never lost.  Called under the BQL.
++ */
++static void qfb_host_resize_request(QfbState *s, uint32_t w, uint32_t h)
+ {
+-    QfbState *s = opaque;
+-    uint32_t w = info->width;
+-    uint32_t h = info->height;
+-
+     if (w == 0 || h == 0) {
+         return; /* no usable geometry (e.g. during teardown) */
+     }
+@@ -596,14 +599,21 @@ static void qfb_ui_info(void *opaque, uint32_t head, QemuUIInfo *info)
+         h = QFB_MAX_HEIGHT;
+     }
+     if (s->regs[QFB_HOST_REQ_WIDTH >> 2] == w &&
+-        s->regs[QFB_HOST_REQ_HEIGHT >> 2] == h) {
+-        return; /* unchanged: don't nudge the guest */
++        s->regs[QFB_HOST_REQ_HEIGHT >> 2] == h &&
++        s->width == w && s->height == h) {
++        return; /* already requested and shown: don't nudge the guest */
+     }
+     s->regs[QFB_HOST_REQ_WIDTH >> 2] = w;
+     s->regs[QFB_HOST_REQ_HEIGHT >> 2] = h;
+     s->regs[QFB_HOST_REQ_SERIAL >> 2]++;
+ }
+ 
++/* Called by the UI (under the BQL) when the display is resized. */
++static void qfb_ui_info(void *opaque, uint32_t head, QemuUIInfo *info)
++{
++    qfb_host_resize_request(opaque, info->width, info->height);
++}
++
+ static const GraphicHwOps qfb_ops = {
+     .invalidate = qfb_invalidate_display,
+     .gfx_update = qfb_update_display,
+@@ -918,6 +928,44 @@ static void qfb_nubus_reset(DeviceState *d)
+     qfb_reset(ms);
+ }
+ 
++/*
++ * host-resize-request=WIDTHxHEIGHT (write: qom-set or the RetroBoot display
++ * backend's re-request): the same request as ui_info, without the console's
++ * own "unchanged" filter.  Reads return the latched request and its serial.
++ */
++static char *qfb_get_host_resize_request(Object *obj, Error **errp)
++{
++    QfbState *s = &NUBUS_QFB(obj)->qfb;
++
++    return g_strdup_printf("%" PRIu32 "x%" PRIu32 " serial %" PRIu32,
++                           s->regs[QFB_HOST_REQ_WIDTH >> 2],
++                           s->regs[QFB_HOST_REQ_HEIGHT >> 2],
++                           s->regs[QFB_HOST_REQ_SERIAL >> 2]);
++}
++
++static void qfb_set_host_resize_request(Object *obj, const char *value,
++                                        Error **errp)
++{
++    QfbState *s = &NUBUS_QFB(obj)->qfb;
++    unsigned int w, h;
++    char tail;
++
++    if (sscanf(value, "%ux%u%c", &w, &h, &tail) != 2 || w == 0 || h == 0) {
++        error_setg(errp, "expected WIDTHxHEIGHT");
++        return;
++    }
++    qfb_host_resize_request(s, w, h);
++}
++
++/* The mode the card is showing, "WIDTHxHEIGHTxDEPTH" (read-only). */
++static char *qfb_get_mode(Object *obj, Error **errp)
++{
++    QfbState *s = &NUBUS_QFB(obj)->qfb;
++
++    return g_strdup_printf("%" PRIu32 "x%" PRIu32 "x%u", s->width, s->height,
++                           s->depth);
++}
++
+ static const Property qfb_nubus_properties[] = {
+     DEFINE_PROP_UINT32("width", QfbNubusState, qfb.width, 640),
+     DEFINE_PROP_UINT32("height", QfbNubusState, qfb.height, 480),
+@@ -948,6 +996,14 @@ static void qfb_nubus_class_init(ObjectClass *klass, const void *data)
+     dc->vmsd = &vmstate_qfb_nubus;
+     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
+     device_class_set_props(dc, qfb_nubus_properties);
++    object_class_property_add_str(klass, "host-resize-request",
++                                  qfb_get_host_resize_request,
++                                  qfb_set_host_resize_request);
++    object_class_property_set_description(klass, "host-resize-request",
++        "Ask the guest to switch to WIDTHxHEIGHT (as the display's ui_info)");
++    object_class_property_add_str(klass, "mode", qfb_get_mode, NULL);
++    object_class_property_set_description(klass, "mode",
++        "The mode the card shows, WIDTHxHEIGHTxDEPTH");
+ }
+ 
+ static const TypeInfo qfb_nubus_info = {

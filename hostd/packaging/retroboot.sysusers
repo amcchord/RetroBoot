@@ -1,0 +1,8 @@
+# /usr/lib/sysusers.d/retroboot.conf
+g rbdata  -
+u rbguest - "RetroBoot guest emulator" /nonexistent /usr/sbin/nologin
+m rbguest audio
+m rbguest cdrom
+m rbguest rbdata
+m rbguest render
+m rbguest video

@@ -1,0 +1,2263 @@
+diff --git a/hw/misc/macio/airport.c b/hw/misc/macio/airport.c
+new file mode 100644
+index 0000000..2693723
+--- /dev/null
++++ b/hw/misc/macio/airport.c
+@@ -0,0 +1,2012 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * RetroBoot AirPort (Hermes-I) card model for the mac99 KeyLargo MacIO.
++ * Present only with -global macio-newworld.airport=true.  It models what
++ * Apple's original Mac OS 9 "AirPort Driver" 2.0.4 was observed (or
++ * statically inferred) to use.  Networks and association come from the host
++ * over the "chardev" bridge (RetroBoot hostd owns the real radio and all
++ * credentials); frames go to the "netdev" backend.  trace=on logs register,
++ * command and bridge activity (WEP key records are always redacted).
++ *
++ * Public references: Linux v6.6 orinoco/{airport.c,hermes.[ch],hermes_rid.h,
++ * hermes_dld.c}, Linux powermac/feature.c core99_airport_enable, NetBSD
++ * if_wi_obio.c, PC Card CIS tuple layout.  No Apple code or data is
++ * contained here.
++ *
++ * Regions (offsets relative to the MacIO BAR):
++ *   0x30000  Hermes register window (16-bit little-endian registers)
++ *   0x1a000  PC Card attribute memory (CIS on even bytes, COR at 0x3e0)
++ *   0x1c000  card-slot control word written by the power-up sequence
++ *   0x00038  KeyLargo FCR0..FCR4 and (CUDA machines only) GPIO stubs
++ */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "hw/core/sysbus.h"
++#include "hw/core/irq.h"
++#include "hw/core/qdev-properties.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "qemu/cutils.h"
++#include "hw/misc/macio/airport.h"
++#include "net/net.h"
++#include "chardev/char-fe.h"
++#include "hw/core/qdev-properties-system.h"
++#include "migration/vmstate.h"
++#include "qobject/qdict.h"
++#include "qobject/qjson.h"
++#include "qobject/qlist.h"
++
++/* Hermes registers */
++#define H_CMD        0x00
++#define H_PARAM0     0x02
++#define H_PARAM1     0x04
++#define H_PARAM2     0x06
++#define H_STATUS     0x08
++#define H_RESP0      0x0a
++#define H_RESP1      0x0c
++#define H_RESP2      0x0e
++#define H_INFOFID    0x10
++#define H_CONTROL    0x14
++#define H_SELECT0    0x18
++#define H_SELECT1    0x1a
++#define H_OFFSET0    0x1c
++#define H_OFFSET1    0x1e
++#define H_RXFID      0x20
++#define H_ALLOCFID   0x22
++#define H_TXCOMPLFID 0x24
++#define H_SWSUPPORT0 0x28
++#define H_SWSUPPORT1 0x2a
++#define H_SWSUPPORT2 0x2c
++#define H_EVSTAT     0x30
++#define H_INTEN      0x32
++#define H_EVACK      0x34
++#define H_DATA0      0x36
++#define H_DATA1      0x38
++#define H_AUXPAGE    0x3a
++#define H_AUXOFFSET  0x3c
++#define H_AUXDATA    0x3e
++
++#define EV_RX     0x0001
++#define EV_TX     0x0002
++#define EV_TXEXC  0x0004
++#define EV_ALLOC  0x0008
++#define EV_CMD    0x0010
++#define EV_INFO   0x0080
++#define EV_TICK   0x8000
++
++#define OFF_BUSY  0x8000
++#define OFF_ERR   0x4000
++
++#define CMD_INIT     0x00
++#define CMD_ENABLE   0x01
++#define CMD_DISABLE  0x02
++#define CMD_DIAG     0x03
++#define CMD_ALLOC    0x0a
++#define CMD_TX       0x0b
++#define CMD_NOTIFY   0x10
++#define CMD_INQUIRE  0x11
++#define CMD_ACCESS   0x21
++#define CMD_DOWNLD   0x22
++#define CMD_READMIF  0x30
++#define CMD_WRITEMIF 0x31
++#define CMD_TEST     0x38
++
++#define FID_BASE   0x0400
++#define INFO_FID0  0x0200
++#define INFO_FID1  0x0280
++#define RX_FID     0x0300
++#define FID_STEP   0x0080
++#define MAX_FID_BYTES 0x0a00
++
++static const char *reg_name(hwaddr a)
++{
++    static const char *n[32] = {
++        "CMD", "PARAM0", "PARAM1", "PARAM2", "STATUS", "RESP0", "RESP1",
++        "RESP2", "INFOFID", "r12", "CONTROL", "r16", "SELECT0", "SELECT1",
++        "OFFSET0", "OFFSET1", "RXFID", "ALLOCFID", "TXCOMPLFID", "r26",
++        "SWSUPPORT0", "SWSUPPORT1", "SWSUPPORT2", "r2e", "EVSTAT", "INTEN",
++        "EVACK", "DATA0", "DATA1", "AUXPAGE", "AUXOFFSET", "AUXDATA" };
++    return a < 0x40 ? n[a / 2] : "beyond";
++}
++
++static void G_GNUC_PRINTF(2, 3) ap_trace(RBAirportState *s, const char *fmt, ...)
++{
++    va_list ap;
++    char buf[512];
++
++    if (!s->trace) {
++        return;
++    }
++    if (s->trace_count >= s->trace_limit) {
++        if (s->trace_count == s->trace_limit) {
++            qemu_log("airport trace-limit %u reached\n", s->trace_limit);
++            s->trace_count++;
++        }
++        return;
++    }
++    va_start(ap, fmt);
++    vsnprintf(buf, sizeof(buf), fmt, ap);
++    va_end(ap);
++    if (!strcmp(buf, s->last_trace)) {
++        s->trace_repeat++;
++        return;
++    }
++    if (s->trace_repeat) {
++        qemu_log("airport (previous line repeated %u more times)\n",
++                 s->trace_repeat);
++        s->trace_repeat = 0;
++    }
++    pstrcpy(s->last_trace, sizeof(s->last_trace), buf);
++    s->trace_count++;
++    qemu_log("airport t=%" PRId64 " %s\n",
++             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), buf);
++}
++
++/* ------------------------------------------------------------------ */
++/* card memory reached through the AUX port (sparse 4 KiB pages)       */
++
++static uint8_t *ram_page(RBAirportState *s, uint32_t addr, bool create)
++{
++    uint32_t key = addr >> 12;
++    uint8_t *p = g_hash_table_lookup(s->ram, GUINT_TO_POINTER(key + 1));
++    if (!p && create) {
++        p = g_malloc0(4096);
++        g_hash_table_insert(s->ram, GUINT_TO_POINTER(key + 1), p);
++    }
++    return p;
++}
++
++static uint16_t ram_read16(RBAirportState *s, uint32_t addr)
++{
++    uint8_t *p = ram_page(s, addr, false);
++    if (!p) {
++        return 0xffff;   /* erased flash / unpopulated */
++    }
++    return p[addr & 0xfff] | (p[(addr + 1) & 0xfff] << 8);
++}
++
++static void ram_write16(RBAirportState *s, uint32_t addr, uint16_t v)
++{
++    uint8_t *p = ram_page(s, addr, true);
++    p[addr & 0xfff] = v;
++    p[(addr + 1) & 0xfff] = v >> 8;
++}
++
++/* ------------------------------------------------------------------ */
++/* configuration / information records                                 */
++
++typedef struct APRecordBuf APRecord;
++
++static void rec_set(APRecord *r, uint16_t type, const void *data, size_t n)
++{
++    r->type = type;
++    n = MIN(n, sizeof(r->data));
++    memset(r->data, 0, sizeof(r->data));
++    memcpy(r->data, data, n);
++    r->len = (n + 1) / 2 + 1;
++}
++
++static void put16(uint8_t *p, uint16_t v)
++{
++    p[0] = v;
++    p[1] = v >> 8;
++}
++
++/*
++ * Default configuration records (Lucent/Agere Hermes-I station firmware
++ * semantics from public hermes_rid.h usage).  Values are returned until the
++ * host writes the RID.  Lengths are data bytes.
++ */
++typedef struct APDefault {
++    uint16_t rid;
++    uint16_t nbytes;
++    uint16_t words[17];
++} APDefault;
++
++static const APDefault ap_defaults[] = {
++    { 0xfc00, 2, { 1 } },          /* port type: BSS */
++    { 0xfc02, 34, { 0 } },         /* desired SSID: any */
++    { 0xfc03, 2, { 3 } },          /* own channel */
++    { 0xfc04, 34, { 0 } },         /* own SSID */
++    { 0xfc05, 2, { 0 } },          /* ATIM window */
++    { 0xfc06, 2, { 1 } },          /* system scale */
++    { 0xfc07, 2, { 2304 } },       /* max data length */
++    { 0xfc09, 2, { 0 } },          /* PM enabled */
++    { 0xfc0b, 2, { 1 } },          /* multicast receive */
++    { 0xfc0c, 2, { 100 } },        /* max sleep duration */
++    { 0xfc0d, 2, { 100 } },        /* PM holdover */
++    { 0xfc0e, 34, { 0 } },         /* own name */
++    { 0xfc10, 2, { 1 } },          /* own DTIM period */
++    { 0xfc20, 2, { 0 } },          /* WEP enabled */
++    { 0xfc21, 2, { 1 } },          /* authentication: open */
++    { 0xfc22, 2, { 0 } },          /* drop unencrypted */
++    { 0xfc23, 2, { 0 } },          /* tx key */
++    { 0xfc80, 0, { 0 } },          /* group addresses */
++    { 0xfc81, 2, { 0 } },          /* create IBSS */
++    { 0xfc82, 2, { 2346 } },       /* fragmentation threshold */
++    { 0xfc83, 2, { 2347 } },       /* RTS threshold */
++    { 0xfc84, 2, { 3 } },          /* tx rate control (auto) */
++    { 0xfc85, 2, { 0 } },          /* promiscuous */
++    { 0xfd10, 2, { 0x07ff } },     /* channel list: 1-11 */
++    { 0xfd11, 4, { 0x0001, 0x0010 } }, /* regulatory domains: FCC */
++    { 0xfd45, 2, { 100 } },        /* current beacon interval */
++    { 0xfd48, 2, { 7 } },          /* short retry limit */
++    { 0xfd49, 2, { 4 } },          /* long retry limit */
++    { 0xfd4a, 2, { 512 } },        /* max transmit lifetime */
++    { 0xfd4b, 2, { 512 } },        /* max receive lifetime */
++    { 0xfd4c, 2, { 0 } },          /* CF pollable */
++    { 0xfd4f, 2, { 1 } },          /* privacy option implemented */
++    { 0xfdc2, 2, { 1 } },          /* current power state: awake */
++};
++
++static void rec_words(APRecord *r, uint16_t type, const uint16_t *w, unsigned nbytes)
++{
++    uint8_t b[64];
++    for (unsigned i = 0; i < nbytes / 2; i++) {
++        put16(b + 2 * i, w[i]);
++    }
++    rec_set(r, type, b, nbytes);
++}
++
++static void rec_idstring(APRecord *r, uint16_t type, const uint8_t *ssid, unsigned n)
++{
++    uint8_t b[34];
++    memset(b, 0, sizeof(b));
++    n = MIN(n, 32);
++    put16(b, n);
++    if (n) {
++        memcpy(b + 2, ssid, n);
++    }
++    rec_set(r, type, b, sizeof(b));
++}
++
++static bool rid_read(RBAirportState *s, uint16_t rid, APRecord *r)
++{
++    uint8_t b[64];
++    APRecord *cfg = g_hash_table_lookup(s->cfg, GUINT_TO_POINTER(rid));
++
++    memset(b, 0, sizeof(b));
++    switch (rid) {
++    case 0xfd02: /* PRI identity: comp id, variant, major, minor */
++        put16(b, 0x15); put16(b + 2, 1); put16(b + 4, s->pri_major);
++        put16(b + 6, s->pri_minor);
++        rec_set(r, rid, b, 8);
++        return true;
++    case 0xfd0a: /* NIC serial number */
++        memcpy(b, "RB0000000001", 12);
++        rec_set(r, rid, b, 12);
++        return true;
++    case 0xfd0b: /* NIC identity */
++        put16(b, s->nic_id); put16(b + 2, 1); put16(b + 4, 1); put16(b + 6, 0);
++        rec_set(r, rid, b, 8);
++        return true;
++    case 0xfd20: /* STA identity: primary identity while no station f/w */
++        if (s->sta_running) {
++            put16(b, s->sta_comp); put16(b + 2, 1); put16(b + 4, s->sta_major);
++            put16(b + 6, s->sta_minor);
++        } else {
++            put16(b, 0x15); put16(b + 2, 1); put16(b + 4, s->pri_major);
++            put16(b + 6, s->pri_minor);
++        }
++        rec_set(r, rid, b, 8);
++        return true;
++    case 0xfc01: /* own MAC address unless configured */
++        if (cfg) {
++            break;
++        }
++        rec_set(r, rid, s->mac, 6);
++        return true;
++    case 0xfd40: /* port status: 1 disabled, 2 searching, 4 connected (ESS) */
++        put16(b, s->port_enabled ? (s->linked ? (s->ibss ? 3 : 4) : 2) : 1);
++        rec_set(r, rid, b, 2);
++        return true;
++    case 0xfd41: /* current SSID */
++        if (s->linked) {
++            rec_idstring(r, rid, s->cur_ssid, s->cur_ssid_len);
++        } else {
++            rec_idstring(r, rid, NULL, 0);
++        }
++        return true;
++    case 0xfd42: /* current BSSID */
++        if (s->linked) {
++            rec_set(r, rid, s->cur_bssid, 6);
++        } else {
++            rec_set(r, rid, b, 6);
++        }
++        return true;
++    case 0xfd43: /* comms quality: quality, signal, noise */
++        if (s->linked) {
++            int q = s->cur_signal - s->cur_noise;
++            put16(b, MAX(0, MIN(92, q)));
++            put16(b + 2, s->cur_signal + 0x95);
++            put16(b + 4, s->cur_noise + 0x95);
++        }
++        rec_set(r, rid, b, 6);
++        return true;
++    case 0xfd44: /* current TX rate (Lucent: Mb/s, 5 = 5.5) */
++        put16(b, s->linked ? 11 : 0);
++        rec_set(r, rid, b, 2);
++        return true;
++    case 0xfdc1: /* current channel */
++        put16(b, s->linked ? s->cur_channel : 0);
++        rec_set(r, rid, b, 2);
++        return true;
++    default:
++        break;
++    }
++    if (cfg) {
++        *r = *cfg;
++        return true;
++    }
++    for (unsigned i = 0; i < ARRAY_SIZE(ap_defaults); i++) {
++        if (ap_defaults[i].rid == rid) {
++            rec_words(r, rid, ap_defaults[i].words, ap_defaults[i].nbytes);
++            return true;
++        }
++    }
++    return false;
++}
++
++static void rid_write(RBAirportState *s, const APRecord *r)
++{
++    APRecord *n = g_new(APRecord, 1);
++    *n = *r;
++    g_hash_table_replace(s->cfg, GUINT_TO_POINTER((guint)r->type), n);
++}
++
++/* ------------------------------------------------------------------ */
++/* BAP buffers: frame IDs and record IDs                               */
++
++static uint8_t *bap_object(RBAirportState *s, uint16_t id, unsigned *size)
++{
++    if (id >= 0xfc00) {
++        APRecord *r = &s->ridbuf;
++        if (r->type != id) {
++            /* selecting a RID that was not just ACCESSed: firmware returns
++             * its (possibly stale) RID buffer; model a fresh read. */
++            if (!rid_read(s, id, r)) {
++                r->type = id;
++                r->len = 0;
++            }
++        }
++        *size = sizeof(r->data) + 4;
++        return NULL;   /* special-cased by callers */
++    }
++    if (id == RX_FID) {
++        *size = sizeof(s->rx_buf);
++        return s->rx_buf;
++    }
++    if (id == INFO_FID0 || id == INFO_FID1) {
++        *size = sizeof(s->info_buf[0]);
++        return s->info_buf[id == INFO_FID1];
++    }
++    if (id >= FID_BASE && (id - FID_BASE) % FID_STEP == 0) {
++        unsigned slot = (id - FID_BASE) / FID_STEP;
++        if (slot < RB_AIRPORT_MAX_FIDS && s->fid_used[slot]) {
++            *size = MAX_FID_BYTES;
++            return s->fid_data[slot];
++        }
++    }
++    *size = 0;
++    return NULL;
++}
++
++static uint16_t ridbuf_word(RBAirportState *s, unsigned off)
++{
++    APRecord *r = &s->ridbuf;
++    if (off == 0) {
++        return r->len;
++    }
++    if (off == 2) {
++        return r->type;
++    }
++    off -= 4;
++    if (off + 1 < sizeof(r->data)) {
++        return r->data[off] | (r->data[off + 1] << 8);
++    }
++    return 0;
++}
++
++static void ridbuf_put(RBAirportState *s, unsigned off, uint16_t v)
++{
++    APRecord *r = &s->ridbuf;
++    if (off == 0) {
++        r->len = v;
++    } else if (off == 2) {
++        r->type = v;
++    } else if (off - 4 + 1 < sizeof(r->data)) {
++        r->data[off - 4] = v;
++        r->data[off - 3] = v >> 8;
++    }
++}
++
++/*
++ * BAP data registers.  8-bit accesses move the BAP by one byte; a 16-bit
++ * access works on the word containing the current position and leaves the
++ * BAP at the next word boundary.  Apple's HCF 4.6 relies on this for
++ * odd-length transmit frames: it writes the last byte with an 8-bit access,
++ * reads one word to realign, writes its 0xCAFE integrity signature and
++ * checks it at the word boundary after the frame.  A word-only BAP put the
++ * signature one byte early and the driver retried every odd-length frame
++ * forever (e.g. most DNS queries).
++ */
++static uint16_t bap_read(RBAirportState *s, int n, unsigned width)
++{
++    uint16_t sel = s->regs[(H_SELECT0 + 2 * n) / 2];
++    unsigned off = s->bap_off[n];
++    unsigned size;
++    uint8_t *obj;
++    uint16_t v = 0;
++
++    if (s->regs[(H_OFFSET0 + 2 * n) / 2] & OFF_ERR) {
++        ap_trace(s, "bap%d read after OFFSET.ERR sel=0x%04x", n, sel);
++        return 0;
++    }
++    obj = bap_object(s, sel, &size);
++    if (width == 2) {
++        off &= ~1u;
++    }
++    if (sel >= 0xfc00) {
++        v = ridbuf_word(s, off & ~1u);
++        if (width == 1) {
++            v = (off & 1) ? v >> 8 : v & 0xff;
++        }
++    } else if (obj && off + width <= size) {
++        v = obj[off] | (width == 2 ? obj[off + 1] << 8 : 0);
++    } else {
++        ap_trace(s, "bap%d read invalid sel=0x%04x off=0x%x", n, sel, off);
++    }
++    s->bap_off[n] = off + width;
++    return v;
++}
++
++static void bap_write(RBAirportState *s, int n, uint16_t v, unsigned width)
++{
++    uint16_t sel = s->regs[(H_SELECT0 + 2 * n) / 2];
++    unsigned off = s->bap_off[n];
++    unsigned size;
++    uint8_t *obj = bap_object(s, sel, &size);
++
++    if (width == 2) {
++        off &= ~1u;
++    }
++    if (sel >= 0xfc00) {
++        if (off == 0) {
++            memset(&s->ridbuf, 0, sizeof(s->ridbuf));
++            s->ridbuf.type = sel;
++        }
++        if (width == 1) {
++            uint16_t w = ridbuf_word(s, off & ~1u);
++            v = (off & 1) ? (w & 0x00ff) | (v << 8) : (w & 0xff00) | (v & 0xff);
++        }
++        ridbuf_put(s, off & ~1u, v);
++    } else if (obj && off + width <= size) {
++        obj[off] = v;
++        if (width == 2) {
++            obj[off + 1] = v >> 8;
++        }
++        if (sel >= FID_BASE && off + width > s->fid_len[(sel - FID_BASE) / FID_STEP]) {
++            s->fid_len[(sel - FID_BASE) / FID_STEP] = off + width;
++        }
++    } else {
++        ap_trace(s, "bap%d write invalid sel=0x%04x off=0x%x", n, sel, off);
++    }
++    s->bap_off[n] = off + width;
++}
++
++/* ------------------------------------------------------------------ */
++/* events, commands                                                    */
++
++static void ap_update_irq(RBAirportState *s)
++{
++    bool level = (s->regs[H_EVSTAT / 2] & s->regs[H_INTEN / 2]) != 0;
++    if (level != s->irq_level) {
++        ap_trace(s, "irq level=%d evstat=0x%04x inten=0x%04x", level,
++                 s->regs[H_EVSTAT / 2], s->regs[H_INTEN / 2]);
++        s->irq_level = level;
++    }
++    qemu_set_irq(s->irq, level);
++}
++
++static void ap_event(RBAirportState *s, uint16_t ev)
++{
++    s->regs[H_EVSTAT / 2] |= ev;
++    ap_update_irq(s);
++}
++
++static int fid_alloc(RBAirportState *s)
++{
++    for (int i = 0; i < RB_AIRPORT_MAX_FIDS; i++) {
++        int slot = (s->fid_next + i) % RB_AIRPORT_MAX_FIDS;
++        if (!s->fid_used[slot]) {
++            s->fid_used[slot] = true;
++            s->fid_len[slot] = 0;
++            memset(s->fid_data[slot], 0, MAX_FID_BYTES);
++            s->fid_next = slot + 1;
++            return FID_BASE + slot * FID_STEP;
++        }
++    }
++    return -1;
++}
++
++static void card_reset(RBAirportState *s)
++{
++    uint16_t sw0 = 0;
++    memset(s->regs, 0, sizeof(s->regs));
++    s->regs[H_SWSUPPORT0 / 2] = sw0;
++    memset(s->fid_used, 0, sizeof(s->fid_used));
++    s->bap_off[0] = s->bap_off[1] = 0;
++    s->port_enabled = false;
++    s->linked = false;
++    s->aux_enabled = false;
++    s->info_count = 0;
++    s->scan_pending = false;
++    s->scan_wait = false;
++    s->rx_pending = false;
++    s->txf_count = 0;
++    s->reclaim_count = 0;
++    s->lost = false;
++    s->ibss = false;
++    if (s->assoc_timer) {
++        timer_del(s->assoc_timer);
++        timer_del(s->scan_timer);
++    }
++    s->cur_ssid_len = 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* host bridge (docs/ARCHITECTURE.md "AirPort bridge socket")          */
++/*
++ * The networks the card can see and its association state come from the
++ * host (RetroBoot hostd) over a chardev, normally a reconnecting client
++ * socket to /run/retroboot/airport.sock.  Newline-delimited JSON objects;
++ * SSIDs travel as hex of the bytes the guest sees (at most 32).  All
++ * handlers below run in QEMU's main loop with the BQL held, like the timers,
++ * so device state is only ever changed under QEMU's normal rules.  Without a
++ * connected host the card still works: scans return the last list the host
++ * sent (initially empty) and nothing associates.
++ *
++ * Either side may restart.  When the host goes away the card keeps the
++ * host's association for bridge-grace-ms (real time; a hostd restart takes a
++ * few seconds and guest packets do not pass through hostd), answers a scan
++ * that was waiting for the host from the last list, and drops anything it
++ * had queued for the host.  If the host is still away after the grace
++ * period, the host networks are out of range: an association becomes
++ * LinkStatus 4 and scans come back empty.  The chardev reconnects on its own
++ * (reconnect-ms); on connect the card sends hello, state and, with the port
++ * enabled in BSS mode, a fresh join, so the host's reply re-associates the
++ * card (LinkStatus 5 for the same BSSID) without the guest doing anything.
++ * Partial lines from a lost connection are discarded.
++ *
++ * Card -> host:  hello, state, scan {seq}, join {seq, ssid, wep}, leave
++ * Host -> card:  hello, networks {seq?, networks[]}, link {state, seq?, ...}
++ */
++#define AP_BRIDGE_VERSION  1
++#define AP_RX_LINE_MAX     65536
++#define AP_TX_QUEUE_MAX    65536
++
++static void bridge_flush(RBAirportState *s);
++
++static gboolean bridge_writable(void *do_not_use, GIOCondition cond, void *opaque)
++{
++    RBAirportState *s = opaque;
++    s->tx_watch = 0;
++    /* A hung-up peer is reported by the chardev's read side (CLOSED); do
++     * not re-arm a watch that would fire again at once. */
++    if (!(cond & (G_IO_HUP | G_IO_ERR | G_IO_NVAL))) {
++        bridge_flush(s);
++    }
++    return G_SOURCE_REMOVE;
++}
++
++static void bridge_flush(RBAirportState *s)
++{
++    while (s->bridge_open && s->txq->len) {
++        int n = qemu_chr_fe_write(&s->chr, (const uint8_t *)s->txq->str,
++                                  MIN(s->txq->len, 4096));
++        if (!s->bridge_open) {
++            return;     /* the write found the host gone (CLOSED ran) */
++        }
++        if (n <= 0) {
++            if (!s->tx_watch) {
++                s->tx_watch = qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
++                                                    bridge_writable, s);
++            }
++            return;
++        }
++        g_string_erase(s->txq, 0, MIN((gsize)n, s->txq->len));
++    }
++}
++
++static void G_GNUC_PRINTF(2, 3) bridge_send(RBAirportState *s, const char *fmt, ...)
++{
++    va_list ap;
++
++    if (!s->bridge_open) {
++        return;
++    }
++    if (s->txq->len > AP_TX_QUEUE_MAX) {
++        /* host stopped reading: drop rather than grow without bound */
++        ap_trace(s, "bridge transmit queue full; message dropped");
++        return;
++    }
++    va_start(ap, fmt);
++    g_string_append_vprintf(s->txq, fmt, ap);
++    va_end(ap);
++    g_string_append_c(s->txq, '\n');
++    bridge_flush(s);
++}
++
++static void hex_of(char *out, const uint8_t *b, unsigned n)
++{
++    for (unsigned i = 0; i < n; i++) {
++        snprintf(out + 2 * i, 3, "%02x", b[i]);
++    }
++    out[2 * n] = 0;
++}
++
++static int hex_parse(const char *in, uint8_t *out, unsigned max)
++{
++    unsigned n = 0;
++
++    if (!in) {
++        return 0;
++    }
++    while (in[0] && in[1]) {
++        unsigned v;
++        if (n >= max || sscanf(in, "%2x", &v) != 1 ||
++            !g_ascii_isxdigit(in[0]) || !g_ascii_isxdigit(in[1])) {
++            return -1;
++        }
++        out[n++] = v;
++        in += 2;
++    }
++    return in[0] ? -1 : (int)n;
++}
++
++static bool mac_parse(const char *in, uint8_t *out)
++{
++    unsigned b[6];
++    if (!in || sscanf(in, "%2x:%2x:%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2],
++                      &b[3], &b[4], &b[5]) != 6) {
++        return false;
++    }
++    for (int i = 0; i < 6; i++) {
++        out[i] = b[i];
++    }
++    return true;
++}
++
++static APRecord *cfg_rec(RBAirportState *s, uint16_t rid)
++{
++    return g_hash_table_lookup(s->cfg, GUINT_TO_POINTER(rid));
++}
++
++static uint16_t cfg_word(RBAirportState *s, uint16_t rid, uint16_t dflt)
++{
++    APRecord *r = cfg_rec(s, rid);
++    if (!r || r->len < 2) {
++        return dflt;
++    }
++    return r->data[0] | (r->data[1] << 8);
++}
++
++/* desired SSID (RID FC02): empty = any network */
++static unsigned desired_ssid(RBAirportState *s, uint8_t *out)
++{
++    APRecord *want = cfg_rec(s, 0xfc02);
++    unsigned n = (want && want->len >= 2) ? MIN(want->data[0], 32) : 0;
++    if (n) {
++        memcpy(out, want->data + 2, n);
++    }
++    return n;
++}
++
++static bool ibss_mode(RBAirportState *s)
++{
++    return cfg_word(s, 0xfc00, 1) == 3 || cfg_word(s, 0xfc81, 0) != 0;
++}
++
++static void bridge_send_state(RBAirportState *s)
++{
++    uint8_t ssid[32];
++    char hex[65];
++    unsigned n = desired_ssid(s, ssid);
++
++    hex_of(hex, ssid, n);
++    bridge_send(s, "{\"type\":\"state\",\"enabled\":%s,\"mode\":\"%s\",\"desired\":\"%s\"}",
++                s->port_enabled ? "true" : "false", ibss_mode(s) ? "ibss" : "bss", hex);
++}
++
++static void bridge_send_join(RBAirportState *s)
++{
++    uint8_t ssid[32];
++    char hex[65];
++    unsigned n = desired_ssid(s, ssid);
++
++    hex_of(hex, ssid, n);
++    s->join_seq = ++s->seq;
++    bridge_send(s, "{\"type\":\"join\",\"seq\":%u,\"ssid\":\"%s\",\"wep\":%s}",
++                s->join_seq, hex, cfg_word(s, 0xfc20, 0) ? "true" : "false");
++    ap_trace(s, "bridge join seq=%u desired ssid len %u", s->join_seq, n);
++}
++
++static void info_queue(RBAirportState *s, uint16_t type, const uint8_t *data,
++                       unsigned nbytes)
++{
++    APInfo *q;
++    if (s->info_count >= RB_AIRPORT_INFO_QUEUE) {
++        ap_trace(s, "info queue full; dropping type 0x%04x", type);
++        return;
++    }
++    q = &s->info_q[(s->info_head + s->info_count) % RB_AIRPORT_INFO_QUEUE];
++    q->type = type;
++    q->nbytes = MIN(nbytes, sizeof(q->data));
++    memcpy(q->data, data, q->nbytes);
++    s->info_count++;
++    timer_mod(s->info_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
++}
++
++/* deliver the next queued info frame when the host has acked EV_INFO */
++static void info_deliver(void *opaque)
++{
++    RBAirportState *s = opaque;
++    APInfo *q;
++    uint8_t *buf;
++    uint16_t fid;
++
++    if (!s->info_count || (s->regs[H_EVSTAT / 2] & EV_INFO)) {
++        return;
++    }
++    q = &s->info_q[s->info_head];
++    s->info_head = (s->info_head + 1) % RB_AIRPORT_INFO_QUEUE;
++    s->info_count--;
++    s->info_toggle ^= 1;
++    fid = s->info_toggle ? INFO_FID1 : INFO_FID0;
++    buf = s->info_buf[s->info_toggle];
++    memset(buf, 0, sizeof(s->info_buf[0]));
++    put16(buf, q->nbytes / 2 + 1);
++    put16(buf + 2, q->type);
++    memcpy(buf + 4, q->data, q->nbytes);
++    s->regs[H_INFOFID / 2] = fid;
++    ap_trace(s, "info frame type=0x%04x bytes=%u fid=0x%04x", q->type,
++             q->nbytes, fid);
++    ap_event(s, EV_INFO);
++}
++
++/* Lucent LinkStatus: 1 connected, 2 disconnected, 3 AP change,
++ * 4 AP out of range, 5 AP in range, 6 association failed */
++static void link_status(RBAirportState *s, uint16_t status)
++{
++    uint8_t b[2];
++    put16(b, status);
++    ap_trace(s, "link status %u", status);
++    info_queue(s, 0xf200, b, 2);
++}
++
++/* 50-byte Lucent scan records from the host's last network list */
++static void scan_complete(RBAirportState *s)
++{
++    uint8_t data[RB_AIRPORT_MAX_NETS * 50];
++    int n = s->n_nets;
++
++    memset(data, 0, sizeof(data));
++    for (int i = 0; i < n; i++) {
++        uint8_t *e = data + 50 * i;
++        APNetwork *w = &s->nets[i];
++        put16(e, w->channel);
++        put16(e + 2, w->noise + 0x95);
++        put16(e + 4, w->signal + 0x95);
++        memcpy(e + 6, w->bssid, 6);
++        put16(e + 12, 100);
++        put16(e + 14, w->cap);
++        put16(e + 16, w->ssid_len);
++        memcpy(e + 18, w->ssid, w->ssid_len);
++    }
++    ap_trace(s, "scan results: %d network(s) from the host (%s)", n,
++             s->bridge_open ? "connected" : "host not connected");
++    info_queue(s, 0xf101, data, 50 * n);
++}
++
++static bool network_parse(QDict *d, APNetwork *w)
++{
++    int n;
++
++    memset(w, 0, sizeof(*w));
++    n = hex_parse(qdict_get_try_str(d, "ssid"), w->ssid, sizeof(w->ssid));
++    if (n < 0 || !mac_parse(qdict_get_try_str(d, "bssid"), w->bssid)) {
++        return false;
++    }
++    w->ssid_len = n;
++    w->channel = MIN(MAX(qdict_get_try_int(d, "channel", 1), 1), 14);
++    w->signal = MIN(MAX(qdict_get_try_int(d, "signal", -60), -110), -10);
++    w->noise = MIN(MAX(qdict_get_try_int(d, "noise", -95), -120), -10);
++    w->cap = qdict_get_try_bool(d, "ibss", false) ? 0x0002 : 0x0001;
++    if (qdict_get_try_bool(d, "privacy", false)) {
++        w->cap |= 0x0010;
++    }
++    return true;
++}
++
++static void bridge_networks(RBAirportState *s, QDict *d)
++{
++    QList *list = qobject_to(QList, qdict_get(d, "networks"));
++    QListEntry *e;
++    int n = 0;
++
++    if (!list) {
++        return;
++    }
++    QLIST_FOREACH_ENTRY(list, e) {
++        QDict *nd = qobject_to(QDict, qlist_entry_obj(e));
++        if (n < RB_AIRPORT_MAX_NETS && nd && network_parse(nd, &s->nets[n])) {
++            n++;
++        }
++    }
++    s->n_nets = n;
++    if (s->scan_wait && qdict_haskey(d, "seq") &&
++        qdict_get_try_int(d, "seq", -1) == s->scan_seq) {
++        s->scan_wait = false;
++        timer_del(s->scan_timer);
++        if (s->scan_pending && s->port_enabled) {
++            s->scan_pending = false;
++            scan_complete(s);
++        }
++    }
++}
++
++/*
++ * The host decides association for infrastructure networks: the card is
++ * linked exactly while the guest has the port enabled in BSS mode and the
++ * host reports "associated".  Transitions become LinkStatus info frames.
++ */
++static void bridge_link(RBAirportState *s, QDict *d)
++{
++    const char *state = qdict_get_try_str(d, "state");
++    bool was = s->linked;
++    APNetwork w;
++
++    if (!state) {
++        return;
++    }
++    if (qdict_haskey(d, "seq") && qdict_get_try_int(d, "seq", -1) != s->join_seq) {
++        ap_trace(s, "bridge link reply for an older join ignored");
++        return;
++    }
++    if (!s->port_enabled || s->ibss) {
++        return;
++    }
++    if (!strcmp(state, "associated") && network_parse(d, &w)) {
++        bool changed = was && memcmp(s->cur_bssid, w.bssid, 6);
++        bool back = !was && s->lost && !memcmp(s->cur_bssid, w.bssid, 6);
++        memcpy(s->cur_ssid, w.ssid, w.ssid_len);
++        s->cur_ssid_len = w.ssid_len;
++        memcpy(s->cur_bssid, w.bssid, 6);
++        s->cur_channel = w.channel;
++        s->cur_signal = w.signal;
++        s->cur_noise = w.noise;
++        s->linked = true;
++        s->lost = false;
++        if (!was) {
++            ap_trace(s, "associated with host network '%.*s' channel %u",
++                     (int)s->cur_ssid_len, s->cur_ssid, s->cur_channel);
++            link_status(s, back ? 5 : 1);
++        } else if (changed) {
++            link_status(s, 3);
++        }
++    } else if (!strcmp(state, "lost")) {
++        if (was) {
++            s->linked = false;
++            s->lost = true;
++            link_status(s, 4);
++        }
++    } else if (!strcmp(state, "failed")) {
++        s->linked = false;
++        s->lost = false;
++        link_status(s, was ? 2 : 6);
++    } else if (was) {
++        /* "searching", "disconnected" */
++        s->linked = false;
++        s->lost = false;
++        link_status(s, 2);
++    }
++}
++
++static void bridge_message(RBAirportState *s, const char *line)
++{
++    Error *err = NULL;
++    QObject *obj = qobject_from_json(line, &err);
++    QDict *d = qobject_to(QDict, obj);
++    const char *type;
++
++    if (!d) {
++        ap_trace(s, "bridge: malformed message ignored");
++        error_free(err);
++        qobject_unref(obj);
++        return;
++    }
++    type = qdict_get_try_str(d, "type");
++    if (!type) {
++        /* ignored */
++    } else if (!strcmp(type, "networks")) {
++        bridge_networks(s, d);
++    } else if (!strcmp(type, "link")) {
++        bridge_link(s, d);
++    } else if (!strcmp(type, "hello")) {
++        ap_trace(s, "bridge: host hello version %" PRId64 " backend %s",
++                 qdict_get_try_int(d, "version", 0),
++                 qdict_get_try_str(d, "backend") ?: "?");
++    }
++    qobject_unref(obj);
++}
++
++static int bridge_can_read(void *opaque)
++{
++    return 4096;
++}
++
++static void bridge_read(void *opaque, const uint8_t *buf, int size)
++{
++    RBAirportState *s = opaque;
++
++    for (int i = 0; i < size; i++) {
++        if (buf[i] != '\n') {
++            if (s->rx_discard) {
++                continue;
++            }
++            if (s->rxline->len >= AP_RX_LINE_MAX) {
++                ap_trace(s, "bridge: oversized message discarded");
++                s->rx_discard = true;
++                g_string_truncate(s->rxline, 0);
++                continue;
++            }
++            g_string_append_c(s->rxline, buf[i]);
++            continue;
++        }
++        if (!s->rx_discard && s->rxline->len) {
++            bridge_message(s, s->rxline->str);
++        }
++        s->rx_discard = false;
++        g_string_truncate(s->rxline, 0);
++    }
++}
++
++/*
++ * The host has been away for bridge-grace-ms: what it reported can no longer
++ * be trusted, so its networks are out of range until it is back.
++ */
++static void bridge_grace_cb(void *opaque)
++{
++    RBAirportState *s = opaque;
++
++    if (s->bridge_open || s->bridge_away) {
++        return;
++    }
++    s->bridge_away = true;
++    s->n_nets = 0;
++    ap_trace(s, "bridge away for %u ms: host networks out of range",
++             s->bridge_grace_ms);
++    if (s->port_enabled && !s->ibss && s->linked) {
++        s->linked = false;
++        s->lost = true;
++        link_status(s, 4);
++    }
++}
++
++static void bridge_event(void *opaque, QEMUChrEvent event)
++{
++    RBAirportState *s = opaque;
++    char mac[18];
++
++    switch (event) {
++    case CHR_EVENT_OPENED:
++        timer_del(s->grace_timer);
++        s->bridge_open = true;
++        s->bridge_opens++;
++        g_string_truncate(s->rxline, 0);
++        g_string_truncate(s->txq, 0);
++        s->rx_discard = false;
++        snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", s->mac[0],
++                 s->mac[1], s->mac[2], s->mac[3], s->mac[4], s->mac[5]);
++        ap_trace(s, "bridge connected (connection %u%s)", s->bridge_opens,
++                 s->bridge_away ? ", host was away" : "");
++        s->bridge_away = false;
++        bridge_send(s, "{\"type\":\"hello\",\"version\":%d,\"mac\":\"%s\","
++                    "\"firmware\":\"%u.%u\"}", AP_BRIDGE_VERSION, mac,
++                    s->sta_major, s->sta_minor);
++        bridge_send_state(s);
++        if (s->port_enabled && !s->ibss) {
++            /* fresh seq: a reply to the join sent before the host went
++             * away is ignored, the host answers this one */
++            bridge_send_join(s);
++        }
++        break;
++    case CHR_EVENT_CLOSED:
++        if (!s->bridge_open) {
++            break;
++        }
++        /* Nothing here may write to the chardev: CLOSED can arrive from
++         * inside qemu_chr_fe_write() with the chardev's write lock held. */
++        s->bridge_open = false;
++        s->bridge_closes++;
++        g_string_truncate(s->txq, 0);
++        g_string_truncate(s->rxline, 0);
++        s->rx_discard = false;
++        if (s->tx_watch) {
++            g_source_remove(s->tx_watch);
++            s->tx_watch = 0;
++        }
++        if (s->scan_wait) {
++            /* no answer is coming: complete the scan from the last list */
++            s->scan_wait = false;
++            timer_mod(s->scan_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
++                      s->scan_delay_ms);
++        }
++        timer_mod(s->grace_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) +
++                  s->bridge_grace_ms);
++        ap_trace(s, "bridge disconnected; association kept for %u ms",
++                 s->bridge_grace_ms);
++        break;
++    default:
++        break;
++    }
++}
++
++/* computer-to-computer (IBSS) networks stay inside the guest */
++static void assoc_timer_cb(void *opaque)
++{
++    RBAirportState *s = opaque;
++    APRecord *own;
++
++    if (!s->port_enabled || s->linked || !ibss_mode(s)) {
++        return;
++    }
++    own = cfg_rec(s, 0xfc04);
++    s->cur_ssid_len = (own && own->len >= 2) ? MIN(own->data[0], 32) : 0;
++    if (s->cur_ssid_len) {
++        memcpy(s->cur_ssid, own->data + 2, s->cur_ssid_len);
++    }
++    memcpy(s->cur_bssid, s->mac, 6);
++    s->cur_bssid[0] |= 0x02;
++    s->cur_channel = cfg_word(s, 0xfc03, 3);
++    s->cur_signal = -50;
++    s->cur_noise = -95;
++    s->linked = true;
++    s->ibss = true;
++    ap_trace(s, "created computer-to-computer network on channel %u", s->cur_channel);
++    link_status(s, 1);
++}
++
++/* ------------------------------------------------------------------ */
++/* packet path (Hermes 802.3 frame layout <-> Ethernet backend)         */
++/*
++ * Hermes frame buffers (public hermes.h): descriptor 0x00..0x2d with the
++ * status word at 0x00 and the data length at 0x2c, the 802.3 header at
++ * 0x2e (DA, SA, big-endian length at 0x3a) and LLC/SNAP + payload at 0x3c.
++ * RFC 1042 / 802.1H SNAP payloads are converted to/from Ethernet II, as the
++ * firmware's 802.3 <-> 802.11 conversion would leave them for the host.
++ */
++#define HFS_DAT_LEN  0x2c
++#define HFS_DA       0x2e
++#define HFS_SA       0x34
++#define HFS_LEN      0x3a
++#define HFS_DAT      0x3c
++#define AP_ETH_MTU   1500
++
++static const uint8_t snap_rfc1042[6] = { 0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00 };
++static const uint8_t snap_8021h[6] = { 0xaa, 0xaa, 0x03, 0x00, 0x00, 0xf8 };
++
++/*
++ * Frames leave through a bottom half after the TX command has completed, as
++ * on the real card.  Sending synchronously let QEMU's user network answer
++ * (e.g. an ARP reply) re-entrantly inside the TX command, before the driver
++ * had seen its own command complete; the guest stack then stalled.
++ */
++static void tx_bh_cb(void *opaque)
++{
++    RBAirportState *s = opaque;
++
++    while (s->txf_count) {
++        unsigned i = s->txf_head;
++        s->txf_head = (s->txf_head + 1) % RB_AIRPORT_TXQ;
++        s->txf_count--;
++        qemu_send_packet(qemu_get_queue(s->nic), s->txf[i], s->txf_len[i]);
++    }
++}
++
++static bool ap_transmit(RBAirportState *s, const uint8_t *f, unsigned flen)
++{
++    uint8_t *eth;
++    unsigned len = (f[HFS_LEN] << 8) | f[HFS_LEN + 1];
++    unsigned dlen = f[HFS_DAT_LEN] | (f[HFS_DAT_LEN + 1] << 8);
++    unsigned n;
++
++    if (s->tx_frames < 3) {
++        char hex[3 * 0x48 + 1];
++        for (unsigned i = 0; i < 0x48; i++) {
++            snprintf(hex + 3 * i, 4, "%02x ", f[i]);
++        }
++        ap_trace(s, "tx frame header (fid len %u): %s", flen, hex);
++    }
++    if (len > 2312 || HFS_DAT + len > MAX_FID_BYTES) {
++        len = dlen;
++    }
++    if (!s->port_enabled || !s->linked || s->ibss || len < 8 || len > AP_ETH_MTU + 8 ||
++        HFS_DAT + len > MAX_FID_BYTES || s->txf_count >= RB_AIRPORT_TXQ) {
++        ap_trace(s, "tx dropped (enabled=%d linked=%d ibss=%d len=%u dlen=%u queued=%u)",
++                 s->port_enabled, s->linked, s->ibss, len, dlen, s->txf_count);
++        return false;
++    }
++    eth = s->txf[(s->txf_head + s->txf_count) % RB_AIRPORT_TXQ];
++    memcpy(eth, f + HFS_DA, 12);
++    if (!memcmp(f + HFS_DAT, snap_rfc1042, 6) || !memcmp(f + HFS_DAT, snap_8021h, 6)) {
++        /* Ethernet II: DA SA type data */
++        memcpy(eth + 12, f + HFS_DAT + 6, len - 6);
++        n = 12 + len - 6;
++    } else {
++        /* keep 802.3 + LLC (e.g. AppleTalk Phase 2 SNAP) */
++        eth[12] = len >> 8;
++        eth[13] = len;
++        memcpy(eth + 14, f + HFS_DAT, len);
++        n = 14 + len;
++    }
++    s->tx_frames++;
++    if (s->tx_frames <= 64 || !(s->tx_frames % 256)) {
++        ap_trace(s, "tx #%u %u bytes da=%02x:%02x:%02x:%02x:%02x:%02x type=%02x%02x",
++                 s->tx_frames, n, eth[0], eth[1], eth[2], eth[3], eth[4], eth[5],
++                 eth[12], eth[13]);
++    }
++    s->txf_len[(s->txf_head + s->txf_count) % RB_AIRPORT_TXQ] = n;
++    s->txf_count++;
++    qemu_bh_schedule(s->tx_bh);
++    return true;
++}
++
++static bool ap_can_receive(NetClientState *nc)
++{
++    RBAirportState *s = qemu_get_nic_opaque(nc);
++    return !s->rx_pending;
++}
++
++static ssize_t ap_receive(NetClientState *nc, const uint8_t *buf, size_t size)
++{
++    RBAirportState *s = qemu_get_nic_opaque(nc);
++    uint8_t *f = s->rx_buf;
++    unsigned type, plen;
++    uint16_t status = 0;
++
++    if (size < 14 || !s->port_enabled || !s->linked || s->ibss) {
++        return size;            /* not associated with the host network */
++    }
++    if (!(buf[0] & 1) && memcmp(buf, s->mac, 6)) {
++        return size;            /* not for us */
++    }
++    if (s->rx_pending) {
++        return 0;               /* host has not consumed the previous frame */
++    }
++    memset(f, 0, HFS_DAT);
++    type = (buf[12] << 8) | buf[13];
++    if (type >= 0x0600) {
++        bool tunnel = type == 0x80f3 || type == 0x8137;
++        plen = 6 + 2 + size - 14;
++        if (HFS_DAT + plen > sizeof(s->rx_buf)) {
++            return size;
++        }
++        memcpy(f + HFS_DAT, tunnel ? snap_8021h : snap_rfc1042, 6);
++        memcpy(f + HFS_DAT + 6, buf + 12, size - 12);
++        status = tunnel ? 0x4000 : 0x2000;
++    } else {
++        plen = MIN(type, size - 14);
++        if (HFS_DAT + plen > sizeof(s->rx_buf)) {
++            return size;
++        }
++        memcpy(f + HFS_DAT, buf + 14, plen);
++    }
++    put16(f, status);
++    f[0x08] = 0x95 + s->cur_noise;     /* silence */
++    f[0x09] = 0x95 + s->cur_signal;    /* signal */
++    f[0x0a] = 110;                     /* rate (100 kb/s units) */
++    put16(f + 0x0e, s->ibss ? 0x0008 : 0x0208); /* data, FromDS */
++    memcpy(f + 0x12, buf, 6);          /* addr1 = DA */
++    memcpy(f + 0x18, s->ibss ? buf + 6 : s->cur_bssid, 6);
++    memcpy(f + 0x1e, s->ibss ? s->cur_bssid : buf + 6, 6);
++    put16(f + HFS_DAT_LEN, plen);
++    memcpy(f + HFS_DA, buf, 12);
++    f[HFS_LEN] = plen >> 8;
++    f[HFS_LEN + 1] = plen;
++    s->rx_frames++;
++    if (s->rx_frames <= 64 || !(s->rx_frames % 256)) {
++        ap_trace(s, "rx #%u %zu bytes type=%04x status=0x%04x", s->rx_frames,
++                 size, type, status);
++    }
++    s->rx_pending = true;
++    /* Raise EV_RX from a timer (rx-delay-us, default "next main loop
++     * iteration"), never synchronously inside the driver's own register
++     * access: QEMU's user network answers within the transmit call. */
++    timer_mod_ns(s->rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                 (int64_t)s->rx_delay_us * 1000);
++    return size;
++}
++
++static void rx_timer_cb(void *opaque)
++{
++    RBAirportState *s = opaque;
++
++    if (s->rx_pending) {
++        s->regs[H_RXFID / 2] = RX_FID;
++        ap_event(s, EV_RX);
++    }
++}
++
++static NetClientInfo rb_airport_net_info = {
++    .type = NET_CLIENT_DRIVER_NIC,
++    .size = sizeof(NICState),
++    .can_receive = ap_can_receive,
++    .receive = ap_receive,
++};
++
++static void ap_command(RBAirportState *s, uint16_t cmd)
++{
++    uint16_t code = cmd & 0x3f;
++    uint16_t p0 = s->regs[H_PARAM0 / 2];
++    uint16_t p1 = s->regs[H_PARAM1 / 2];
++    uint16_t p2 = s->regs[H_PARAM2 / 2];
++    uint16_t result = 0;
++    uint16_t r0 = 0, r1 = 0, r2 = 0;
++    uint16_t extra_ev = 0;
++    const char *what = "?";
++
++    switch (code) {
++    case CMD_INIT:
++        what = "INIT";
++        if (s->program_mode) {
++            ap_trace(s, "INIT while program mode=%d", s->program_mode);
++        }
++        card_reset(s);
++        bridge_send_state(s);
++        if (s->download_pending) {
++            /* volatile image was programmed: run it */
++            s->sta_running = true;
++            s->sta_major = s->dl_major;
++            s->sta_minor = s->dl_minor;
++            s->sta_comp = s->dl_comp;
++            s->download_pending = false;
++            what = "INIT (start downloaded image)";
++        }
++        break;
++    case CMD_ENABLE:
++        what = "ENABLE";
++        s->port_enabled = true;
++        s->linked = false;
++        s->lost = false;
++        s->cur_ssid_len = 0;
++        s->ibss = ibss_mode(s);
++        timer_del(s->assoc_timer);
++        bridge_send_state(s);
++        if (s->ibss) {
++            timer_mod(s->assoc_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
++                      s->assoc_delay_ms);
++        } else {
++            bridge_send_join(s);
++        }
++        break;
++    case CMD_DISABLE: {
++        bool was_enabled = s->port_enabled;
++        what = "DISABLE";
++        s->port_enabled = false;
++        s->linked = false;
++        s->lost = false;
++        s->ibss = false;
++        s->cur_ssid_len = 0;
++        timer_del(s->assoc_timer);
++        if (was_enabled) {
++            bridge_send(s, "{\"type\":\"leave\"}");
++            bridge_send_state(s);
++        }
++        break;
++    }
++    case CMD_DIAG:
++        what = "DIAG";
++        r0 = p0;
++        r1 = ~p1;
++        r2 = ~p2;
++        break;
++    case CMD_ALLOC: {
++        int fid = fid_alloc(s);
++        what = "ALLOC";
++        if (fid < 0 || p0 > MAX_FID_BYTES) {
++            result = 0x7f;
++        } else {
++            s->regs[H_ALLOCFID / 2] = fid;
++            extra_ev |= EV_ALLOC;
++        }
++        break;
++    }
++    case CMD_TX: {
++        unsigned slot = (p0 - FID_BASE) / FID_STEP;
++        what = "TX";
++        if (p0 < FID_BASE || slot >= RB_AIRPORT_MAX_FIDS || !s->fid_used[slot]) {
++            result = 0x7f;
++        } else {
++            extra_ev |= ap_transmit(s, s->fid_data[slot], s->fid_len[slot]) ?
++                        EV_TX : EV_TXEXC;
++            if (cmd & 0x0100) {
++                s->regs[H_TXCOMPLFID / 2] = p0;
++            }
++            /* Hermes returns the transmit buffer to the host through an
++             * ALLOC event carrying the FID (HCF 4.6 waits for it). */
++            if (s->reclaim_count < RB_AIRPORT_MAX_FIDS) {
++                s->reclaim_q[s->reclaim_count++] = p0;
++                timer_mod(s->alloc_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
++            }
++        }
++        break;
++    }
++    case CMD_NOTIFY:
++        what = "NOTIFY";
++        break;
++    case CMD_INQUIRE:
++        what = "INQUIRE";
++        if (p0 == 0xf101) {
++            s->scan_pending = true;
++            if (s->bridge_open) {
++                /* answered by a "networks" reply; the timeout falls back to
++                 * the last list so the guest never waits for a slow host */
++                s->scan_seq = ++s->seq;
++                s->scan_wait = true;
++                bridge_send(s, "{\"type\":\"scan\",\"seq\":%u}", s->scan_seq);
++                timer_mod(s->scan_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
++                          s->scan_timeout_ms);
++            } else {
++                timer_mod(s->scan_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
++                          s->scan_delay_ms);
++            }
++        } else if (p0 == 0xf200) {
++            link_status(s, s->linked ? 1 : 2);
++        } else if (p0 == 0xf100) {
++            uint8_t tallies[64];
++            memset(tallies, 0, sizeof(tallies));
++            info_queue(s, 0xf100, tallies, sizeof(tallies));
++        } else {
++            ap_trace(s, "INQUIRE type 0x%04x not modelled", p0);
++        }
++        break;
++    case CMD_ACCESS:
++        if (cmd & 0x0100) {
++            what = "ACCESS-WRITE";
++            if (s->ridbuf.type != p0) {
++                ap_trace(s, "ACCESS-WRITE rid 0x%04x but buffer type 0x%04x",
++                         p0, s->ridbuf.type);
++            }
++            s->ridbuf.type = p0;
++            rid_write(s, &s->ridbuf);
++            if ((p0 >= 0xfc24 && p0 <= 0xfc27) || p0 == 0xfcb0) {
++                /* WEP key material: never written to the trace */
++                ap_trace(s, "rid-write 0x%04x len=%u data=<key material redacted>",
++                         p0, s->ridbuf.len);
++            } else {
++                ap_trace(s, "rid-write 0x%04x len=%u data=%02x%02x%02x%02x%02x%02x%02x%02x",
++                         p0, s->ridbuf.len, s->ridbuf.data[0], s->ridbuf.data[1],
++                         s->ridbuf.data[2], s->ridbuf.data[3], s->ridbuf.data[4],
++                         s->ridbuf.data[5], s->ridbuf.data[6], s->ridbuf.data[7]);
++            }
++        } else {
++            what = "ACCESS-READ";
++            memset(&s->ridbuf, 0, sizeof(s->ridbuf));
++            if (!rid_read(s, p0, &s->ridbuf)) {
++                s->ridbuf.type = p0;
++                s->ridbuf.len = 0;
++                ap_trace(s, "rid-read 0x%04x UNKNOWN (len=0)", p0);
++            } else if ((p0 >= 0xfc24 && p0 <= 0xfc27) || p0 == 0xfcb0) {
++                ap_trace(s, "rid-read 0x%04x len=%u data=<key material redacted>",
++                         p0, s->ridbuf.len);
++            } else {
++                ap_trace(s, "rid-read 0x%04x len=%u data=%02x%02x %02x%02x %02x%02x %02x%02x",
++                         p0, s->ridbuf.len, s->ridbuf.data[0], s->ridbuf.data[1],
++                         s->ridbuf.data[2], s->ridbuf.data[3], s->ridbuf.data[4],
++                         s->ridbuf.data[5], s->ridbuf.data[6], s->ridbuf.data[7]);
++            }
++        }
++        break;
++    case CMD_DOWNLD: {
++        int mode = (cmd >> 8) & 3;
++        what = "DOWNLD";
++        if (mode == 1 || mode == 2) {
++            /* Program enable.  Apple's HCF 4.6 issues 0x0222 with PARAM0/1 =
++             * image start address before writing the image through AUX;
++             * Linux names 0x0122 "enable volatile".  Both are accepted. */
++            s->dl_entry = p0 | ((uint32_t)p1 << 16);
++            s->dl_bytes = 0;
++            s->dl_lo = UINT32_MAX;
++            s->dl_hi = 0;
++        } else if (mode == 0) {
++            /* PROGRAM_DISABLE: a volatile image runs at the next INIT */
++            if ((s->program_mode == 1 || s->program_mode == 2) && s->dl_bytes) {
++                s->download_pending = true;
++            }
++            ap_trace(s, "download summary: entry=0x%08x bytes=%u range=0x%06x-0x%06x %s",
++                     s->dl_entry, s->dl_bytes, s->dl_lo, s->dl_hi,
++                     s->download_pending ? "-> runs at next INIT" : "(nothing to run)");
++        } else {
++            ap_trace(s, "DOWNLD mode 3 (commit to flash) accepted as no-op");
++        }
++        s->program_mode = mode;
++        ap_trace(s, "DOWNLD mode=%d param 0x%04x%04x", mode, p1, p0);
++        break;
++    }
++    case CMD_READMIF:
++        what = "READMIF";
++        break;
++    case CMD_WRITEMIF:
++        what = "WRITEMIF";
++        break;
++    case CMD_TEST:
++        what = "TEST";
++        break;
++    default:
++        what = "UNKNOWN";
++        result = 0x7f;
++        break;
++    }
++    s->regs[H_STATUS / 2] = (result << 8) | code;
++    s->regs[H_RESP0 / 2] = r0;
++    s->regs[H_RESP1 / 2] = r1;
++    s->regs[H_RESP2 / 2] = r2;
++    s->regs[H_CMD / 2] = cmd & ~0x8000;
++    ap_trace(s, "command 0x%04x %s p0=0x%04x p1=0x%04x p2=0x%04x -> status=0x%04x",
++             cmd, what, p0, p1, p2, s->regs[H_STATUS / 2]);
++    ap_event(s, EV_CMD | extra_ev);
++}
++
++static uint64_t hermes_reg_read(RBAirportState *s, hwaddr addr, unsigned size)
++{
++    uint64_t v;
++
++    if (addr >= 0x40 || (addr & 1)) {
++        ap_trace(s, "regs read off=0x%03" HWADDR_PRIx " size=%u (outside model)",
++                 addr, size);
++        return 0xffff;
++    }
++    switch (addr) {
++    case H_DATA0:
++    case H_DATA1:
++        v = bap_read(s, (addr - H_DATA0) / 2, size == 1 ? 1 : 2);
++        break;
++    case H_OFFSET0:
++    case H_OFFSET1:
++        v = s->regs[addr / 2];
++        break;
++    case H_CONTROL:
++        v = s->aux_enabled ? 0xc000 : 0x0000;
++        break;
++    case H_AUXDATA:
++        v = ram_read16(s, s->aux_addr);
++        s->aux_addr += 2;
++        break;
++    case H_EVSTAT: {
++        /* Hermes auxiliary timer: HCF calibrates its polling loops by
++         * counting EVSTAT reads between TICK events. */
++        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++        if (s->tick_ns && now - s->last_tick >= s->tick_ns) {
++            s->last_tick = now;
++            s->regs[H_EVSTAT / 2] |= EV_TICK;
++            ap_update_irq(s);
++        }
++        v = s->regs[addr / 2];
++        break;
++    }
++    default:
++        v = s->regs[addr / 2];
++        break;
++    }
++    if (s->trace_data || (addr != H_DATA0 && addr != H_DATA1 && addr != H_AUXDATA)) {
++        ap_trace(s, "regs read %s%s 0x%04" PRIx64, reg_name(addr), size == 1 ? ".b" : "", v);
++    }
++    return v;
++}
++
++static void hermes_reg_write(RBAirportState *s, hwaddr addr, uint64_t v, unsigned size)
++{
++
++    if (addr >= 0x40 || (addr & 1)) {
++        ap_trace(s, "regs write off=0x%03" HWADDR_PRIx " size=%u value=0x%" PRIx64
++                 " (outside model)", addr, size, v);
++        return;
++    }
++    if (s->trace_data || (addr != H_DATA0 && addr != H_DATA1 && addr != H_AUXDATA)) {
++        ap_trace(s, "regs write %s%s 0x%04" PRIx64, reg_name(addr), size == 1 ? ".b" : "", v);
++    }
++    switch (addr) {
++    case H_CMD:
++        ap_command(s, v);
++        return;
++    case H_EVACK:
++        s->regs[H_EVSTAT / 2] &= ~v;
++        ap_update_irq(s);
++        if ((v & EV_RX) && s->rx_pending) {
++            s->rx_pending = false;
++            qemu_flush_queued_packets(qemu_get_queue(s->nic));
++        }
++        if ((v & EV_INFO) && s->info_count) {
++            timer_mod(s->info_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
++        }
++        return;
++    case H_INTEN:
++        s->regs[addr / 2] = v;
++        ap_update_irq(s);
++        return;
++    case H_OFFSET0:
++    case H_OFFSET1: {
++        int n = (addr - H_OFFSET0) / 2;
++        uint16_t sel = s->regs[(H_SELECT0 + 2 * n) / 2];
++        unsigned osize;
++        uint8_t *obj = bap_object(s, sel, &osize);
++        uint16_t o = v & 0x0ffe;
++        s->bap_off[n] = o;
++        if ((sel < 0xfc00 && !obj) || o >= osize) {
++            s->regs[addr / 2] = o | OFF_ERR;
++            ap_trace(s, "bap%d select=0x%04x offset=0x%x -> ERR", n, sel, o);
++        } else {
++            s->regs[addr / 2] = o;
++        }
++        return;
++    }
++    case H_DATA0:
++    case H_DATA1:
++        bap_write(s, (addr - H_DATA0) / 2, v, size == 1 ? 1 : 2);
++        return;
++    case H_CONTROL:
++        if (v == 0x8000 && s->regs[H_PARAM0 / 2] == 0xfe01 &&
++            s->regs[H_PARAM1 / 2] == 0xdc23 && s->regs[H_PARAM2 / 2] == 0xba45) {
++            s->aux_enabled = true;
++        } else if (v == 0x4000) {
++            s->aux_enabled = false;
++        } else {
++            ap_trace(s, "CONTROL write 0x%04" PRIx64 " without AUX keys", v);
++        }
++        return;
++    case H_AUXPAGE:
++    case H_AUXOFFSET:
++        s->regs[addr / 2] = v;
++        s->aux_addr = ((uint32_t)s->regs[H_AUXPAGE / 2] << 7) +
++                      (s->regs[H_AUXOFFSET / 2] & 0x7f);
++        return;
++    case H_AUXDATA:
++        if (!s->aux_enabled) {
++            ap_trace(s, "AUXDATA write while AUX closed");
++        }
++        ram_write16(s, s->aux_addr, v);
++        if (s->program_mode == 1 || s->program_mode == 2) {
++            s->dl_bytes += 2;
++            s->dl_lo = MIN(s->dl_lo, s->aux_addr);
++            s->dl_hi = MAX(s->dl_hi, s->aux_addr + 1);
++        }
++        s->aux_addr += 2;
++        return;
++    case H_STATUS:
++    case H_RESP0:
++    case H_RESP1:
++    case H_RESP2:
++        ap_trace(s, "write to read-only %s ignored", reg_name(addr));
++        return;
++    default:
++        s->regs[addr / 2] = v;
++        return;
++    }
++}
++
++/*
++ * 16-bit registers; 8-bit accesses to the BAP data registers move the BAP
++ * by one byte (see bap_read).  Other 8-bit accesses act on the containing
++ * register as before (low byte for even addresses, high byte for odd).
++ */
++static uint64_t hermes_read(void *opaque, hwaddr addr, unsigned size)
++{
++    RBAirportState *s = opaque;
++    hwaddr reg = addr & ~1ull;
++
++    if (size == 1 && (reg == H_DATA0 || reg == H_DATA1)) {
++        return hermes_reg_read(s, reg, 1);
++    }
++    if (size == 1 && addr < 0x40) {
++        uint64_t v = hermes_reg_read(s, reg, 2);
++        return (addr & 1) ? (v >> 8) & 0xff : v & 0xff;
++    }
++    return hermes_reg_read(s, addr, size);
++}
++
++static void hermes_write(void *opaque, hwaddr addr, uint64_t v, unsigned size)
++{
++    RBAirportState *s = opaque;
++    hwaddr reg = addr & ~1ull;
++
++    if (size == 1 && (reg == H_DATA0 || reg == H_DATA1)) {
++        hermes_reg_write(s, reg, v & 0xff, 1);
++    } else if (size == 1 && addr < 0x40) {
++        hermes_reg_write(s, reg, (addr & 1) ? (v & 0xff) << 8 : v & 0xff, 2);
++    } else {
++        hermes_reg_write(s, addr, v, size);
++    }
++}
++
++static const MemoryRegionOps hermes_ops = {
++    .read = hermes_read,
++    .write = hermes_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = { .min_access_size = 1, .max_access_size = 4 },
++    .impl = { .min_access_size = 1, .max_access_size = 2 },
++};
++
++/* ------------------------------------------------------------------ */
++/* attribute memory (CIS + configuration registers)                    */
++
++static uint8_t attr_byte(RBAirportState *s, hwaddr a)
++{
++    if (a & 1) {
++        return 0xff;
++    }
++    if (a >= 0x3e0 && a < 0x3f0) {
++        return s->ccr[(a - 0x3e0) / 2];
++    }
++    if (a / 2 < s->cis_len) {
++        return s->cis[a / 2];
++    }
++    return 0xff;
++}
++
++static uint64_t attr_read(void *opaque, hwaddr addr, unsigned size)
++{
++    RBAirportState *s = opaque;
++    uint64_t v = 0;
++    for (unsigned i = 0; i < size; i++) {
++        v |= (uint64_t)attr_byte(s, addr + i) << (8 * i);
++    }
++    if (s->trace_cis || addr >= 0x3e0) {
++        ap_trace(s, "attr read off=0x%03" HWADDR_PRIx " size=%u value=0x%" PRIx64,
++                 addr, size, v);
++    } else if (!s->cis_seen) {
++        s->cis_seen = true;
++        ap_trace(s, "attr read off=0x%03" HWADDR_PRIx " (CIS walk started)", addr);
++    }
++    return v;
++}
++
++static void attr_write(void *opaque, hwaddr addr, uint64_t v, unsigned size)
++{
++    RBAirportState *s = opaque;
++    ap_trace(s, "attr write off=0x%03" HWADDR_PRIx " size=%u value=0x%" PRIx64,
++             addr, size, v);
++    if (addr >= 0x3e0 && addr < 0x3f0 && !(addr & 1)) {
++        s->ccr[(addr - 0x3e0) / 2] = v;
++        if (addr == 0x3e0 && (v & 0x80)) {
++            ap_trace(s, "COR soft reset");
++            card_reset(s);
++        }
++    }
++}
++
++static const MemoryRegionOps attr_ops = {
++    .read = attr_read,
++    .write = attr_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = { .min_access_size = 1, .max_access_size = 4 },
++    .impl = { .min_access_size = 1, .max_access_size = 4 },
++};
++
++/* ------------------------------------------------------------------ */
++/* slot control word and KeyLargo FCR/GPIO stubs                       */
++
++static uint64_t slot_read(void *opaque, hwaddr addr, unsigned size)
++{
++    RBAirportState *s = opaque;
++    uint64_t v = addr < 4 ? s->slot_ctrl : 0;
++    ap_trace(s, "slot read off=0x%03" HWADDR_PRIx " size=%u value=0x%" PRIx64,
++             addr, size, v);
++    return v;
++}
++
++static void slot_write(void *opaque, hwaddr addr, uint64_t v, unsigned size)
++{
++    RBAirportState *s = opaque;
++    ap_trace(s, "slot write off=0x%03" HWADDR_PRIx " size=%u value=0x%" PRIx64,
++             addr, size, v);
++    if (addr == 0) {
++        s->slot_ctrl = v;
++    }
++}
++
++static const MemoryRegionOps slot_ops = {
++    .read = slot_read,
++    .write = slot_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = { .min_access_size = 1, .max_access_size = 4 },
++    .impl = { .min_access_size = 1, .max_access_size = 4 },
++};
++
++/* klmisc covers MacIO 0x38..0x80: FCR0..4 (+0x00..0x13), GPIOs after. */
++static uint64_t klmisc_read(void *opaque, hwaddr addr, unsigned size)
++{
++    RBAirportState *s = opaque;
++    uint64_t v = 0;
++    for (unsigned i = 0; i < size && addr + i < sizeof(s->klmisc); i++) {
++        v |= (uint64_t)s->klmisc[addr + i] << (8 * i);
++    }
++    /* GPIO extint 0xb (MacIO 0x63): input level bit 1 = card ready */
++    if (addr <= 0x2b && addr + size > 0x2b) {
++        v |= (uint64_t)0x02 << (8 * (0x2b - addr));
++    }
++    ap_trace(s, "keylargo read off=0x%02" HWADDR_PRIx " size=%u value=0x%" PRIx64,
++             addr + 0x38, size, v);
++    return v;
++}
++
++static void klmisc_write(void *opaque, hwaddr addr, uint64_t v, unsigned size)
++{
++    RBAirportState *s = opaque;
++    ap_trace(s, "keylargo write off=0x%02" HWADDR_PRIx " size=%u value=0x%" PRIx64,
++             addr + 0x38, size, v);
++    for (unsigned i = 0; i < size && addr + i < sizeof(s->klmisc); i++) {
++        s->klmisc[addr + i] = v >> (8 * i);
++    }
++}
++
++static const MemoryRegionOps klmisc_ops = {
++    .read = klmisc_read,
++    .write = klmisc_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .valid = { .min_access_size = 1, .max_access_size = 4 },
++    .impl = { .min_access_size = 1, .max_access_size = 4 },
++};
++
++/* ------------------------------------------------------------------ */
++
++static void build_cis(RBAirportState *s)
++{
++    static const char vers[] = "\x04\x01" "Lucent Technologies\0"
++                               "WaveLAN/IEEE\0" "Version 01.01\0" "\0" "\xff";
++    uint8_t *c = s->cis;
++    unsigned n = 0;
++
++    /* CISTPL_DEVICE: function-specific, 2 KiB, then end-of-device-ids */
++    c[n++] = 0x01; c[n++] = 0x03; c[n++] = 0x00; c[n++] = 0x00; c[n++] = 0xff;
++    /* CISTPL_VERS_1 */
++    c[n++] = 0x15; c[n++] = sizeof(vers) - 1;
++    memcpy(c + n, vers, sizeof(vers) - 1); n += sizeof(vers) - 1;
++    /* CISTPL_MANFID: Lucent 0x0156, card 0x0002 */
++    c[n++] = 0x20; c[n++] = 0x04;
++    c[n++] = 0x56; c[n++] = 0x01; c[n++] = 0x02; c[n++] = 0x00;
++    /* CISTPL_FUNCID: network adapter */
++    c[n++] = 0x21; c[n++] = 0x02; c[n++] = 0x06; c[n++] = 0x00;
++    /* CISTPL_FUNCE: LAN_NODE_ID */
++    c[n++] = 0x22; c[n++] = 0x08; c[n++] = 0x04; c[n++] = 0x06;
++    memcpy(c + n, s->mac, 6); n += 6;
++    /* CISTPL_CONFIG: base 0x3e0, last index 1, COR present */
++    c[n++] = 0x1a; c[n++] = 0x05; c[n++] = 0x01; c[n++] = 0x01;
++    c[n++] = 0xe0; c[n++] = 0x03; c[n++] = 0x01;
++    /* CISTPL_CFTABLE_ENTRY: index 1, default, no further fields */
++    c[n++] = 0x1b; c[n++] = 0x01; c[n++] = 0xc1;
++    /* CISTPL_END */
++    c[n++] = 0xff;
++    s->cis_len = n;
++}
++
++/*
++ * Production Data Area in card flash, read by the driver through the AUX
++ * port before it plugs per-card values into the station image.  Records are
++ * [length-in-words incl. id][id][data]; the area ends with id 0.  Values
++ * are synthetic except the public Hermes-I defaults also used by Linux
++ * hermes_dld.c (records 0x0005, 0x0109, 0x0150, 0x0160, 0x0161).
++ */
++static void pda_put(RBAirportState *s, uint32_t *a, uint16_t id,
++                    const uint8_t *data, unsigned nbytes)
++{
++    ram_write16(s, *a, nbytes / 2 + 1);
++    ram_write16(s, *a + 2, id);
++    *a += 4;
++    for (unsigned i = 0; i < nbytes; i += 2) {
++        ram_write16(s, *a, data ? (data[i] | (data[i + 1] << 8)) : 0);
++        *a += 2;
++    }
++}
++
++static void build_pda(RBAirportState *s)
++{
++    static const uint8_t hwif[10] = { 0, 0, 6, 0, 1, 0, 1, 0, 1, 0 };
++    static const uint8_t prof[10] = { 0, 0, 0, 0, 3, 0, 0, 0, 0, 0 };
++    static const uint8_t ant[2] = { 0x00, 0x3f };
++    uint8_t gain[256];
++    uint8_t serial[12];
++    uint8_t chan[12];
++    uint8_t w[2];
++    uint32_t a = s->pda_addr;
++
++    for (int i = 0; i < 256; i += 2) {
++        gain[i] = 0x3f;
++        gain[i + 1] = 0x01;
++    }
++    memcpy(serial, "RB0000000001", 12);
++    memset(chan, 0, sizeof(chan));
++    pda_put(s, &a, 0x0003, serial, 12);      /* NIC serial number */
++    pda_put(s, &a, 0x0005, hwif, 10);        /* HWIF compatibility */
++    pda_put(s, &a, 0x0006, hwif, 10);
++    pda_put(s, &a, 0x0007, hwif, 10);
++    pda_put(s, &a, 0x0008, NULL, 8);
++    pda_put(s, &a, 0x0101, s->mac, 6);       /* MAC address */
++    pda_put(s, &a, 0x0103, chan, 12);
++    w[0] = 0x10; w[1] = 0;                   /* FCC */
++    pda_put(s, &a, 0x0104, w, 2);
++    w[0] = 0; w[1] = 0;
++    pda_put(s, &a, 0x0105, w, 2);
++    pda_put(s, &a, 0x0107, w, 2);
++    pda_put(s, &a, 0x0109, prof, 10);
++    pda_put(s, &a, 0x0110, NULL, 0x1c);
++    pda_put(s, &a, 0x0120, NULL, 0x1c);
++    pda_put(s, &a, 0x0130, NULL, 0x1c);
++    pda_put(s, &a, 0x0140, NULL, 4);
++    pda_put(s, &a, 0x0150, ant, 2);
++    pda_put(s, &a, 0x0160, NULL, 0x1c);
++    pda_put(s, &a, 0x0161, gain, 256);
++    pda_put(s, &a, 0x0000, NULL, 2);         /* end */
++    s->pda_end = a;
++}
++
++static void alloc_timer_cb(void *opaque)
++{
++    RBAirportState *s = opaque;
++    if (!s->reclaim_count) {
++        return;
++    }
++    if (s->regs[H_EVSTAT / 2] & EV_ALLOC) {
++        timer_mod(s->alloc_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
++        return;
++    }
++    s->regs[H_ALLOCFID / 2] = s->reclaim_q[0];
++    memmove(s->reclaim_q, s->reclaim_q + 1,
++            --s->reclaim_count * sizeof(s->reclaim_q[0]));
++    ap_event(s, EV_ALLOC);
++    if (s->reclaim_count) {
++        timer_mod(s->alloc_timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1);
++    }
++}
++
++static void scan_timer_cb(void *opaque)
++{
++    RBAirportState *s = opaque;
++    if (s->scan_wait) {
++        ap_trace(s, "bridge scan seq=%u timed out; using the last list", s->scan_seq);
++        s->scan_wait = false;
++    }
++    if (s->scan_pending && s->port_enabled) {
++        s->scan_pending = false;
++        scan_complete(s);
++    }
++}
++
++static void rb_airport_realize(DeviceState *dev, Error **errp)
++{
++    RBAirportState *s = RB_AIRPORT(dev);
++    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
++    static const uint8_t def[6] = { 0x02, 0x52, 0x42, 0x00, 0x00, 0x01 };
++    static const uint8_t zero[6];
++
++    if (!memcmp(s->conf.macaddr.a, zero, 6)) {
++        memcpy(s->conf.macaddr.a, def, 6);
++    }
++    memcpy(s->mac, s->conf.macaddr.a, 6);
++    s->nic = qemu_new_nic(&rb_airport_net_info, &s->conf,
++                          object_get_typename(OBJECT(dev)), dev->id,
++                          &dev->mem_reentrancy_guard, s);
++    qemu_format_nic_info_str(qemu_get_queue(s->nic), s->mac);
++    build_cis(s);
++    memory_region_init_io(&s->regs_mr, OBJECT(s), &hermes_ops, s,
++                          "airport-hermes", 0x1000);
++    memory_region_init_io(&s->attr_mr, OBJECT(s), &attr_ops, s,
++                          "airport-attr", 0x1000);
++    memory_region_init_io(&s->slot_mr, OBJECT(s), &slot_ops, s,
++                          "airport-slot", 0x1000);
++    memory_region_init_io(&s->klmisc_mr, OBJECT(s), &klmisc_ops, s,
++                          "airport-keylargo-stubs",
++                          s->with_gpio ? sizeof(s->klmisc) : 0x18);
++    sysbus_init_mmio(sbd, &s->regs_mr);
++    sysbus_init_mmio(sbd, &s->attr_mr);
++    sysbus_init_mmio(sbd, &s->slot_mr);
++    sysbus_init_mmio(sbd, &s->klmisc_mr);
++    sysbus_init_irq(sbd, &s->irq);
++    s->ram = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
++    s->cfg = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
++    s->sta_running = s->initial_sta_major != 0;
++    s->sta_comp = 0x1f;
++    s->sta_major = s->initial_sta_major;
++    s->sta_minor = s->initial_sta_minor;
++    s->dl_comp = 0x1f;
++    s->dl_major = s->download_major;
++    s->dl_minor = s->download_minor;
++    s->tick_ns = (int64_t)s->tick_us * 1000;
++    if (s->pda_addr) {
++        build_pda(s);
++    }
++    s->info_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, info_deliver, s);
++    s->scan_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, scan_timer_cb, s);
++    s->assoc_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, assoc_timer_cb, s);
++    s->alloc_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, alloc_timer_cb, s);
++    s->rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rx_timer_cb, s);
++    s->grace_timer = timer_new_ms(QEMU_CLOCK_REALTIME, bridge_grace_cb, s);
++    s->tx_bh = qemu_bh_new_guarded(tx_bh_cb, s, &dev->mem_reentrancy_guard);
++    s->rxline = g_string_new(NULL);
++    s->txq = g_string_new(NULL);
++    if (qemu_chr_fe_backend_connected(&s->chr)) {
++        qemu_chr_fe_set_handlers(&s->chr, bridge_can_read, bridge_read,
++                                 bridge_event, NULL, s, NULL, true);
++    }
++    ap_trace(s, "realize mac=%02x:%02x:%02x:%02x:%02x:%02x cis_len=%u "
++             "sta=%u.%u pda=0x%06x-0x%06x", s->mac[0], s->mac[1], s->mac[2],
++             s->mac[3], s->mac[4], s->mac[5], s->cis_len, s->sta_major,
++             s->sta_minor, s->pda_addr, s->pda_end);
++}
++
++static void rb_airport_reset(DeviceState *dev)
++{
++    RBAirportState *s = RB_AIRPORT(dev);
++    card_reset(s);
++    memset(s->ccr, 0, sizeof(s->ccr));
++    memset(s->klmisc, 0, sizeof(s->klmisc));
++    s->slot_ctrl = 0;
++    s->irq_level = false;
++}
++
++/* Card state lives partly in the host; RetroBoot never saves or migrates a
++ * running guest, so refuse instead of restoring an inconsistent card. */
++static const VMStateDescription vmstate_rb_airport = {
++    .name = "retroboot-airport",
++    .unmigratable = 1,
++};
++
++static const Property rb_airport_properties[] = {
++    DEFINE_NIC_PROPERTIES(RBAirportState, conf),
++    DEFINE_PROP_CHR("chardev", RBAirportState, chr),
++    DEFINE_PROP_BOOL("trace", RBAirportState, trace, false),
++    DEFINE_PROP_BOOL("trace-data", RBAirportState, trace_data, false),
++    DEFINE_PROP_BOOL("trace-cis", RBAirportState, trace_cis, false),
++    DEFINE_PROP_UINT32("trace-limit", RBAirportState, trace_limit, 200000),
++    DEFINE_PROP_BOOL("with-gpio", RBAirportState, with_gpio, true),
++    DEFINE_PROP_UINT16("nic-id", RBAirportState, nic_id, 0x0001),
++    DEFINE_PROP_UINT16("pri-major", RBAirportState, pri_major, 4),
++    DEFINE_PROP_UINT16("pri-minor", RBAirportState, pri_minor, 0),
++    DEFINE_PROP_UINT16("sta-major", RBAirportState, initial_sta_major, 8),
++    DEFINE_PROP_UINT16("sta-minor", RBAirportState, initial_sta_minor, 40),
++    DEFINE_PROP_UINT16("download-major", RBAirportState, download_major, 8),
++    DEFINE_PROP_UINT16("download-minor", RBAirportState, download_minor, 40),
++    DEFINE_PROP_UINT32("tick-us", RBAirportState, tick_us, 1024),
++    DEFINE_PROP_UINT32("pda-addr", RBAirportState, pda_addr, 0x390000),
++    DEFINE_PROP_UINT32("scan-delay-ms", RBAirportState, scan_delay_ms, 300),
++    DEFINE_PROP_UINT32("scan-timeout-ms", RBAirportState, scan_timeout_ms, 3000),
++    DEFINE_PROP_UINT32("assoc-delay-ms", RBAirportState, assoc_delay_ms, 800),
++    DEFINE_PROP_UINT32("bridge-grace-ms", RBAirportState, bridge_grace_ms, 10000),
++    DEFINE_PROP_UINT32("rx-delay-us", RBAirportState, rx_delay_us, 0),
++};
++
++static void rb_airport_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    dc->realize = rb_airport_realize;
++    device_class_set_legacy_reset(dc, rb_airport_reset);
++    device_class_set_props(dc, rb_airport_properties);
++    dc->vmsd = &vmstate_rb_airport;
++    dc->desc = "RetroBoot AirPort (Hermes-I) card";
++    dc->user_creatable = false;
++}
++
++static const TypeInfo rb_airport_info = {
++    .name = TYPE_RB_AIRPORT,
++    .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(RBAirportState),
++    .class_init = rb_airport_class_init,
++};
++
++static void rb_airport_register_types(void)
++{
++    type_register_static(&rb_airport_info);
++}
++
++type_init(rb_airport_register_types)
+diff --git a/hw/misc/macio/macio.c b/hw/misc/macio/macio.c
+index 629605d..b4e9229 100644
+--- a/hw/misc/macio/macio.c
++++ b/hw/misc/macio/macio.c
+@@ -33,6 +33,7 @@
+ #include "migration/vmstate.h"
+ #include "hw/char/escc.h"
+ #include "hw/misc/macio/macio.h"
++#include "hw/misc/macio/airport.h"
+ #include "hw/intc/heathrow_pic.h"
+ #include "trace.h"
+ 
+@@ -363,6 +364,24 @@ static void macio_newworld_realize(PCIDevice *d, Error **errp)
+                                     sysbus_mmio_get_region(sbd, 0));
+     }
+ 
++    /* RetroBoot AirPort card: only with -global macio-newworld.airport=true. */
++    if (ns->airport) {
++        DeviceState *radio = qdev_new(TYPE_RB_AIRPORT);
++        qdev_prop_set_bit(radio, "with-gpio", !ns->has_pmu);
++        sbd = SYS_BUS_DEVICE(radio);
++        sysbus_realize_and_unref(sbd, &error_fatal);
++        memory_region_add_subregion(&s->bar, 0x30000,
++                                    sysbus_mmio_get_region(sbd, 0));
++        memory_region_add_subregion(&s->bar, 0x1a000,
++                                    sysbus_mmio_get_region(sbd, 1));
++        memory_region_add_subregion(&s->bar, 0x1c000,
++                                    sysbus_mmio_get_region(sbd, 2));
++        memory_region_add_subregion(&s->bar, 0x38,
++                                    sysbus_mmio_get_region(sbd, 3));
++        sysbus_connect_irq(sbd, 0,
++                           qdev_get_gpio_in(pic_dev, NEWWORLD_AIRPORT_IRQ));
++    }
++
+     /* Screamer */
+     sbd = SYS_BUS_DEVICE(&s->screamer);
+     sysbus_connect_irq(sbd, 0,
+@@ -436,6 +455,7 @@ static const VMStateDescription vmstate_macio_newworld = {
+ };
+ 
+ static const Property macio_newworld_properties[] = {
++    DEFINE_PROP_BOOL("airport", NewWorldMacIOState, airport, false),
+     DEFINE_PROP_BOOL("has-pmu", NewWorldMacIOState, has_pmu, false),
+     DEFINE_PROP_BOOL("has-adb", NewWorldMacIOState, has_adb, false),
+ };
+diff --git a/hw/misc/macio/meson.build b/hw/misc/macio/meson.build
+index 8984b81..d1d9460 100644
+--- a/hw/misc/macio/meson.build
++++ b/hw/misc/macio/meson.build
+@@ -1,5 +1,5 @@
+ macio_ss = ss.source_set()
+-macio_ss.add(files('macio.c'))
++macio_ss.add(files('macio.c', 'airport.c'))
+ macio_ss.add(when: 'CONFIG_CUDA', if_true: files('cuda.c'))
+ macio_ss.add(when: 'CONFIG_MACIO_GPIO', if_true: files('gpio.c'))
+ macio_ss.add(when: 'CONFIG_MAC_DBDMA', if_true: files('mac_dbdma.c'))
+diff --git a/hw/ppc/mac_newworld.c b/hw/ppc/mac_newworld.c
+index c5babe4..03612a3 100644
+--- a/hw/ppc/mac_newworld.c
++++ b/hw/ppc/mac_newworld.c
+@@ -527,6 +527,14 @@ static void ppc_core99_init(MachineState *machine)
+         g_free(filename);
+     }
+ 
++    /*
++     * RetroBoot AirPort card: OpenBIOS adds the "radio" node only when this
++     * file exists, so machines without the card keep their device tree.
++     */
++    if (object_property_get_bool(macio, "airport", NULL)) {
++        fw_cfg_add_file(fw_cfg, "etc/retroboot/airport", g_strdup("1"), 1);
++    }
++
+     qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
+ }
+ 
+diff --git a/include/hw/misc/macio/airport.h b/include/hw/misc/macio/airport.h
+new file mode 100644
+index 0000000..422d56b
+--- /dev/null
++++ b/include/hw/misc/macio/airport.h
+@@ -0,0 +1,144 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* RetroBoot AirPort (Hermes-I) card model (opt-in: macio-newworld.airport). */
++#ifndef HW_MISC_MACIO_AIRPORT_H
++#define HW_MISC_MACIO_AIRPORT_H
++
++#include "hw/core/sysbus.h"
++#include "qom/object.h"
++#include "qemu/timer.h"
++#include "net/net.h"
++#include "chardev/char-fe.h"
++
++#define TYPE_RB_AIRPORT "retroboot-airport"
++OBJECT_DECLARE_SIMPLE_TYPE(RBAirportState, RB_AIRPORT)
++
++#define RB_AIRPORT_MAX_FIDS 32
++#define RB_AIRPORT_INFO_QUEUE 8
++#define RB_AIRPORT_MAX_NETS 16
++#define RB_AIRPORT_TXQ 32
++
++typedef struct APNetwork {
++    uint8_t ssid[32];
++    unsigned ssid_len;
++    uint8_t bssid[6];
++    uint16_t channel;
++    int signal, noise;
++    uint16_t cap;
++} APNetwork;
++
++typedef struct APInfo {
++    uint16_t type;
++    unsigned nbytes;
++    uint8_t data[RB_AIRPORT_MAX_NETS * 50];
++} APInfo;
++
++struct RBAirportState {
++    SysBusDevice parent_obj;
++
++    MemoryRegion regs_mr;
++    MemoryRegion attr_mr;
++    MemoryRegion slot_mr;
++    MemoryRegion klmisc_mr;
++    qemu_irq irq;
++
++    /* properties */
++    NICConf conf;
++    NICState *nic;
++    CharFrontend chr;
++    bool trace;
++    bool trace_data;
++    bool trace_cis;
++    uint32_t trace_limit;
++    bool with_gpio;
++    uint16_t nic_id;
++    uint16_t pri_major, pri_minor;
++    uint16_t initial_sta_major, initial_sta_minor;
++    uint16_t download_major, download_minor;
++
++    /* state */
++    uint8_t mac[6];
++    uint8_t cis[256];
++    unsigned cis_len;
++    bool cis_seen;
++    uint8_t ccr[8];
++    uint32_t slot_ctrl;
++    uint8_t klmisc[0x48];
++    uint16_t regs[0x20];
++    unsigned bap_off[2];
++    bool irq_level;
++    bool aux_enabled;
++    uint32_t aux_addr;
++    int program_mode;
++    uint32_t dl_entry;
++    uint32_t dl_bytes, dl_lo, dl_hi;
++    uint32_t pda_addr, pda_end;
++    bool download_pending;
++    bool sta_running;
++    uint16_t sta_comp, sta_major, sta_minor;
++    uint16_t dl_comp, dl_major, dl_minor;
++    bool port_enabled;
++    bool linked;
++    uint8_t cur_ssid[32];
++    unsigned cur_ssid_len;
++    uint8_t cur_bssid[6];
++    uint16_t cur_channel;
++    int cur_signal, cur_noise;
++    bool ibss;
++    bool lost;
++    uint32_t scan_delay_ms, scan_timeout_ms, assoc_delay_ms;
++    bool scan_pending;
++    QEMUTimer *info_timer, *scan_timer, *assoc_timer;
++
++    /* host bridge */
++    bool bridge_open;
++    bool bridge_away;      /* closed for longer than bridge_grace_ms */
++    uint32_t bridge_grace_ms;
++    uint32_t bridge_opens, bridge_closes;
++    QEMUTimer *grace_timer;  /* QEMU_CLOCK_REALTIME */
++    bool rx_discard;
++    GString *rxline;
++    GString *txq;
++    guint tx_watch;
++    uint32_t seq, scan_seq, join_seq;
++    bool scan_wait;
++    APNetwork nets[RB_AIRPORT_MAX_NETS];
++    int n_nets;
++    uint8_t rx_buf[0x0a00];
++    bool rx_pending;
++    uint32_t tx_frames, rx_frames;
++    QEMUBH *tx_bh;
++    QEMUTimer *rx_timer;
++    uint32_t rx_delay_us;
++    uint8_t txf[RB_AIRPORT_TXQ][1600];
++    uint16_t txf_len[RB_AIRPORT_TXQ];
++    unsigned txf_head, txf_count;
++    QEMUTimer *alloc_timer;
++    uint16_t reclaim_q[RB_AIRPORT_MAX_FIDS];
++    unsigned reclaim_count;
++    APInfo info_q[RB_AIRPORT_INFO_QUEUE];
++    unsigned info_head, info_count;
++    int info_toggle;
++    uint8_t info_buf[2][RB_AIRPORT_MAX_NETS * 50 + 8];
++
++    GHashTable *ram;   /* AUX-visible card memory pages */
++    GHashTable *cfg;   /* written configuration records by RID */
++    struct APRecordBuf {
++        uint16_t len;
++        uint16_t type;
++        uint8_t data[512];
++    } ridbuf;
++
++    bool fid_used[RB_AIRPORT_MAX_FIDS];
++    unsigned fid_len[RB_AIRPORT_MAX_FIDS];
++    uint8_t fid_data[RB_AIRPORT_MAX_FIDS][0x0a00];
++    int fid_next;
++
++    uint32_t trace_count;
++    uint32_t trace_repeat;
++    char last_trace[512];
++    uint32_t tick_us;
++    int64_t tick_ns;
++    int64_t last_tick;
++};
++
++#endif
+diff --git a/include/hw/misc/macio/macio.h b/include/hw/misc/macio/macio.h
+index f9fa280..58001b1 100644
+--- a/include/hw/misc/macio/macio.h
++++ b/include/hw/misc/macio/macio.h
+@@ -66,6 +66,7 @@
+ #define NEWWORLD_SCREAMER_IRQ  0x18
+ #define NEWWORLD_SCREAMER_DMA_IRQ 0x09
+ #define NEWWORLD_SCREAMER_RX_IRQ 0x0a
++#define NEWWORLD_AIRPORT_IRQ   0x39 /* RetroBoot AirPort; matches the OpenBIOS radio node */
+ 
+ /* MacIO virtual bus */
+ #define TYPE_MACIO_BUS "macio-bus"
+@@ -152,6 +153,7 @@ struct NewWorldMacIOState {
+     MacIOState parent_obj;
+     /*< public >*/
+ 
++    bool airport;
+     bool has_pmu;
+     bool has_adb;
+     OpenPICState pic;
