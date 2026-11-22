@@ -21,7 +21,7 @@ RetroBoot runs Mac OS on a dedicated PC, Raspberry Pi or Planet Computers Gemini
 | **Raspberry Pi Zero 2 W** | Separate microSD image | Quadra 800 |
 | **Planet Computers Gemini PDA** | Installer bundle run from Gemian | Classic PowerPC and Quadra 800 |
 
-Get the installer or update for your computer from the sign-in-protected download page. Consult the installation guide before writing an image or choosing a target disk. [Download RetroBoot](https://mcchord.net/retroboot-downloads/#installers)
+Download the installer or update for your computer without signing in. Consult the installation guide before writing an image or choosing a target disk. [Download RetroBoot](https://mcchord.net/retroboot-downloads/#installers)
 
 ## Start using it
 
