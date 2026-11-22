@@ -10,7 +10,7 @@ The library groups Macs by runtime and lists OS versions in numerical order. It 
 | PowerPC Classic | Mac OS 9.2.1 and 9.2.2 standard, plus Mac OS 9.2.2 Deluxe, SuperDeluxe and Mega Deluxe | A RetroBoot build with the Classic PowerPC emulator |
 | PowerPC Mac OS X | Jaguar 10.2.8, Panther 10.3.9 and Tiger 10.4.11 Period Editions, plus Tiger Deluxe | RetroBoot 2.0.2 on an x86 PC with Mac OS X support |
 
-The device lists images its installed emulator can start. The browser portal also lists the PC installers, Raspberry Pi SD images and host updates in their own sections.
+The device lists images its installed emulator can start. Add your own HTTPS catalog in [Image Servers](image-servers.md). The browser portal also lists the PC installers, Raspberry Pi SD images and host updates in their own sections.
 
 ## Choose an edition
 

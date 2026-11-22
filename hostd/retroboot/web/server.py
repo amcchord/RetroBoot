@@ -585,24 +585,22 @@ class WebServer:
                                   "cds": cds, "blank_sizes_gb": list(BLANK_SIZES_GB),
                                   "blank_kinds": h.blank_kinds()})
 
-    @staticmethod
-    def _catalog_item(it, jobs: dict | None = None) -> dict:
+    def _catalog_item(self, it, jobs: dict | None = None) -> dict:
         """A catalog entry for the web client: the entry's own fields plus where it comes from
         (``catalog``: lab | internet), family facts and whether this device has it."""
-        from ..catalogs import LABELS, entry_family
+        from ..catalogs import entry_family
         c = it.entry
         job = (jobs or {}).get((it.source, c["id"])) or (jobs or {}).get((None, c["id"]))
         return dict(c, download_bytes=download_of(c)["archiveBytes"], installed_bytes=c["installedBytes"],
                     disk_bytes=c["installedBytes"], description=c.get("summary"), system=c["osVersion"],
-                    imported=it.known, job=job, catalog=it.source, catalog_label=LABELS[it.source],
+                    imported=it.known, job=job, catalog=it.source, catalog_label=self.hostd.catalogs.label(it.source),
                     family=it.family, version=it.version, older=it.older, machine_family=entry_family(c))
 
     async def machines_catalog(self, request):
         """Waits for every catalog; 502 only when none could be read."""
-        from ..catalogs import LABELS
         h = self.hostd
         results, errors = await h.catalogs.fetch_all()
-        states = [{"id": sid, "label": LABELS[sid], "state": "error" if sid in errors else "ready",
+        states = [{"id": sid, "label": h.catalogs.label(sid), "state": "error" if sid in errors else "ready",
                    "error": errors.get(sid)} for sid, _ in results]
         if results and len(errors) == len(results):
             raise ApiError(502, "network", next(iter(errors.values())))
@@ -626,7 +624,7 @@ class WebServer:
             if which is not None:
                 if which not in [sid for sid, _ in self.hostd.catalogs.clients()]:
                     raise ApiError(422, "invalid", "That catalog isn't available on this RetroBoot.",
-                                   {"catalog": "Use lab (RetroBoot downloads, with a stored sign-in) or internet."})
+                                   {"catalog": "Choose a configured image server."})
                 spec["catalog"] = which
         elif src == "archive" and isinstance(data.get("id"), str):
             spec = {"source": "archive", "id": data["id"]}

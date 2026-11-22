@@ -83,6 +83,7 @@ class InstallerState:
         self.target: dict | None = None
         self.erase_confirmed = False
         self.picker = None                             # picker.Picker: the Macs found and checked
+        self.host_only = False
         self.plan: list[dict] = []                     # the chosen Macs: {key, choice, id, name, startup}
         self.results: dict[str, dict] = {}             # per Mac: {state, id, error}
         self.media_network: dict | None = None        # {"ssid", "profile", "connected"}
@@ -692,17 +693,18 @@ class ReadyToInstall(IScreen):
         downloads = [m["name"] for m in self.st.plan if m["choice"].kind == "catalog"]
         extra = [ui.text(f"{join_names(downloads)} {'is' if len(downloads) == 1 else 'are'} downloaded onto the "
                          "disk during the installation.", "small")] if downloads else None
+        systems = "RetroBoot" if self.st.host_only else f"RetroBoot and {self.st.names()}"
         if d.get("mode") == "free-space":
             name = d.get("medium_name") or "card"
             return ui.alert(self.doc_id, "caution", "Ready to install.",
-                            f"RetroBoot and {self.st.names()} will be installed in the free space after the "
+                            f"{systems} will be installed in the free space after the "
                             f"installer on this {name} ({ui.human_bytes(d['size_bytes'])}). "
                             + ("The RetroBoot there now will be erased. " if d.get("existing") == "RetroBoot" else "")
                             + "The installer is kept.",
                             ui.buttons(ui.btn("install", "Install"), ui.btn("cancel", "Back", default=True)),
                             extra=extra)
         return ui.alert(self.doc_id, "caution", "Ready to install.",
-                        f"RetroBoot and {self.st.names()} will be installed on “{d['model']}” "
+                        f"{systems} will be installed on “{d['model']}” "
                         f"({ui.human_bytes(d['size_bytes'])}). The disk will be erased now.",
                         ui.buttons(ui.btn("install", "Erase and Install"), ui.btn("cancel", "Back", default=True)),
                         extra=extra)
@@ -820,21 +822,22 @@ def network_profiles(nm_dir: Path) -> list[Path]:
 
 
 SEED_KEYS = ("display.host_mode", "display.pixel_scale", "display.guest_size", "display.scaling",
-             "management.hostname", "audio.volume", "input.swap_command_option", "system.timezone")
+             "management.hostname", "audio.volume", "input.swap_command_option", "system.timezone", "catalog.urls")
 SYSTEM_WEIGHT = 1536 * 1024 ** 2      # the system copy, in "bytes" of progress
 INSTALLED_LAB_AUTH = "/var/lib/retroboot/config/lab-auth.env"   # RBDATA on the installed system
 
 
 def install_job(app, st: InstallerState) -> Job:
     async def body(job: Job):
-        if not (st.target and st.erase_confirmed and st.plan):
+        if not (st.target and st.erase_confirmed and (st.plan or st.host_only)):
             raise JobFailed("The installation is not ready.", None, "not_ready")
         st.results = {m["key"]: {"state": "waiting", "id": m["id"]} for m in st.plan}
         local = [m for m in st.plan if not m["choice"].remote]
         remote = [m for m in st.plan if m["choice"].remote]
-        startup = next((m for m in st.plan if m["startup"]), st.plan[0])
+        startup = next((m for m in st.plan if m["startup"]), next(iter(st.plan), None))
         seed = {"settings": {k: app.settings.applied[k] for k in SEED_KEYS}}
-        seed["settings"]["machine.active"] = startup["id"]
+        if startup:
+            seed["settings"]["machine.active"] = startup["id"]
         seed_path = app.paths.run / "install-seed.json"
         atomic_write_json(seed_path, seed)
         tool = app.paths.installer_dir / "install-to-disk"
@@ -860,7 +863,7 @@ def install_job(app, st: InstallerState) -> Job:
         extra = {"board": "rpi", "mode": st.target.get("mode", "disk")} if app.panel.board == "rpi" else {}
         app.lifecycle.event("install_started", target=st.target["path"], model=st.target["model"],
                             size_bytes=st.target["size_bytes"], machines=len(st.plan), embedded=len(local),
-                            downloads=len(remote), startup=startup["id"], network_profiles=len(profiles),
+                            downloads=len(remote), startup=startup["id"] if startup else None, network_profiles=len(profiles),
                             bluetooth_pairings=bt_pairings, **extra)
         by_dir = {str(m["choice"].path): m for m in local}
 
@@ -1035,7 +1038,8 @@ async def install_remote(app, st: InstallerState, m: dict, data: Path, progress)
         res["state"] = "unpacking"
         dl = download_of(c.entry)
         source = {"type": "catalog", "template_id": c.entry["id"], "archive_sha256": dl["sha256"],
-                  "archive_format": dl["format"], "catalog_url": c.catalog_url, "via": "installer"}
+                  "archive_format": dl["format"], "catalog_url": c.catalog_url,
+                  "catalog": c.source, "via": "installer"}
         limits = ExtractLimits(c.entry["installedBytes"], c.entry.get("requiredStorageBytes"))
         mid = await install_machine(archive, None, c.name, c.entry.get("osVersion"), source, limits,
                                     lambda f, msg: progress(0.7 + (f or 0.0) * 0.3, f"Unpacking {c.name}…"),
@@ -1118,7 +1122,7 @@ class Done(IScreen):
         if missing and installed:
             extra.append(ui.text(f"{join_names(missing)} {'was' if len(missing) == 1 else 'were'} not installed. "
                                  "You can add Macs later in RetroBoot Setup.", "small"))
-        elif missing:
+        elif missing or st.host_only:
             extra.append(ui.text("No Mac OS system was installed. RetroBoot asks for one when it starts.", "small"))
         return ui.alert(self.doc_id, "note", "RetroBoot is installed.", detail, ui.buttons(button), extra=extra)
 

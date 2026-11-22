@@ -232,8 +232,8 @@ class PickerBase(unittest.IsolatedAsyncioTestCase):
         self.fp.click("erase")
         await self.doc("installer-macs", "On this disc")
 
-    async def to_install(self, values=None):
-        self.fp.click("continue", values or {})
+    async def to_install(self, values=None, button="continue"):
+        self.fp.click(button, values or {})
         await self.doc("installer-display")
         self.fp.click("continue")
         await self.doc("timezone")
@@ -269,6 +269,22 @@ class PickerBase(unittest.IsolatedAsyncioTestCase):
 
 
 class PickerTests(PickerBase):
+    async def test_host_only_install_keeps_the_custom_image_server(self):
+        await self.to_macs()
+        custom = f"{self.base}/custom/catalog.json"
+        self.fp.click("servers")
+        await self.doc("image-servers")
+        self.fp.click("save", {"url": custom})
+        await self.doc("installer-macs")
+        for key in ("disc:os922-deluxe-v4", "disc:os922-full-v5"):
+            self.fp.click("macs", {"macs": key})
+            await helpers.wait_for(lambda k=key: not self.rows()[k]["checked"])
+        await self.to_install(button="host-only")
+        await self.doc("installer-done", "No Mac OS system was installed")
+        seed = self.seed()
+        self.assertEqual(seed["catalog.urls"], [custom])
+        self.assertNotIn("machine.active", seed)
+
     async def test_two_embedded_and_one_download(self):
         await self.to_macs()
         await self.doc("installer-macs", "Mac OS 9.2.1 (v4)")
@@ -448,7 +464,7 @@ class PickerSpaceTests(PickerBase):
         for key in ("disc:os922-deluxe-v4", "disc:os922-full-v5"):
             self.fp.click("macs", {"macs": key})
             await helpers.wait_for(lambda k=key: not self.rows()[k]["checked"], 5, what="unchecked")
-        await self.doc("installer-macs", "Check at least one Mac")
+        await self.doc("installer-macs", "Choose a Mac now, or add one after installing RetroBoot.")
         self.assertTrue(self.button("continue")["disabled"])
 
 

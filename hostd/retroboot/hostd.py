@@ -150,7 +150,7 @@ class Hostd:
         # RetroBoot downloads sign-in: hostd.json/hostd.local.json lab_http_auth_file (the installer
         # writes RBDATA/config/lab-auth.env and names it there).  The password only ever goes into
         # Authorization headers for URLs under its base; the redactor keeps it out of every text.
-        self.lab_auth = labauth.load(cfg.lab_http_auth_file)
+        self.lab_auth = labauth.load(cfg.lab_http_auth_file or (self.paths.data / "config" / "lab-auth.env"))
         if self.lab_auth is not None:
             self.redactor.add(self.lab_auth.secrets()[1])
         self.catalog = CatalogClient(cfg.catalog_url, self.paths.downloads, ca_file=cfg.catalog_ca_file,

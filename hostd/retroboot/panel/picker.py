@@ -21,6 +21,7 @@ Hosted Macs are downloaded later, by the install job, straight onto the new disk
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -29,12 +30,12 @@ from urllib.parse import urlsplit
 
 from .. import labauth
 from ..catalog import CatalogClient, ImportError_, download_of
-from ..catalogs import (arrange, entry_family, family_of, known_from, os_label, runnable,  # noqa: F401
+from ..catalogs import (arrange, custom_label, entry_family, family_of, known_from, os_label, runnable,  # noqa: F401
                         runnable_families)
 from ..jobs import Job, JobFailed, SUCCEEDED
 from ..machines import QUADRA800, machine_slug
 from . import ui
-from .controller import Screen, WiFi
+from .controller import ImageServers, Screen, WiFi
 
 log = logging.getLogger("retroboot.installer")
 
@@ -85,7 +86,7 @@ class Choice:
         return self.kind != "dir"
 
     def detail(self) -> str:
-        where = SOURCE_LABEL[self.source]
+        where = SOURCE_LABEL[self.source] if self.source in SOURCE_LABEL else custom_label(self.catalog_url)
         if self.source == "usb" and self.origin and ":" in self.origin:
             where = f"USB disk “{self.origin.split(':', 1)[1][:24]}”"
         parts = [where]
@@ -231,6 +232,8 @@ class Picker:
         self.show_older = False
         self.lab_client: CatalogClient | None = None
         self.loading = None
+        self.hosted_lock = asyncio.Lock()
+        self.custom: list[str] = []
         self.raw: dict[str, tuple[list[dict], str, object]] = {}   # hosted source -> (entries, url, auth)
 
     @property
@@ -270,11 +273,23 @@ class Picker:
             await self.load_hosted()
 
     async def load_hosted(self) -> None:
+        async with self.hosted_lock:
+            await self._load_hosted()
+
+    async def _load_hosted(self) -> None:
         base, auth = self.lab_source()
         public = self.app.catalog.url
         lab_url = labauth.catalog_url(base) if base else None
         if lab_url and public == lab_url:   # a lab device whose hostd.json already names the lab catalog
             public = None
+        custom = self.app.catalogs.custom_clients((public, lab_url))
+        for src in self.custom:
+            self.raw.pop(src, None)
+            self.status.pop(src, None)
+            self.found.pop(src, None)
+        self.custom = [src for src, _ in custom]
+        self.status.update({src: {"state": "loading"} for src in self.custom})
+        self.found.update({src: [] for src in self.custom})
         self.status["lab"] = {"state": "loading" if base else "absent"}
         self.status["catalog"] = {"state": "loading" if public else "absent"}
         await self._changed()
@@ -300,14 +315,26 @@ class Picker:
             self.raw.pop("catalog", None)
         if not base:
             self.raw.pop("lab", None)
+        if online:
+            await asyncio.gather(*(self._fetch_custom(src, client) for src, client in custom))
+        else:
+            self.status.update({src: {"state": "offline"} for src in self.custom})
         self._rebuild_hosted()
         self._prune()
         await self._changed()
 
+    async def _fetch_custom(self, src, client):
+        try:
+            self.raw[src] = (await client.fetch(), client.url, None)
+            self.status[src] = {"state": "ready"}
+        except ImportError_ as exc:
+            self.status[src] = {"state": "error", "message": exc.message}
+
     def _rebuild_hosted(self) -> None:
-        order = [(src, *self.raw[src]) for src in ("lab", "catalog") if src in self.raw]
+        sources = ("lab", "catalog", *self.custom)
+        order = [(src, *self.raw[src]) for src in sources if src in self.raw]
         got = hosted_choices(order, self.found["disc"], runnable_families(self.app.paths, self.app.platform))
-        for src in ("lab", "catalog"):
+        for src in sources:
             self.found[src] = got.get(src, [])
 
     async def _fetch_lab(self, url: str, auth: labauth.LabAuth) -> None:
@@ -343,7 +370,7 @@ class Picker:
 
     # -- choices -------------------------------------------------------------------
     def all(self) -> list[Choice]:
-        return [c for s in SOURCES for c in self.found[s]]
+        return [c for s in (*SOURCES[:-1], *self.custom, "usb") for c in self.found[s]]
 
     def get(self, key: str | None) -> Choice | None:
         return next((c for c in self.all() if c.key == key), None)
@@ -371,7 +398,7 @@ class Picker:
         catalog no longer lists them)."""
         keys = {c.key for c in self.all()}
         self.checked = {k for k in self.checked if k in keys or
-                        (keep_hosted and k.split(":", 1)[0] in ("lab", "catalog"))}
+                        (keep_hosted and k.split(":", 1)[0] in ("lab", "catalog", *self.custom))}
         self._fix_startup()
 
     def _fix_startup(self) -> None:
@@ -427,13 +454,13 @@ class ChooseMacs(Screen):
 
     def status_rows(self) -> list[dict]:
         rows = []
-        for src in ("lab", "catalog"):
+        for src in ("lab", "catalog", *self.ps.custom):
             state = self.ps.status[src]["state"]
             reason = {"loading": "Looking…", "offline": "Not connected to a network",
                       "signin": "Sign in to see these Macs", "rejected": "The sign-in was not accepted",
                       "error": "Could not be loaded"}.get(state)
             if reason and not self.ps.found[src]:
-                rows.append(ui.row(f"status:{src}", SOURCE_LABEL[src], reason, SOURCE_ICON[src], checked=False,
+                rows.append(ui.row(f"status:{src}", SOURCE_LABEL.get(src) or self.app.catalogs.label(src), reason, SOURCE_ICON.get(src, "web"), checked=False,
                                    disabled=True))
         return rows
 
@@ -461,7 +488,7 @@ class ChooseMacs(Screen):
     def doc(self):
         ps, d = self.ps, self.st.target
         chosen = ps.chosen()
-        rows = [ui.row(c.key, c.name, c.detail(), SOURCE_ICON[c.source], checked=c.key in ps.checked)
+        rows = [ui.row(c.key, c.name, c.detail(), SOURCE_ICON.get(c.source, "web"), checked=c.key in ps.checked)
                 for c in ps.visible()]
         rows += self.status_rows()
         if not rows:
@@ -478,7 +505,7 @@ class ChooseMacs(Screen):
         room = room_for_macs(d)
         need = ps.needed()
         if not chosen:
-            items.append(ui.text("Check at least one Mac.", "emphasis"))
+            items.append(ui.text("Choose a Mac now, or add one after installing RetroBoot."))
         elif need > room:
             items.append(ui.text(f"These Macs need {ui.human_bytes(need)}, but “{d['model']}” has room for "
                                  f"{ui.human_bytes(room)}. Uncheck a Mac or choose a larger disk.", "emphasis"))
@@ -491,6 +518,8 @@ class ChooseMacs(Screen):
                                  "small"))
         for note in self.notes():
             items.append(ui.text(note, "small"))
+        items.append(ui.buttons(ui.btn("servers", "Image Servers…", align="left"),
+                                ui.btn("host-only", "Install RetroBoot Only…") if not chosen else None))
         sel_c = ps.get(sel)
         buttons = [ui.btn("toggle", "Remove" if sel_c and sel_c.key in ps.checked else "Add",
                           disabled=sel_c is None, align="left")]
@@ -545,6 +574,15 @@ class ChooseMacs(Screen):
             await p.refresh()
         elif id == "wifi":
             await p.show(WiFi(p, back=lambda: p.show(ChooseMacs(p))))
+        elif id == "servers":
+            async def back():
+                await p.show(self)
+                await ps.load_hosted()
+            await p.show(ImageServers(p, back))
+        elif id == "host-only" and not ps.chosen():
+            self.st.plan = []
+            self.st.host_only = True
+            await p.show(DisplayCheck(p))
         elif id == "signin":
             await p.show(SignIn(p))
         elif id == "back":
@@ -554,6 +592,7 @@ class ChooseMacs(Screen):
             if not chosen or not self.fits():
                 await p.refresh()
                 return
+            self.st.host_only = False
             self.st.plan = plan_install(ps, self.app)
             self.app.lifecycle.event("installer_macs_chosen", count=len(chosen),
                                      sources=sorted({c.source for c in chosen}),

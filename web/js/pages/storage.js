@@ -33,6 +33,7 @@ export function render() {
   let cpLoading = false;
   let catalogWait = null; // hostd answers catalog_state "loading" until it has fetched the catalog
   let catalogError = null;
+  let appliedImageServers = JSON.stringify(store.settings?.applied?.['catalog.urls'] || []);
   let showOlder = false; // older versions of a family (Deluxe v1–v3 beside v4) stay hidden until asked
 
   const machinesEl = h('div', null, loading());
@@ -666,7 +667,13 @@ export function render() {
 
   load();
   scope.add(subscribe('jobs', () => data && (renderCatalog(), renderFileImport())));
-  scope.add(subscribe('settings', () => data && renderMachines()));
+  scope.add(subscribe('settings', () => {
+    const configured = JSON.stringify(store.settings?.applied?.['catalog.urls'] || []);
+    if (configured !== appliedImageServers) {
+      appliedImageServers = configured;
+      load();
+    } else if (data) renderMachines();
+  }));
   let lastGuest = store.status && store.status.guest && store.status.guest.state;
   scope.add(
     subscribe('status', (s) => {

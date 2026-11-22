@@ -171,6 +171,47 @@ class DeviceCatalogTests(DeviceCatalogBase):
         self.assertEqual(status, 422)
         await self.assert_no_password()
 
+    async def test_custom_catalog_is_independent_and_never_gets_lab_credentials(self):
+        from retroboot.schema import validate_catalog_urls
+        for url in ("http://example.test/catalog.json", "https://user:secret@example.test/a",
+                    "https://example.test:bad/a", "https://example.test/a?token=foo",
+                    "https://example.test/", "https://[broken"):
+            with self.assertRaises(ValueError):
+                validate_catalog_urls([url])
+        archive, expanded = archive_bytes("Custom Mac")
+        url = f"{self.base}/lab/custom.json"
+        # A URL within the protected base must still never get the built-in sign-in.
+        self.catalogs["/lab/custom.json"] = json.dumps({"schemaVersion": 1, "machines": []})
+        cfg = self.app.settings
+        cfg.set_desired_and_applied({"catalog.urls": [url]}, self.app.validation_context())
+        results, errors = await self.app.catalogs.fetch_all()
+        source = catalogs.custom_id(url)
+        self.assertIn(source, errors)
+        self.assertIn(("/lab/custom.json", None), self.seen)
+        self.assertIsNone(self.app.catalogs.client(source).auth)
+
+        custom_url = f"{self.base}/custom/catalog.json"
+        self.files["/custom/mac.tar.gz"] = archive
+        self.catalogs["/custom/catalog.json"] = json.dumps({"schemaVersion": 1, "machines": [
+            entry("os922-full-v5", "Custom Mac", f"{self.base}/custom/mac.tar.gz", archive, expanded)
+        ]})
+        cfg.set_desired_and_applied({"catalog.urls": [custom_url]}, self.app.validation_context())
+        source = catalogs.custom_id(custom_url)
+        status, body = await self.get("/api/v1/machines/catalog")
+        self.assertEqual(status, 200)
+        matching = [(e["catalog"], e["name"]) for e in body["machines"] if e["id"] == "os922-full-v5"]
+        self.assertEqual(matching, [("lab", "Mac OS 9.2.2 (v5)"), (source, "Custom Mac")])
+        status, res = await self.post("/api/v1/machines/import", {"catalog_id": "os922-full-v5", "catalog": source})
+        self.assertEqual(status, 202)
+        job = await self.wait_job(res["job"]["id"])
+        self.assertEqual(job["state"], "succeeded", job)
+        m = self.app.machines.get(job["result"]["machine"])
+        self.assertEqual(m.meta["source"]["catalog_url"], custom_url)
+        self.assertIn(("/custom/mac.tar.gz", None), self.seen)
+        cfg.set_desired_and_applied({"catalog.urls": []}, self.app.validation_context())
+        self.assertIsNone(self.app.catalogs.client(source))
+        self.assertIsNotNone(self.app.machines.get(m.id))
+
     async def test_panel_downloads_a_mac_from_retroboot_downloads(self):
         p = self.app.panel
         scr = c.CatalogList(p, back=lambda: None)
@@ -187,7 +228,7 @@ class DeviceCatalogTests(DeviceCatalogBase):
         self.assertNotIn("RetroBoot downloads", lst["items"][0]["detail"])
         self.assertTrue(lst["items"][3]["detail"].startswith("Internet · "), lst["items"][3]["detail"])
         buttons = [b["id"] for r in doc["items"] if r.get("type") == "buttons" for b in r["items"]]
-        self.assertEqual(buttons, ["usb", "cancel", "install"])
+        self.assertEqual(buttons, ["servers", "usb", "cancel", "install"])
         self.assertEqual(next(i for i in doc["items"] if i.get("type") == "checkbox")["id"], "older")
         await scr.change("older", True)
         self.assertIn("lab:os922-deluxe-v1", json.dumps(scr.doc()))
@@ -224,7 +265,7 @@ class DeviceCatalogTests(DeviceCatalogBase):
         await p.show(scr)
         await helpers.wait_for(lambda: scr.items is not None, 20, what="catalog list")
         self.assertEqual([b["label"] for r in scr.doc()["items"] if r.get("type") == "buttons" for b in r["items"]],
-                         ["From a USB Disk…", "Cancel", "Download"])
+                         ["Image Servers…", "From a USB Disk…", "Cancel", "Download"])
         await scr.action("install", {"entry": "lab:os921-full-v4"})
         await helpers.wait_for(lambda: (p.last_doc or {}).get("id") == "downloaded", 20, what="downloaded")
         self.assertIn("is on this computer", json.dumps(p.last_doc, ensure_ascii=False))

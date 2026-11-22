@@ -12,6 +12,7 @@ export const GROUPS = {
   display: { page: 'display', label: 'Display' },
   input: { page: 'display', label: 'Keyboard and Pointer' },
   audio: { page: 'sound', label: 'Sound' },
+  catalog: { page: 'storage', label: 'Image Servers' },
   share: { page: 'storage', label: 'Shared Volume' },
   media: { page: 'storage', label: 'CD-ROM' },
   bluetooth: { page: 'network', label: 'Bluetooth' },

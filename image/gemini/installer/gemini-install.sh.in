@@ -10,8 +10,8 @@
 #        --activate also clears para (32 NUL bytes), so the bootloader boots RetroBoot
 #        from now on; without it para stays as it is (when it says boot-recovery, Gemian
 #        keeps booting until you activate).
-#        --keep-data moves the installed system's /var/lib/retroboot (machines, settings,
-#        Wi-Fi networks) into the new tree instead of starting from this build's.
+#        --keep-data copies the existing Macs, settings and Wi-Fi networks into the
+#        new tree. Run the upgrade from Gemian so Mac disks are closed.
 #   gemini-install.sh --rollback [recovery]
 #        para = boot-recovery: the next boot starts Gemian (recovery partition).
 #   gemini-install.sh --rollback previous
@@ -56,7 +56,7 @@ trap 'die "interrupted"' INT TERM HUP
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 need_tools() {
-  for t in sha256sum dd cmp od mount umount sync stat df awk sed mv rm mkdir; do
+  for t in sha256sum dd cmp od mount umount sync stat df du awk sed mv rm mkdir cp install; do
     command -v "$t" >/dev/null 2>&1 || die "missing tool: $t"
   done
   # GNU tar by path: a busybox shell may prefer its own tar applet, which lacks xattrs.
@@ -177,12 +177,21 @@ do_status() {
 do_install() {
   verify_payload
   find_parts; find_lfs
-  unz=$(unzstd_cmd)
-  need=$(( ROOTFS_BYTES / 1024 + 1048576 ))
-  avail=$(df -Pk "${LFS:-/}" | awk 'NR == 2 {print $4}')
-  [ "$avail" -gt "$need" ] || die "${LFS:-/} has $avail KiB free, needs $need KiB"
   new=$LFS$ROOT_DIR.new; cur=$LFS$ROOT_DIR; old=$LFS$ROOT_DIR.old
   is_running_root "$new" && die "$ROOT_DIR.new is the running system"
+  is_running_root "$old" && die "$ROOT_DIR.old is the running system; start Gemian first"
+  is_running_root "$cur" && die "start Gemian before installing so all Mac disks are closed"
+  if [ -d "$cur/var/lib/retroboot" ] && [ "$KEEP_DATA" != 1 ]; then
+    die "RetroBoot is already installed. Run again with --keep-data to upgrade."
+  fi
+  unz=$(unzstd_cmd)
+  need=$(( ROOTFS_BYTES / 1024 + 1048576 ))
+  if [ "$KEEP_DATA" = 1 ] && [ -d "$cur/var/lib/retroboot" ]; then
+    data_kib=$(du -sk "$cur/var/lib/retroboot" | awk '{print $1}')
+    need=$((need + data_kib))
+  fi
+  avail=$(df -Pk "${LFS:-/}" | awk 'NR == 2 {print $4}')
+  [ "$avail" -gt "$need" ] || die "${LFS:-/} has $avail KiB free, needs $need KiB"
   say "unpacking $ROOTFS into ${new} (decompressor: ${unz##*/})"
   rm -rf "$new"; mkdir -p "$new" || die "cannot create $new"
   chmod 0755 "$new"
@@ -194,9 +203,23 @@ do_install() {
   [ -f "$new$TREE_BOOTIMG" ] && cmp -s "$new$TREE_BOOTIMG" "$HERE/$BOOTIMG" || die "the tree's boot.img differs from $BOOTIMG"
   sync
   if [ "$KEEP_DATA" = 1 ] && [ -d "$cur/var/lib/retroboot" ]; then
-    rm -rf "$new/var/lib/retroboot" && mv "$cur/var/lib/retroboot" "$new/var/lib/retroboot" ||
-      die "--keep-data: moving /var/lib/retroboot failed"
-    say "kept the installed system's /var/lib/retroboot (machines, settings, networks)"
+    cp -a --sparse=always "$cur/var/lib/retroboot/." "$new/var/lib/retroboot/" ||
+      die "--keep-data: copying the data failed (the existing installation is intact)"
+    # Prior Gemini builds stored the download sign-in with the operating system.
+    auth="$cur/etc/retroboot/lab-auth.env"
+    if [ -f "$auth" ] && [ ! -L "$auth" ]; then
+      dst="$new/var/lib/retroboot/config"
+      install -m 0600 "$auth" "$dst/lab-auth.env" ||
+        die "--keep-data: copying the download sign-in failed"
+    fi
+    for stored in var/lib/bluetooth var/lib/gemini-gauge; do
+      if [ -d "$cur/$stored" ] && [ ! -L "$cur/$stored" ]; then
+        mkdir -p "$new/$stored" &&
+          cp -a "$cur/$stored/." "$new/$stored/" || die "--keep-data: copying $stored failed"
+      fi
+    done
+    say "copied Macs, settings and networks; the previous installation retains its data"
+    sync
   fi
   if [ -d "$cur" ]; then
     if [ -d "$old" ]; then
@@ -239,6 +262,8 @@ do_rollback() {
   previous)
     find_lfs
     cur=$LFS$ROOT_DIR; old=$LFS$ROOT_DIR.old; tmp=$LFS$ROOT_DIR.rollback
+    is_running_root "$cur" && die "start Gemian before rolling back"
+    is_running_root "$old" && die "start Gemian before rolling back"
     [ -d "$old" ] || die "there is no $ROOT_DIR.old to go back to (use --rollback recovery for Gemian)"
     [ -f "$old$TREE_BOOTIMG" ] || die "$ROOT_DIR.old has no boot.img of its own"
     rm -rf "$tmp"

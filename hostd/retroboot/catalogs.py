@@ -21,9 +21,11 @@ HTTPS URLs under the lab base.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from . import labauth
 from .catalog import CatalogClient, ImportError_
@@ -34,6 +36,16 @@ LAB, INTERNET = "lab", "internet"
 LABELS = {LAB: "RetroBoot downloads", INTERNET: "Internet"}
 FAMILY_RE = re.compile(r"^(?P<family>[a-z0-9._-]+?)-v(?P<version>\d{1,4})$")
 RETRY_S = 30.0
+CUSTOM_PREFIX = "custom-"
+
+
+def custom_id(url: str) -> str:
+    return CUSTOM_PREFIX + hashlib.sha256(url.encode()).hexdigest()[:24]
+
+
+def custom_label(url: str) -> str:
+    parsed = urlsplit(url)
+    return parsed.netloc + parsed.path
 
 
 def family_of(machine_id: str | None) -> tuple[str | None, int | None]:
@@ -80,24 +92,29 @@ def known_from(ids) -> tuple[set[str], dict[str, int]]:
 def arrange(results: list[tuple[str, list[dict]]], known_ids=frozenset(),
             known_families: dict[str, int] | None = None) -> list[Listed]:
     """Entries of several catalogs (in priority order) as one list; see the module doc."""
-    seen: set[str] = set()
-    newest = dict(known_families or {})
+    seen = set()
+    newest = {(None, fam): version for fam, version in (known_families or {}).items()}
+    def namespace(source):
+        return source if source.startswith(CUSTOM_PREFIX) else None
     items: list[Listed] = []
     for source, entries in results:
         for e in entries or []:
-            if e["id"] in seen:
+            identity = (namespace(source), e["id"])
+            if identity in seen:
                 continue
-            seen.add(e["id"])
+            seen.add(identity)
             fam, ver = family_of(e["id"])
             if fam:
-                newest[fam] = max(newest.get(fam, 0), ver)
-            items.append(Listed(source, e, fam, ver, known=e["id"] in known_ids))
+                group = (namespace(source), fam)
+                newest[group] = max(newest.get(group, 0), ver)
+            installed = identity in known_ids if namespace(source) else e["id"] in known_ids
+            items.append(Listed(source, e, fam, ver, known=installed))
     for it in items:
-        it.older = bool(it.family) and (it.version or 0) < newest.get(it.family, 0)
-    first: dict[str, int] = {}
+        it.older = bool(it.family) and (it.version or 0) < newest.get((namespace(it.source), it.family), 0)
+    first = {}
     for i, it in enumerate(items):
-        first.setdefault(it.family or it.key, i)
-    return sorted(items, key=lambda it: (first[it.family or it.key], -(it.version or 0)))
+        first.setdefault((namespace(it.source), it.family or it.key), i)
+    return sorted(items, key=lambda it: (first[namespace(it.source), it.family or it.key], -(it.version or 0)))
 
 
 def entry_family(entry: dict) -> str:
@@ -139,6 +156,7 @@ class Catalogs:
     def __init__(self, app):
         self.app = app
         self._lab: CatalogClient | None = None
+        self._custom: dict[str, CatalogClient] = {}
         self.errors: dict[str, str | None] = {}
         self._warming: dict[str, asyncio.Task] = {}
         self._retry_at: dict[str, float] = {}
@@ -152,6 +170,27 @@ class Catalogs:
             self._lab = CatalogClient(url, self.app.paths.downloads, ca_file=self.app.cfg.catalog_ca_file, auth=auth)
         return self._lab
 
+    def custom_clients(self, excluded=()) -> list[tuple[str, CatalogClient]]:
+        excluded = set(excluded)
+        urls = self.app.settings.applied.get("catalog.urls", [])
+        wanted = {custom_id(url): url for url in urls if url not in excluded}
+        for source in self._custom.keys() - wanted.keys():
+            del self._custom[source]
+            task = self._warming.pop(source, None)
+            if task:
+                task.cancel()
+            self.errors.pop(source, None)
+            self._retry_at.pop(source, None)
+        for source, url in wanted.items():
+            if source not in self._custom:
+                self._custom[source] = CatalogClient(url, self.app.paths.downloads,
+                                                     ca_file=self.app.cfg.catalog_ca_file)
+        return [(source, self._custom[source]) for source in wanted]
+
+    def label(self, source: str) -> str:
+        client = self._custom.get(source)
+        return custom_label(client.url) if client else LABELS.get(source, "Image server")
+
     def clients(self) -> list[tuple[str, CatalogClient]]:
         out = []
         lab = self.lab_client()
@@ -159,7 +198,7 @@ class Catalogs:
             out.append((LAB, lab))
         if lab is None or self.app.catalog.url != lab.url:
             out.append((INTERNET, self.app.catalog))
-        return out
+        return out + self.custom_clients(client.url for _, client in out)
 
     def client(self, source: str) -> CatalogClient | None:
         return dict(self.clients()).get(source)
@@ -167,10 +206,17 @@ class Catalogs:
     def known(self) -> tuple[set[str], dict[str, int]]:
         """What the device has: its machines' ids and the catalog/fixture ids they came from."""
         ids = []
+        custom = set()
         for m in self.app.machines.list():
             src = m.meta.get("source") if isinstance(m.meta.get("source"), dict) else {}
-            ids += [m.id, src.get("template_id"), src.get("fixture")]
-        return known_from(ids)
+            template = src.get("template_id")
+            source = src.get("catalog")
+            if isinstance(source, str) and source.startswith(CUSTOM_PREFIX) and isinstance(template, str):
+                custom.add((source, template))
+            else:
+                ids += [m.id, template, src.get("fixture")]
+        known, families = known_from(ids)
+        return known | custom, families
 
     async def fetch_all(self, max_age: float = 60.0) -> tuple[list[tuple[str, list[dict]]], dict[str, str]]:
         """Every catalog's entries (waiting for them) and a user-facing reason per failed one."""
@@ -222,7 +268,7 @@ class Catalogs:
         for sid, client in self.clients():
             if client.cache is not None:
                 results.append((sid, client.cache))
-                states.append({"id": sid, "label": LABELS[sid], "state": "ready", "error": None})
+                states.append({"id": sid, "label": self.label(sid), "state": "ready", "error": None})
                 continue
             task = self._warming.get(sid)
             failure = self.errors.get(sid)
@@ -235,7 +281,7 @@ class Catalogs:
                 state = "loading"
                 if task is None or task.done():
                     self._warming[sid] = loop.create_task(self._warm(sid, client))
-            states.append({"id": sid, "label": LABELS[sid], "state": state,
+            states.append({"id": sid, "label": self.label(sid), "state": state,
                            "error": failure if state == "error" else None})
         return results, states
 

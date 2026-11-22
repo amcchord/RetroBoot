@@ -220,6 +220,27 @@ function renderField(key) {
         setDisabled: (d) => (input.disabled = d),
         focusEl: input,
       };
+    } else if (key === 'catalog.urls') {
+      const asText = (v) => (Array.isArray(v) ? v.join('\n') : '');
+      const input = h('textarea', {
+        id: controlId(key),
+        rows: 4,
+        disabled,
+        spellcheck: 'false',
+        placeholder: 'https://example.com/catalog.json',
+        'aria-describedby': describedBy,
+        oninput: (e) => onValue(e.target.value.split('\n').map((line) => line.trim()).filter(Boolean)),
+      });
+      input.value = asText(value);
+      labelEl = h('label', { class: 'setting-label', for: input.id }, def.label);
+      body = h('div', { class: 'text-wrap' }, input);
+      control = {
+        set: (v) => {
+          if (document.activeElement !== input) input.value = asText(v);
+        },
+        setDisabled: (d) => (input.disabled = d),
+        focusEl: input,
+      };
     } else {
       const input = h('input', {
         type: def.type === 'int' || def.type === 'number' ? 'number' : 'text',
@@ -311,7 +332,7 @@ export function settingsPanels(page, { groups: onlyGroups, intro, extras } = {})
     const m = store.settings;
     if (!m) return;
     // List-valued settings have custom editors, supplied per window through `extras`.
-    const keys = m.order.filter((k) => groupOf(k).page === page && (!onlyGroups || onlyGroups.includes(groupOf(k).label)) && m.defs.get(k).type !== 'list' && shownHere(m.defs.get(k)));
+    const keys = m.order.filter((k) => groupOf(k).page === page && (!onlyGroups || onlyGroups.includes(groupOf(k).label)) && (m.defs.get(k).type !== 'list' || k === 'catalog.urls') && shownHere(m.defs.get(k)));
     const sig = keys.join('|');
     if (sig !== lastKeys) {
       lastKeys = sig;

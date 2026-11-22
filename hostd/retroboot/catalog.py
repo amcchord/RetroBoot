@@ -67,10 +67,15 @@ def _text(v, maximum) -> bool:
 
 
 def secure_url(url) -> bool:
-    if not isinstance(url, str) or len(url) > 2048:
+    if not isinstance(url, str) or len(url) > 2048 or any(c.isspace() or ord(c) < 32 for c in url) or "\\" in url:
         return False
-    u = urlsplit(url)
-    return u.scheme == "https" and bool(u.hostname) and u.username is None and u.password is None and not u.fragment
+    try:
+        u = urlsplit(url)
+        port = u.port
+    except ValueError:
+        return False
+    return (u.scheme == "https" and bool(u.hostname) and (port is None or port > 0)
+            and u.username is None and u.password is None and not u.fragment)
 
 
 def validate_entry(e) -> dict:
@@ -212,7 +217,7 @@ class CatalogClient:
                 resp.release()
                 from yarl import URL
                 nxt = urlsplit(str(resp.url.join(URL(loc))))
-                if nxt.scheme != "https" or nxt.hostname != origin.hostname or nxt.port != origin.port:
+                if not secure_url(nxt.geturl()) or nxt.hostname != origin.hostname or nxt.port != origin.port:
                     raise ImportError_("The download redirected to another server.", "redirect_rejected")
                 url = nxt.geturl()
                 continue

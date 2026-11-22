@@ -2080,6 +2080,69 @@ class SetupWelcome(Screen):
             await p.show_power_alert()
 
 
+class ImageServers(Screen):
+    doc_id = "image-servers"
+    key = "catalog.urls"
+
+    def __init__(self, panel, back):
+        super().__init__(panel)
+        self.back = back
+        self.urls = self.app.settings.desired.get(self.key, []).copy()
+        self.initial = self.urls.copy()
+        self.selected: str | None = None
+        self.address = ""
+        self.error = ""
+
+    def doc(self):
+        rows = [ui.row(str(index), url, None, "web") for index, url in enumerate(self.urls)]
+        items = [
+            ui.text("Add the HTTPS address of a machine catalog."),
+            ui.lst("servers", rows, self.selected, rows=4),
+            ui.field("url", "Catalog URL", self.address, placeholder="https://example.com/catalog.json",
+                     max_length=2048),
+            ui.buttons(ui.btn("add", "Add"), ui.btn("remove", "Remove", disabled=self.selected is None)),
+        ]
+        if self.error:
+            items.append(ui.text(self.error, "emphasis"))
+        items.append(ui.buttons(ui.btn("cancel", "Cancel"), ui.btn("save", "Save", default=True)))
+        return ui.window(self.doc_id, "Image Servers", items, width=540)
+
+    async def change(self, id, value):
+        if id == "servers":
+            self.selected = value
+            await self.panel.refresh()
+        elif id == "url" and isinstance(value, str):
+            self.address = value
+
+    async def action(self, id, values):
+        if id == "cancel":
+            await self.back()
+            return
+        address = values.get("url", self.address)
+        self.address = address.strip() if isinstance(address, str) else ""
+        self.error = ""
+        try:
+            if id == "add" or (id == "save" and self.address):
+                if not self.address:
+                    raise ValueError("Enter a catalog URL.")
+                self.urls = schema.validate_catalog_urls(self.urls + [self.address])
+                self.address = ""
+            elif id == "remove" and self.selected is not None:
+                self.urls.pop(int(self.selected))
+                self.selected = None
+            if id == "save":
+                if self.app.settings.desired.get(self.key, []) != self.initial:
+                    self.error = "Image servers changed in another window. Reopen Image Servers to edit the current list."
+                elif self.urls != self.initial:
+                    await self.app.apply_engine.change_and_apply({self.key: self.urls})
+                if not self.error:
+                    await self.back()
+                    return
+        except (ValueError, IndexError) as exc:
+            self.error = str(exc)
+        await self.panel.refresh()
+
+
 class CatalogList(Screen):
     """Download a Mac: RetroBoot downloads (with a stored sign-in) and the Internet catalog in
     one list (catalogs.arrange: one row per Mac, a family's older versions after "Show older
@@ -2125,9 +2188,10 @@ class CatalogList(Screen):
     def detail(self, it) -> str:
         """"Mac OS 8.1 · 68k · 58 MB" (the OS when the name doesn't say it), "Internet" for a
         Mac from the Internet catalog beside RetroBoot downloads, "Installed" when it's here."""
-        from ..catalogs import LABELS, entry_family, os_label
+        from ..catalogs import CUSTOM_PREFIX, entry_family, os_label
         e = it.entry
-        parts = [LABELS[it.source]] if it.source != "lab" and "lab" in self.sources else []
+        labelled = it.source.startswith(CUSTOM_PREFIX) or (it.source == "internet" and "lab" in self.sources)
+        parts = [self.app.catalogs.label(it.source)] if labelled else []
         osl = os_label(e["osVersion"])
         if osl and osl.lower() not in e["name"].lower():
             parts.append(osl)
@@ -2139,7 +2203,6 @@ class CatalogList(Screen):
         return " · ".join(parts)
 
     def doc(self):
-        from ..catalogs import LABELS
         items = [ui.text("Choose a Mac to download. It appears in Startup Disk." if self.app.machines.list() else
                          "Choose a Mac to download and install.")]
         if self.items is None:
@@ -2156,7 +2219,8 @@ class CatalogList(Screen):
             if sel:
                 items.append(ui.text(sel.entry["summary"][:300], "small"))
             for sid, why in self.errors.items():
-                items.append(ui.text(f"{LABELS[sid]}: {why}", "small"))
+                items.append(ui.text(f"{self.app.catalogs.label(sid)}: {why}", "small"))
+        items.append(ui.buttons(ui.btn("servers", "Image Servers…", align="left")))
         items.append(ui.buttons(ui.btn("usb", "From a USB Disk…", align="left"),
                                 ui.btn("retry", "Try Again") if self.error or self.errors else None,
                                 ui.btn("cancel", "Cancel" if self.then else "Back"),
@@ -2177,6 +2241,12 @@ class CatalogList(Screen):
             await self.back()
         elif id == "usb":
             await p.show(UsbList(p, back=lambda: p.show(self), on_installed=self.on_installed, then=self.then))
+        elif id == "servers":
+            async def back():
+                self.items, self.error, self.errors = None, None, {}
+                await p.show(self)
+                await self._load()
+            await p.show(ImageServers(p, back))
         elif id == "retry":
             self.items, self.error, self.errors = None, None, {}
             await p.refresh()

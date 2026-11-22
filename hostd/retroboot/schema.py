@@ -39,6 +39,7 @@ MEDIA_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+,'&!-]{0,126}$")   # me
 REDIRECT_HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
 REDIRECT_URL_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s]*)?$")
 MAX_REDIRECTS = 64
+MAX_IMAGE_SERVERS = 8
 # A 68k Mac's memory (quadra.py; machine.quadra_ram_mb).  The emulator workstream measures
 # what Mac OS 7.5.5 and 8.1 use well; extend the choices here.
 QUADRA_RAM_CHOICES = (64, 128, 256)
@@ -122,7 +123,7 @@ class Setting:
     def describe(self, ctx: ValidationContext | None = None) -> dict:
         """Wire form for GET /api/v1/settings (dynamic kinds are presented as enums)."""
         wire_type = {"machine": "enum", "host_mode": "enum", "timezone": "enum", "media": "enum",
-                     "float": "number", "pixel_scale": "enum", "redirects": "list"}.get(self.type, self.type)
+                     "float": "number", "pixel_scale": "enum", "redirects": "list", "catalog_urls": "list"}.get(self.type, self.type)
         d: dict[str, Any] = {
             "key": self.key, "type": wire_type, "kind": self.type, "default": self.default,
             "apply": self.apply, "capability": self.capability,
@@ -277,6 +278,8 @@ class Setting:
                 if reason:
                     raise ValueError(f"{value}× isn't available on this display. {reason}")
             return value
+        if t == "catalog_urls":
+            return validate_catalog_urls(value)
         if t == "redirects":
             return validate_redirects(value)
         if t == "host_mode":
@@ -288,6 +291,23 @@ class Setting:
                 raise ValueError("This display does not offer that mode.")
             return value
         raise ValueError("Unsupported setting type.")
+
+
+def validate_catalog_urls(value: Any) -> list[str]:
+    from urllib.parse import urlsplit
+    from .catalog import secure_url
+
+    if not isinstance(value, list) or len(value) > MAX_IMAGE_SERVERS:
+        raise ValueError(f"Enter up to {MAX_IMAGE_SERVERS} image server URLs.")
+    urls = []
+    for url in value:
+        if not secure_url(url) or "?" in url or "#" in url:
+            raise ValueError("Use a full HTTPS catalog URL without credentials, a query or a fragment.")
+        if not urlsplit(url).path or urlsplit(url).path == "/":
+            raise ValueError("Enter the full address of the catalog file.")
+        if url not in urls:
+            urls.append(url)
+    return urls
 
 
 def validate_redirects(value: Any) -> list[dict]:
@@ -683,6 +703,8 @@ SETTINGS: tuple[Setting, ...] = (
        help="Lets paired browsers see the Mac OS screen on the Screen page and, with View and control, "
             "use its keyboard and mouse. While a browser is connected, a small symbol in the Mac OS "
             "menu bar shows it on this computer."),
+    _s(key="catalog.urls", type="catalog_urls", default=[], apply=LIVE, group="catalogs",
+       label="Image server URLs", help="Enter one HTTPS catalog URL per line."),
     # Software Update (ARCHITECTURE 13): checked only when asked; never installs by itself.
     _s(key="update.url", type="string", default="", pattern=UPDATE_URL_RE.pattern, apply=LIVE,
        group="update", label="Update server",
