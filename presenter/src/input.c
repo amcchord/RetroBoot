@@ -31,7 +31,6 @@ struct rb_input {
     bool legacy_mouse_enabled;
     struct libinput_device *motion_device;
     double mouse_dpi; /* zero for other devices, such as a touchpad */
-    struct rb_legacy_mouse legacy_mouse;
     /* touchscreens and tablets (touch.h): what the presenter binds to outputs */
     struct {
         struct libinput_device *dev;
@@ -294,14 +293,13 @@ static void handle_key(struct rb_input *in, struct libinput_event_keyboard *k, s
 }
 
 static bool legacy_mouse_sample(struct rb_input *in, struct libinput_event *ev,
-                                struct libinput_event_pointer *p, struct rb_pointer_delta *delta)
+                                struct libinput_event_pointer *p, struct rb_mouse_motion *motion)
 {
     if (!in->legacy_mouse_enabled)
         return false;
     struct libinput_device *device = libinput_event_get_device(ev);
     if (device != in->motion_device) {
         in->motion_device = device;
-        in->legacy_mouse = (struct rb_legacy_mouse){0};
         in->mouse_dpi = 0;
         struct udev_device *ud = libinput_device_get_udev_device(device);
         if (ud) {
@@ -314,9 +312,8 @@ static bool legacy_mouse_sample(struct rb_input *in, struct libinput_event *ev,
     }
     if (!in->mouse_dpi)
         return false;
-    *delta = rb_legacy_mouse_motion(&in->legacy_mouse, libinput_event_pointer_get_time_usec(p),
-                                    libinput_event_pointer_get_dx_unaccelerated(p),
-                                    libinput_event_pointer_get_dy_unaccelerated(p), in->mouse_dpi);
+    *motion = (struct rb_mouse_motion){libinput_event_pointer_get_dx_unaccelerated(p),
+                                      libinput_event_pointer_get_dy_unaccelerated(p), in->mouse_dpi};
     return true;
 }
 
@@ -348,7 +345,7 @@ static void handle_event(struct rb_input *in, struct libinput_event *ev)
     case LIBINPUT_EVENT_POINTER_MOTION: {
         struct libinput_event_pointer *p = libinput_event_get_pointer_event(ev);
         if (in->cb.motion) {
-            struct rb_pointer_delta legacy;
+            struct rb_mouse_motion legacy;
             bool have_legacy = legacy_mouse_sample(in, ev, p, &legacy);
             in->cb.motion(in->data, libinput_event_pointer_get_dx(p), libinput_event_pointer_get_dy(p),
                           have_legacy ? &legacy : NULL);

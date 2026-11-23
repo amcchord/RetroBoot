@@ -787,7 +787,7 @@ class PcHostdUnchangedTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.lidsleep.action, "blank")
             self.assertEqual(set(app.apply_engine.input_config()),
                              {"swap_command_option", "recovery_chord", "pointer_speed",
-                              "legacy_mouse", "touch_gestures"})
+                              "legacy_mouse", "mouse_dpi", "touch_gestures"})
             self.assertFalse(app.capabilities()["speaker_switch"])
             marker = root / "bootdisplay-ran"
             app.cfg.bootdisplay_cmd = ["touch", str(marker)]

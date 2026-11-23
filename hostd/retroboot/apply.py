@@ -32,7 +32,7 @@ DISPLAY_KEYS = ("display.pixel_scale", "display.guest_size", "display.scaling", 
 # What GRUB's background (rb-bootdisplay) depends on: the grid, the orientation and the startup indicator.
 BOOT_DISPLAY_KEYS = ("display.pixel_scale", "display.guest_size", "display.rotation", "startup.progress_indicator")
 INPUT_KEYS = ("input.swap_command_option", "input.recovery_chord", "input.pointer_speed",
-              "input.legacy_mouse", "input.touch_gestures")
+              "input.mouse_dpi", "input.touch_gestures")
 
 
 class ApplyEngine:
@@ -63,6 +63,7 @@ class ApplyEngine:
                "recovery_chord": a["input.recovery_chord"],
                "pointer_speed": a["input.pointer_speed"],
                "legacy_mouse": a["input.legacy_mouse"],
+               "mouse_dpi": a["input.mouse_dpi"],
                "touch_gestures": a.get("input.touch_gestures", True)}
         # Gemini PDA: its keyboard's keycaps (presenter gemkbd.c); lab: touchscreen axes.
         # Sent only when they apply, so a PC's request is unchanged.
@@ -167,6 +168,8 @@ class ApplyEngine:
 
     async def apply_restart_keys(self, keys: list[str]) -> None:
         """Host adapters for restart-class keys at the moment they become applied."""
+        if "input.legacy_mouse" in keys:
+            await self.push_input()
         if "machine.active" in keys:
             await self.app.startup.push_config()
             await self.update_boot_display(why="startup Mac")

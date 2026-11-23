@@ -190,7 +190,7 @@ function renderField(key) {
         setDisabled: (d) => (select.disabled = d),
         focusEl: select,
       };
-    } else if ((def.type === 'int' || def.type === 'number') && def.range) {
+    } else if ((def.type === 'int' || def.type === 'number') && def.range && key !== 'input.mouse_dpi') {
       const out = h('output', { class: 'range-value', for: controlId(key), 'aria-hidden': 'true' }, formatValue(def, value));
       const input = h('input', {
         type: 'range',
@@ -246,6 +246,9 @@ function renderField(key) {
         type: def.type === 'int' || def.type === 'number' ? 'number' : 'text',
         id: controlId(key),
         value: value == null ? '' : String(value),
+        min: def.range?.min ?? null,
+        max: def.range?.max ?? null,
+        step: def.range?.step ?? null,
         maxlength: def.maxLength != null ? String(def.maxLength) : null,
         disabled,
         autocomplete: 'off',

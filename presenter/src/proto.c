@@ -6,6 +6,7 @@
 
 #include "gemkbd.h"
 #include "keymap.h"
+#include "pointer.h"
 #include "touch.h"
 
 const char *rb_scene_name(enum rb_scene s)
@@ -288,6 +289,17 @@ int rb_parse_input_config(const cJSON *req, struct rb_input_req *out, char *err,
         }
         out->has_legacy_mouse = true;
         out->legacy_mouse = cJSON_IsTrue(legacy);
+    }
+    const cJSON *dpi = cJSON_GetObjectItemCaseSensitive(req, "mouse_dpi");
+    if (dpi) {
+        double value = dpi->valuedouble;
+        if (!cJSON_IsNumber(dpi) || value != floor(value) ||
+            (value != 0 && (value < RB_MOUSE_DPI_MIN || value > RB_MOUSE_DPI_MAX))) {
+            snprintf(err, errlen, "mouse_dpi must be 0 or an integer from %d to %d", RB_MOUSE_DPI_MIN, RB_MOUSE_DPI_MAX);
+            return -1;
+        }
+        out->has_mouse_dpi = true;
+        out->mouse_dpi = (int)value;
     }
     const cJSON *tg = cJSON_GetObjectItemCaseSensitive(req, "touch_gestures");
     if (tg) {

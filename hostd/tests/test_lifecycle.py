@@ -632,8 +632,17 @@ class SettingsApply(Base):
                                what="Legacy mouse tracking")
         self.assertFalse(self.app.settings.applied["input.legacy_mouse"])
         self.fp.change("input.legacy_mouse", True)
+        await helpers.wait_for(lambda: not find_item(self.fp.doc, "restart").get("disabled"), 5,
+                               what="Apply and Restart enabled")
+        self.fp.change("input.mouse_dpi", "64000")
         self.fp.click("apply")
         await self.until_doc("recovery-main")
+        self.assertFalse(self.app.settings.applied["input.legacy_mouse"])
+        self.assertTrue(self.app.settings.desired["input.legacy_mouse"])
+        self.assertEqual(self.app.settings.applied["input.mouse_dpi"], 64000)
+        self.assertEqual(self.fp.requests_of("input_config")[-1]["mouse_dpi"], 64000)
+        await self.job(self.app.lifecycle_job("restart", origin="web"))
+        await self.running()
         self.assertTrue(self.app.settings.applied["input.legacy_mouse"])
         self.assertTrue(self.fp.requests_of("input_config")[-1]["legacy_mouse"])
 

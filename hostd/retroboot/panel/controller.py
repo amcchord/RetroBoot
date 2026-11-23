@@ -1415,6 +1415,8 @@ class DisplaySound(Screen):
                      [(str(x), f"{x:g}×") for x in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)],
                      str(float(v["input.pointer_speed"]))),
             ui.checkbox("input.legacy_mouse", "Legacy mouse tracking", v["input.legacy_mouse"]),
+            ui.field("input.mouse_dpi", "Mouse DPI:", str(v["input.mouse_dpi"]), max_length=6),
+            ui.text("0 uses automatic DPI for Legacy tracking.", "small"),
             # touchscreens and pens (4.8): only when one is connected
             ui.checkbox("input.touch_gestures", "Touch gestures: hold for menus, two fingers scroll",
                         bool(v.get("input.touch_gestures", True)))
@@ -1493,6 +1495,9 @@ class DisplaySound(Screen):
         s = schema.BY_KEY.get(id)
         if not s:
             return
+        if id == "input.mouse_dpi" and isinstance(value, str):
+            self.values[id] = int(value) if value.isascii() and value.isdecimal() and len(value) <= 6 else value
+            return
         if id == "display.graphics" and isinstance(value, bool):   # the 3D acceleration checkbox
             value = "ati-radeon" if value else "standard"
         try:
@@ -1505,7 +1510,7 @@ class DisplaySound(Screen):
         changed = self.values.get(id) != value
         self.values[id] = value
         if changed and id in ("display.pixel_scale", "display.guest_size", "display.scaling", "display.rotation",
-                              "display.graphics", "audio.enabled"):
+                              "display.graphics", "audio.enabled", "input.legacy_mouse"):
             await self.panel.refresh()  # the note on how a fixed size is drawn; Rotation Lock; 3D note
 
     async def action(self, id, values):

@@ -40,6 +40,8 @@ REDIRECT_HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?
 REDIRECT_URL_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s]*)?$")
 MAX_REDIRECTS = 64
 MAX_IMAGE_SERVERS = 8
+MOUSE_DPI_MIN = 100
+MOUSE_DPI_MAX = 100000
 # A 68k Mac's memory (quadra.py; machine.quadra_ram_mb).  The emulator workstream measures
 # what Mac OS 7.5.5 and 8.1 use well; extend the choices here.
 QUADRA_RAM_CHOICES = (64, 128, 256)
@@ -231,6 +233,8 @@ class Setting:
             if type(value) is not int:
                 raise ValueError("Must be a whole number.")
             lo, hi = self.range
+            if self.key == "input.mouse_dpi" and value != 0 and not MOUSE_DPI_MIN <= value <= hi:
+                raise ValueError(f"Enter 0 for automatic, or a DPI from {MOUSE_DPI_MIN} to {hi}.")
             if not lo <= value <= hi:
                 raise ValueError(f"Must be between {lo} and {hi}.")
             return value
@@ -612,9 +616,11 @@ SETTINGS: tuple[Setting, ...] = (
        help="The key combination that opens RetroBoot Recovery."),
     _s(key="input.pointer_speed", type="float", default=1.0, range=(0.25, 4.0), step=0.25,
        apply=LIVE, group="input", label="Pointer speed", help="Pointer speed multiplier."),
-    _s(key="input.legacy_mouse", type="bool", default=False, apply=LIVE, group="input",
+    _s(key="input.legacy_mouse", type="bool", default=False, apply=GUEST_RESTART, group="input",
        label="Legacy mouse tracking",
-       help="Use classic-style mouse acceleration on the Mac OS 7, 8 and 9 desktop."),
+       help="Let Mac OS 7, 8 or 9 track your local mouse. Takes effect when Mac OS restarts."),
+    _s(key="input.mouse_dpi", type="int", default=0, range=(0, MOUSE_DPI_MAX), apply=LIVE, group="input",
+       label="Mouse DPI", help="Enter your mouse's current DPI for Legacy tracking. Enter 0 for automatic."),
     _s(key="input.touch_gestures", type="bool", default=True, apply=LIVE, capability="touch", group="input",
        label="Touch gestures",
        help="On a touchscreen: tap to click, drag to move things, touch and hold or tap with two fingers for a "

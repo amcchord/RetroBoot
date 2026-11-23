@@ -60,6 +60,8 @@ struct rb_input_req {
     double speed;
     bool has_legacy_mouse;
     bool legacy_mouse;
+    bool has_mouse_dpi;
+    int mouse_dpi;
     bool has_touch_gestures;
     bool touch_gestures; /* touch.h: tap, drag, two-finger tap / long press, two-finger scroll */
     bool has_keyboard_layout;

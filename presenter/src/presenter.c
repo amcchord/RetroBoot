@@ -224,8 +224,12 @@ struct presenter {
     double gx, gy;
     bool pointer_dirty;
     bool relative_pointer; /* negotiated by QEMU; old backends retain absolute input */
+    bool relative_supported;
     bool classic_guest, legacy_mouse;
+    bool native_cursor; /* guest owns its position until the next absolute report */
+    int mouse_dpi;
     struct rb_pointer_delta relative_remainder;
+    struct rb_pointer_delta mouse_remainder;
     unsigned guest_buttons;
     double px, py;
     unsigned panel_buttons;
@@ -1463,6 +1467,8 @@ static void send_pointer(struct presenter *p)
     p->relative_remainder = (struct rb_pointer_delta){0};
     if (p->scene == RB_SCENE_GUEST && rb_guest_connected(&p->guest) && p->guest.px && p->guest_input) {
         rb_guest_send_pointer(&p->guest, (uint32_t)p->gx, (uint32_t)p->gy);
+        p->native_cursor = false;
+        p->mouse_remainder = (struct rb_pointer_delta){0};
         p->pointer_sent = true;
     }
 }
@@ -2729,8 +2735,12 @@ static void guest_connected(void *data)
     p->damage_seq = 0;
     p->last_damage_mono = 0;
     p->pointer_sent = false;
+    p->pointer_dirty = false;
     p->relative_pointer = false;
+    p->relative_supported = false;
+    p->native_cursor = false;
     p->relative_remainder = (struct rb_pointer_delta){0};
+    p->mouse_remainder = (struct rb_pointer_delta){0};
     p->surface_seen = false;
     p->retarget_pending = false;
     /* Mac OS starts with its cursor at (16,16) (observed with the virtio
@@ -2924,6 +2934,9 @@ static void guest_event(void *data, const char *json, size_t len)
     const cJSON *event = cJSON_GetObjectItemCaseSensitive(obj, "event");
     const cJSON *relative = cJSON_GetObjectItemCaseSensitive(obj, "relative");
     if (cJSON_IsString(event) && !strcmp(event->valuestring, "pointer-mode") && cJSON_IsBool(relative)) {
+        p->relative_supported = true;
+        if (p->relative_pointer != cJSON_IsTrue(relative))
+            p->mouse_remainder = (struct rb_pointer_delta){0};
         p->relative_pointer = cJSON_IsTrue(relative);
         p->relative_remainder = (struct rb_pointer_delta){0};
     }
@@ -3491,7 +3504,7 @@ static void panel_pointer(struct presenter *p)
     }
 }
 
-static void on_motion(void *data, double dx, double dy, const struct rb_pointer_delta *legacy)
+static void on_motion(void *data, double dx, double dy, const struct rb_mouse_motion *mouse)
 {
     struct presenter *p = data;
     touch_input(p);
@@ -3505,21 +3518,34 @@ static void on_motion(void *data, double dx, double dy, const struct rb_pointer_
     if (p->py > p->H - 1) p->py = p->H - 1;
     if (p->layout_ok) {
         double ratio = rb_layout_ratio(&p->layout);
-        bool use_legacy = legacy && p->classic_guest && !p->relative_pointer && guest_routing(p);
-        p->gx += use_legacy ? legacy->x * p->speed : dx * p->speed / ratio;
-        p->gy += use_legacy ? legacy->y * p->speed : dy * p->speed / ratio;
-        clamp_guest_pointer(p);
-        if (p->relative_pointer && guest_routing(p) && p->guest.px) {
-            /* Physical mice/trackpads must reach InputSprocket as deltas.
-             * Touch, web positioning and the local panel retain their own
-             * absolute path. Send an earlier absolute event first. */
+        bool guest = guest_routing(p) && p->guest.px;
+        bool native = guest && mouse && p->legacy_mouse && p->classic_guest && p->relative_supported;
+        if (native) {
             send_pointer(p);
             int32_t x, y;
-            if (rb_pointer_relative(&p->relative_remainder, dx, dy, p->speed, ratio, &x, &y))
+            if (rb_pointer_native(&p->mouse_remainder, mouse, p->mouse_dpi, p->speed, &x, &y)) {
+                p->native_cursor = true;
+                p->pointer_sent = false;
                 rb_guest_send_relative(&p->guest, x, y);
+            }
         } else {
-            p->relative_remainder = (struct rb_pointer_delta){0};
-            p->pointer_dirty = true;
+            /* Once native motion has moved the cursor, even a second local
+             * pointing device must use deltas until a real absolute input
+             * supplies a new position. Never warp back to the old anchor. */
+            if (!p->native_cursor) {
+                p->gx += dx * p->speed / ratio;
+                p->gy += dy * p->speed / ratio;
+                clamp_guest_pointer(p);
+            }
+            if (guest && (p->relative_pointer || p->native_cursor)) {
+                send_pointer(p);
+                int32_t x, y;
+                if (rb_pointer_relative(&p->relative_remainder, dx, dy, p->speed, ratio, &x, &y))
+                    rb_guest_send_relative(&p->guest, x, y);
+            } else if (!p->native_cursor) {
+                p->relative_remainder = (struct rb_pointer_delta){0};
+                p->pointer_dirty = true;
+            }
         }
     }
     panel_pointer(p);
@@ -3537,7 +3563,7 @@ static void on_motion_abs(void *data, double x, double y)
     y = round(y);
     p->px = x < 0 ? 0 : (x > p->W - 1 ? p->W - 1 : x);
     p->py = y < 0 ? 0 : (y > p->H - 1 ? p->H - 1 : y);
-    if (p->layout_ok) {
+    if (p->layout_ok && (!p->native_cursor || guest_routing(p))) {
         int gx, gy;
         rb_layout_screen_to_src(&p->layout, (int)lround(p->px), (int)lround(p->py), &gx, &gy);
         p->gx = gx;
@@ -4351,6 +4377,8 @@ static const char *pointer_nudge(struct presenter *p)
 {
     if (!rb_guest_connected(&p->guest) || !p->guest.px)
         return "no guest surface";
+    if (p->native_cursor)
+        return "guest owns the cursor position";
     if (rb_timer_armed(p->nudge_timer))
         return "nudge in progress";
     int x = (int)lround(p->gx), y = (int)lround(p->gy);
@@ -4374,7 +4402,7 @@ static void nudge_timer_fn(void *data)
     struct presenter *p = data;
     if (!rb_guest_connected(&p->guest) || !p->guest.px)
         return;
-    if (p->last_input_mono > p->nudge_mono)
+    if (p->native_cursor || p->last_input_mono > p->nudge_mono)
         return; /* the user moved since; their position wins */
     rb_guest_send_pointer(&p->guest, (uint32_t)p->nudge_x, (uint32_t)p->nudge_y);
     p->pointer_sent = true;
@@ -4548,6 +4576,7 @@ static cJSON *status_json(struct presenter *p, const cJSON *id)
     cJSON_AddStringToObject(cfg, "recovery_chord", rb_chord_name(p->chord_key));
     cJSON_AddNumberToObject(cfg, "pointer_speed", p->speed);
     cJSON_AddBoolToObject(cfg, "legacy_mouse", p->legacy_mouse);
+    cJSON_AddNumberToObject(cfg, "mouse_dpi", p->mouse_dpi);
     cJSON_AddBoolToObject(cfg, "guest_input", p->guest_input);
     cJSON_AddItemToObject(r, "remote", remote_json(p));
     cJSON_AddItemToObject(r, "input", input_json(p));
@@ -4782,6 +4811,10 @@ static void on_request(void *data, const cJSON *req)
         if (in.has_legacy_mouse) {
             p->legacy_mouse = in.legacy_mouse;
             rb_input_set_legacy_mouse(p->input, p->legacy_mouse);
+        }
+        if (in.has_mouse_dpi && in.mouse_dpi != p->mouse_dpi) {
+            p->mouse_dpi = in.mouse_dpi;
+            p->mouse_remainder = (struct rb_pointer_delta){0};
         }
         if (in.has_touch_gestures && in.touch_gestures != p->touch_gestures) {
             p->touch_gestures = in.touch_gestures;

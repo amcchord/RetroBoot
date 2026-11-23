@@ -25,8 +25,8 @@ struct rb_input_cb {
     /* code: evdev key code. keysym/utf8 from xkb (0/"" when unavailable).
      * mods: RBUI_MOD_* derived from the xkb state after the event. */
     void (*key)(void *data, uint32_t code, bool down, uint32_t keysym, const char *utf8, unsigned mods);
-    /* Legacy guest pixels are present only for a physical relative mouse. */
-    void (*motion)(void *data, double dx, double dy, const struct rb_pointer_delta *legacy);
+    /* Raw sensor motion is present only for a physical relative mouse. */
+    void (*motion)(void *data, double dx, double dy, const struct rb_mouse_motion *mouse);
     void (*motion_abs)(void *data, double x, double y); /* screen pixels */
     void (*button)(void *data, uint32_t code, bool down); /* BTN_* */
     void (*scroll)(void *data, double v120);            /* +down / -up, 120 per notch */

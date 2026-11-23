@@ -268,15 +268,18 @@ static void test_requests(void)
     CHECK(!in.has_touch_gestures);
     cJSON_Delete(j);
     CHECK(!in.has_legacy_mouse);
-    j = J("{\"touch_gestures\":false,\"legacy_mouse\":true}");
+    CHECK(!in.has_mouse_dpi);
+    j = J("{\"touch_gestures\":false,\"legacy_mouse\":true,\"mouse_dpi\":64000}");
     CHECK_EQ(rb_parse_input_config(j, &in, err, sizeof err), 0);
     CHECK(in.has_touch_gestures && !in.touch_gestures);
     CHECK(in.has_legacy_mouse && in.legacy_mouse);
+    CHECK(in.has_mouse_dpi && in.mouse_dpi == 64000);
     cJSON_Delete(j);
     const char *bad_input[] = {"{\"swap_command_option\":1}", "{\"recovery_chord\":\"ctrl+c\"}",
                                "{\"pointer_speed\":0.1}", "{\"pointer_speed\":\"fast\"}",
                                "{\"pointer_speed\":5}", "{\"touch_gestures\":1}",
-                               "{\"legacy_mouse\":\"true\"}"};
+                               "{\"legacy_mouse\":\"true\"}", "{\"mouse_dpi\":99}", "{\"mouse_dpi\":100001}",
+                               "{\"mouse_dpi\":1200.5}", "{\"mouse_dpi\":\"64000\"}"};
     for (size_t i = 0; i < sizeof bad_input / sizeof bad_input[0]; i++) {
         j = J(bad_input[i]);
         CHECK(rb_parse_input_config(j, &in, err, sizeof err) < 0);
