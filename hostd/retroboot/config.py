@@ -385,7 +385,7 @@ class Config:
     # Rewrites GRUB's display.cfg/checkerboard for display.pixel_scale (image rb-bootdisplay).
     bootdisplay_cmd: list = field(default_factory=lambda: ["systemctl", "--no-block", "start",
                                                            "retroboot-bootdisplay.service"])
-    catalog_url: str = "https://mcchord.net/classicmac/catalog.json"
+    catalog_url: str | None = None       # defaults to the built-in catalog for this board
     # LAB ONLY (never set in product images): an extra CA certificate trusted, in addition to
     # the system CAs, for a test machine catalog on the LAN and its archive downloads.
     catalog_ca_file: str | None = None

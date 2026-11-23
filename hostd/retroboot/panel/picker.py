@@ -10,7 +10,7 @@ One checkable list of every Mac the installer can put on the disk, by source:
   come from the installation medium's ``retroboot/lab-auth.env``, hostd.json or the
   Sign In sheet.  Older versions of a family (``<family>-v<N>`` ids) are behind
   "Show older versions"; a Mac that is also on the disc is listed once, on the disc.
-* **Internet** -- hostd's catalog (``catalog_url``, the public ClassicMac catalog).
+* **Internet** -- hostd's catalog (``catalog_url`` or the board's public catalog).
 * **USB disk** -- machine archives on removable disks (:class:`ArchiveSources`).
 
 Clicking a row checks or unchecks it (``activate: click``); with the keyboard,

@@ -5,7 +5,7 @@
   only when there is a sign-in; the installer keeps the sign-in of its installation medium
   (or one typed with "Remember on this computer") on the installed system, so another Mac
   can be downloaded later.  The password goes to the log redactor and nowhere else.
-* **Internet** (``internet``): hostd's ``catalog_url`` (the public ClassicMac catalog),
+* **Internet** (``internet``): hostd's ``catalog_url``, or the board's public catalog
   unless that is the lab catalog itself.
 
 :func:`arrange` merges the catalogs the way the installer's Choose Macs window, the local
@@ -34,6 +34,8 @@ log = logging.getLogger("retroboot.catalogs")
 
 LAB, INTERNET = "lab", "internet"
 LABELS = {LAB: "RetroBoot downloads", INTERNET: "Internet"}
+CLASSICMAC_CATALOG = "https://mcchord.net/classicmac/catalog.json"
+RETROBOOT_CATALOG = "https://mcchord.net/retroboot-downloads/catalog.json"
 FAMILY_RE = re.compile(r"^(?P<family>[a-z0-9._-]+?)-v(?P<version>\d{1,4})$")
 RETRY_S = 30.0
 CUSTOM_PREFIX = "custom-"
@@ -207,11 +209,14 @@ class Catalogs:
         """What the device has: its machines' ids and the catalog/fixture ids they came from."""
         ids = []
         custom = set()
+        # The built-in URL can have been a custom server on an earlier release.
+        internet_alias = custom_id(self.app.catalog.url)
         for m in self.app.machines.list():
             src = m.meta.get("source") if isinstance(m.meta.get("source"), dict) else {}
             template = src.get("template_id")
             source = src.get("catalog")
-            if isinstance(source, str) and source.startswith(CUSTOM_PREFIX) and isinstance(template, str):
+            if (isinstance(source, str) and source.startswith(CUSTOM_PREFIX)
+                    and source != internet_alias and isinstance(template, str)):
                 custom.add((source, template))
             else:
                 ids += [m.id, template, src.get("fixture")]

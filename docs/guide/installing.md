@@ -1,4 +1,4 @@
-# Install RetroBoot 3.0.0
+# Install RetroBoot 3.0.3
 
 Select the installer for your computer and download its checksum. The same page has the Mac disk library and a catalog URL you can add during setup. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#installers)
 
@@ -20,6 +20,7 @@ If RetroBoot already runs on the device, use the [upgrade guide](upgrading.md). 
 1. Choose the **Pi 4/5 SD image** or the separate **Zero 2 W SD image**. Write it to a microSD card of at least 16 GB. With Raspberry Pi Imager, choose **Use custom** and leave OS customisation off.
 2. Insert the card and power on the Pi. RetroBoot expands the data partition during the first start.
 3. For a supported touchscreen or small display, use **Display & Sound → Pi Display**. Pi 4/5 supports PowerPC and 68040 Macs. Zero 2 W supports 68040 Macs.
+4. On Zero 2 W, System 7.5.5 starts by default after setup. Choose Mac OS 8.1 in **Startup Disk**. Both are installed on the card and work offline.
 
 A Pi 4 with an old bootloader may need a firmware update before it can boot a GPT card. The Zero 2 W image uses its own boot layout and requires a USB OTG adapter or hub for USB input. Use the correct image for the board.
 

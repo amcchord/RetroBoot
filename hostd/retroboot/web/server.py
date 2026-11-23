@@ -948,4 +948,6 @@ class WebServer:
             if "." not in rel.rsplit("/", 1)[-1] and (root / "index.html").is_file():
                 return web.FileResponse(root / "index.html", headers={"Cache-Control": "no-cache"})
             raise web.HTTPNotFound()
-        return web.FileResponse(p)
+        # Minimal appliance root filesystems may lack the system font MIME mappings.
+        headers = {"Content-Type": "font/ttf"} if p.suffix == ".ttf" else None
+        return web.FileResponse(p, headers=headers)

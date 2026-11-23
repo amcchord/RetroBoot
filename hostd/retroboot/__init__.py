@@ -5,4 +5,4 @@ panel flows, the device-hosted management API, network state, machines and
 checkpoints, and diagnostics. See docs/ARCHITECTURE.md sections 2 and 4-8.
 """
 
-__version__ = "3.0.1"
+__version__ = "3.0.3"

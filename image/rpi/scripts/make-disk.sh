@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stage 4 (Raspberry Pi): assemble the GPT disk image for an SD card, USB SSD or NVMe.
 #
-#   make-disk.sh ROOTDIR BOOTDIR OUT.img DATA_MIB [MACHINE_DIR MACHINE_ID]
+#   make-disk.sh ROOTDIR BOOTDIR OUT.img DATA_MIB [MACHINE_DIR MACHINE_ID FACTORY_MACS]
 #
 # The x86 layout and PARTLABELs, so hostd, retroboot-growdata, the fstab and the
 # slot code see the same disk (ARCHITECTURE 8):
@@ -19,7 +19,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 require_root
 
 root=${1:?rootdir}; boot=${2:?bootdir}; out=${3:?out}; data_mib=${4:?data MiB}
-machine_dir=${5:-}; machine_id=${6:-}
+machine_dir=${5:-}; machine_id=${6:-}; factory_macs=${7:-0}
 esp=$(rcfg esp_mib); bios=$(rcfg biosboot_mib); rootsz=$(rcfg root_mib)
 total=$((1 + esp + bios + rootsz + rootsz + data_mib + 1))
 root_num=3; data_num=5; last_num=5
@@ -83,6 +83,13 @@ sync; umount "$mnt"
 log "populating RBDATA"
 mount "${loop}p$data_num" "$mnt"
 arm64_populate_data "$mnt" "$root" "$machine_dir" "$machine_id"
+if [ "$factory_macs" = 1 ]; then
+  [ "${RB_RPI_MODEL:-pi4-5}" = zero2w ] && [ -z "$machine_dir" ] || die "factory Macs require a Zero 2 W image"
+  PYTHONPATH="$root/usr/lib/retroboot/hostd" python3 "$here/starter_macs.py" "$mnt" --cache "$CACHE/zero2w-macs"
+  rbdata_gid=$(awk -F: '$1=="rbdata"{print $3}' "$root/etc/group")
+  chgrp -R "${rbdata_gid:-0}" "$mnt/machines"
+  chmod 2770 "$mnt/machines" "$mnt/machines/"*/
+fi
 if [ -n "${RB_RPI_LAB_AUTH:-}" ]; then
   # Same private sign-in and configuration authority the installer writes. The
   # source is validated, never sourced as shell, and never copied to the FAT tree.

@@ -9,7 +9,8 @@ from pathlib import Path
 
 import helpers
 from retroboot import catalogs, platform, schema
-from retroboot.config import Paths
+from retroboot.config import Config, Paths
+from retroboot.hostd import Hostd
 from retroboot.machines import MachineError
 from test_lifecycle import Base
 from test_platform import tree
@@ -81,6 +82,40 @@ def zero_profile(root):
     path = root / "usr/lib/retroboot/rpi-profile.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"schema_version": 1, "model": "zero2w"}))
+
+
+class ZeroCatalogDefaults(unittest.TestCase):
+    def test_public_retroboot_catalog_on_zero_only(self):
+        td, root = helpers.scratch()
+        with td:
+            config = helpers.make_config(root, catalog_url=Config().catalog_url)
+            self.assertEqual(Hostd(config).catalog.url, catalogs.CLASSICMAC_CATALOG)
+            zero_profile(root)
+            helpers.make_m68k_package(root)
+            app = Hostd(config)
+            self.assertEqual(app.catalog.url, catalogs.RETROBOOT_CATALOG)
+            self.assertIsNone(app.catalog.auth)
+            self.assertEqual(catalogs.runnable_families(app.paths, app.platform), {"quadra800"})
+
+            config.catalog_url = "https://example.test/custom.json"
+            self.assertEqual(Hostd(config).catalog.url, config.catalog_url)
+
+    def test_mac_from_the_previously_custom_catalog_still_shows_as_imported(self):
+        td, root = helpers.scratch()
+        with td:
+            zero_profile(root)
+            helpers.make_m68k_package(root)
+            app = Hostd(helpers.make_config(root, catalog_url=None))
+            machine = helpers.make_machine(root, "local-mac", "My Mac")
+            meta_path = machine / "machine.json"
+            meta = json.loads(meta_path.read_text())
+            entry = {"id": "system-7-v1", "machineFamily": "quadra800"}
+            for url, imported in ((catalogs.RETROBOOT_CATALOG, True), ("https://example.test/catalog.json", False)):
+                meta["source"] = {"type": "catalog", "template_id": entry["id"], "catalog_url": url,
+                                  "catalog": catalogs.custom_id(url)}
+                meta_path.write_text(json.dumps(meta))
+                listed, = app.catalogs.listing([("internet", [entry])])
+                self.assertEqual(listed.known, imported)
 
 
 class ZeroPowerMacRefusal(Base):

@@ -3,7 +3,7 @@
 # arm64 through qemu-user binfmt). Also reachable as `image/build.sh --board rpi ...`.
 #
 #   image/rpi/build.sh [--flavor debug|product] [--private | --guest ID | --embed-machine DIR]
-#                      [--model pi4-5|pi4|pi5|zero2w] [--no-xz]
+#                      [--model pi4-5|pi4|pi5|zero2w] [--host-only] [--no-xz]
 #   image/rpi/build.sh --flavor F --root-only    the universal installer's arm64 live root
 #                      (image/build.sh --universal): stops after the root and the boot
 #                      partition tree ($RB_WORK_ROOT/work/rpi-<flavor>/{rootfs,boot/bootfs});
@@ -30,7 +30,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/scripts/rpi-lib.sh"
 require_root
 
-flavor=debug; machine_dir=; guest=; private_default=0; do_xz=1; root_only=0
+flavor=debug; machine_dir=; guest=; private_default=0; do_xz=1; root_only=0; host_only=0
 export RB_RPI_MODEL=${RB_RPI_MODEL:-pi4-5}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,6 +42,7 @@ while [ $# -gt 0 ]; do
     --guest) guest=$2; shift 2 ;;
     --no-xz) do_xz=0; shift ;;
     --root-only) root_only=1; shift ;;
+    --host-only) host_only=1; shift ;;
     --no-iso|--no-update|--no-img) shift ;;   # accepted for symmetry with image/build.sh
     *) die "unknown option $1" ;;
   esac
@@ -61,6 +62,7 @@ if [ -n "$guest" ]; then
   [ -z "$machine_dir" ] || die "use either --private/--guest or --embed-machine"
   machine_dir=$("$IMAGE_SRC/scripts/resolve-guest.sh" "$guest")
 fi
+[ "$host_only" = 0 ] || [ -z "$machine_dir" ] || die "--host-only conflicts with an embedded Mac"
 version=$(cfg version)
 model_suffix=rpi; [ "$RB_RPI_MODEL" = pi4-5 ] || model_suffix=rpi-$RB_RPI_MODEL
 suffix=$model_suffix-$flavor; machine_id=
@@ -70,6 +72,16 @@ if [ -n "$machine_dir" ]; then
   suffix=$model_suffix-$flavor-private; machine_id=$(basename "$machine_dir")
 fi
 [ -z "${RB_RPI_LAB_AUTH:-}" ] || [ -n "$machine_dir" ] || die "RB_RPI_LAB_AUTH is allowed only in a private image with an embedded Mac"
+factory_macs=0
+factory_manifest=()
+if [ "$RB_RPI_MODEL" = zero2w ] && [ "$flavor" = product ] && [ -z "$machine_dir" ]; then
+  if [ "$host_only" = 0 ]; then
+    factory_macs=1
+    factory_manifest=(--factory-catalog "$here/config/zero2w-machines.json")
+  else
+    suffix=$suffix-host-only
+  fi
+fi
 src_rev=$(cat "$IMAGE_SRC/.source-revision" 2>/dev/null || echo unknown)
 build_id=${RB_BUILD_ID:-$version-$model_suffix-$(date -u +%Y%m%dT%H%M%SZ)-${src_rev:0:8}}
 # The flavor is part of the output directory: builds started in the same second would
@@ -129,8 +141,8 @@ fi
 
 img=$out/retroboot-$version-$suffix.img
 data_mib=$(rcfg data_mib); [ -n "$machine_dir" ] && data_mib=$(rcfg data_mib_private)
-"$here/scripts/make-disk.sh" "$work/rootfs" "$work/boot" "$img" "$data_mib" "$machine_dir" "$machine_id"
-"$here/scripts/check-image.sh" "$img" "$work/rootfs" > "$out/check.txt" || { cat "$out/check.txt"; die "image check failed"; }
+"$here/scripts/make-disk.sh" "$work/rootfs" "$work/boot" "$img" "$data_mib" "$machine_dir" "$machine_id" "$factory_macs"
+"$here/scripts/check-image.sh" "$img" "$work/rootfs" "$factory_macs" > "$out/check.txt" || { cat "$out/check.txt"; die "image check failed"; }
 cat "$out/check.txt" >&2
 (cd "$out" && sha256sum "$(basename "$img")" > "$(basename "$img").sha256")
 artifacts=(--artifact "$img")
@@ -143,7 +155,7 @@ fi
 python3 "$IMAGE_SRC/scripts/make-manifest.py" --out "$out/retroboot-$version-$suffix.manifest.json" \
   --build-id "$build_id" --flavor "$flavor" --private "$([ -n "$machine_dir" ] && echo 1 || echo 0)" \
   --rootfs "$work/rootfs" --packages "$work/packages-$flavor.tsv" --boot "$work/boot/boot.json" \
-  --source-revision "$src_rev" --machine-dir "$machine_dir" --guest-id "$guest" "${artifacts[@]}"
+  --source-revision "$src_rev" --machine-dir "$machine_dir" --guest-id "$guest" "${factory_manifest[@]}" "${artifacts[@]}"
 ln -sfn "$out" "$RB_WORK_ROOT/out/latest-$suffix"
 log "done: $out"
 ls -lsh "$out" >&2

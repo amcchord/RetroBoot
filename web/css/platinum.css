@@ -3,12 +3,24 @@
  * Lengths are Mac pixels: js/platinum.js zooms <body> so one Mac pixel is an
  * integer number of device pixels.  Chrome comes from the Platinum bundle that
  * hostd generates from the user's own Mac OS disk (--pt-* custom properties set
- * by js/platinum.js); every rule degrades to plain borders, system fonts and
- * RetroBoot's original icons when the bundle is absent.  Geometry and colors
+ * by js/platinum.js). Blank installs use RetroBoot's own fonts, icons and
+ * CSS window chrome. Geometry and colors
  * follow the measured tables in platinum/rbplatinum/chrome.py.
  */
 
 /* ---- Tokens ---------------------------------------------------------------------- */
+
+@font-face {
+  font-family: "RetroBoot System";
+  src: url("../assets/fonts/RetroBoot-System-12.ttf") format("truetype");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "RetroBoot Small";
+  src: url("../assets/fonts/RetroBoot-Small-10.ttf") format("truetype");
+  font-display: swap;
+}
 
 :root {
   --pt-ramp-0: #eeeeee;
@@ -26,14 +38,14 @@
   --ink-2: #555555;
   --ink-disabled: #777777;
   --desk: #63639c;
-  --sys: "RB Charcoal 12", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --small: "RB Geneva 10", Geneva, Verdana, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --sys: "RB Charcoal 12", "RetroBoot System", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --small: "RB Geneva 10", "RetroBoot Small", Geneva, Verdana, -apple-system, "Segoe UI", system-ui, sans-serif;
   --small-bold: "RB Geneva 10 Bold", Geneva, Verdana, -apple-system, "Segoe UI", system-ui, sans-serif;
   --tiny: "RB Geneva 9", Geneva, Verdana, system-ui, sans-serif;
   --mono: "RB Monaco 9", Monaco, ui-monospace, "SFMono-Regular", Consolas, monospace;
   /* Unsmoothed Charcoal for the rare colored system-font text (COLR palettes ignore `color`). */
-  --sys-plain: "RB Charcoal 12 Mono", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --large: "RB Charcoal 24", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --sys-plain: "RB Charcoal 12 Mono", "RetroBoot System", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --large: "RB Charcoal 24", "RetroBoot System", -apple-system, "Segoe UI", system-ui, sans-serif;
   color-scheme: light;
 }
 
@@ -81,6 +93,11 @@ body {
 html.pt-fonts body {
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
+}
+
+html:not(.pt) body {
+  background-image: conic-gradient(#66669d 25%, #606099 0 50%, #66669d 0 75%, #606099 0);
+  background-size: 4px 4px;
 }
 
 h1, h2, h3, h4, p, ul, ol, dl, dd, figure {
@@ -453,9 +470,8 @@ h1[tabindex="-1"]:focus,
 }
 
 html:not(.pt) .doc {
-  border: 1px solid #000;
-  border-top: 22px solid #ccc;
-  box-shadow: 0 -1px 0 #000, 1px 1px 0 #000;
+  border-color: #ccc #888 #888 #ddd;
+  box-shadow: 0 0 0 1px #222, 1px 2px 0 1px rgb(0 0 0 / 28%);
 }
 
 .doc.is-inactive {
@@ -569,7 +585,21 @@ html:not(.pt) .doc-stripes {
 
 html:not(.pt) .title-box {
   border: 1px solid #222;
-  background: #ddd;
+  background: linear-gradient(#eee, #bbb);
+  box-shadow: inset 1px 1px #fff, inset -1px -1px #888;
+}
+
+html:not(.pt) .title-box.zoom::after,
+html:not(.pt) .title-box.collapse::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1px solid #444;
+}
+
+html:not(.pt) .title-box.collapse::after {
+  bottom: auto;
+  border-bottom: 0;
 }
 
 .title-box.close { left: 4px; }
@@ -758,12 +788,26 @@ html:not(.pt) .title-box {
   height: 14px;
   padding: 0;
   border: 0;
-  background: var(--face) var(--pt-disclosure-down) no-repeat center / 12px 14px;
+  background: var(--face) var(--pt-disclosure-down, none) no-repeat center / 12px 14px;
   pointer-events: auto;
 }
 
 .win .shade-box[aria-expanded="false"] {
-  background-image: var(--pt-disclosure-right);
+  background-image: var(--pt-disclosure-right, none);
+}
+
+html:not(.pt) .shade-box::before {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 8px;
+  margin: auto;
+  background: #333;
+  clip-path: polygon(0 25%, 100% 25%, 50% 75%);
+}
+
+html:not(.pt) .shade-box[aria-expanded="false"]::before {
+  transform: rotate(-90deg);
 }
 
 .win-actions {
@@ -859,6 +903,40 @@ html.pt .btn-default {
 
 .btn-default:disabled {
   border-image: var(--pt-button-disabled) 2 fill;
+}
+
+html:not(.pt) .btn {
+  border-width: 1px;
+  border-color: #444;
+  background: linear-gradient(#f4f4f4, #c7c7c7);
+  box-shadow: inset 1px 1px #fff, inset -1px -1px #888;
+}
+
+html:not(.pt) .btn .btn-label {
+  margin-inline: -5px;
+}
+
+html:not(.pt) .btn-default {
+  outline: 1px solid #444;
+  outline-offset: 1px;
+}
+
+html:not(.pt) .btn:active:not(:disabled),
+html:not(.pt) .btn.is-pressed {
+  background: #666;
+  box-shadow: inset 1px 1px #333, inset -1px -1px #888;
+}
+
+html:not(.pt) .btn:disabled,
+html:not(.pt) .btn[aria-disabled="true"] {
+  border-color: #aaa;
+  background: var(--face);
+  box-shadow: none;
+}
+
+html:not(.pt) .btn-default:focus-visible {
+  outline-color: var(--pt-ramp-4);
+  outline-width: 2px;
 }
 
 .btn-small {
@@ -1140,7 +1218,7 @@ input[type="range"]::-webkit-slider-thumb {
   height: 16px;
   margin-top: -3px;
   border: 0;
-  background: var(--pt-ramp-2) var(--pt-slider-thumb) no-repeat;
+  background: var(--pt-ramp-2) var(--pt-slider-thumb, none) no-repeat;
 }
 
 html.pt input[type="range"]::-webkit-slider-thumb {

@@ -153,9 +153,12 @@ class Hostd:
         self.lab_auth = labauth.load(cfg.lab_http_auth_file or (self.paths.data / "config" / "lab-auth.env"))
         if self.lab_auth is not None:
             self.redactor.add(self.lab_auth.secrets()[1])
-        self.catalog = CatalogClient(cfg.catalog_url, self.paths.downloads, ca_file=cfg.catalog_ca_file,
+        from .catalogs import CLASSICMAC_CATALOG, RETROBOOT_CATALOG, Catalogs
+        catalog_url = cfg.catalog_url
+        if catalog_url is None:
+            catalog_url = RETROBOOT_CATALOG if self.platform.is_zero2w else CLASSICMAC_CATALOG
+        self.catalog = CatalogClient(catalog_url, self.paths.downloads, ca_file=cfg.catalog_ca_file,
                                      auth=self.lab_auth)
-        from .catalogs import Catalogs
         self.catalogs = Catalogs(self)    # RetroBoot downloads (with a sign-in) and the Internet catalog
         self.archives = ArchiveSources(self.paths.media, self.paths.installer_dir / "embedded",
                                        enabled=cfg.allow_network_tools)

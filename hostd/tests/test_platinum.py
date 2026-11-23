@@ -1,6 +1,7 @@
 """Platinum asset bundle: served from the data partition with long caching; built once when missing."""
 import asyncio
 import json
+from pathlib import Path
 import sys
 import types
 import unittest
@@ -17,16 +18,22 @@ class PlatinumServeTests(unittest.IsolatedAsyncioTestCase):
         self.td, self.root = helpers.scratch()
         self.addCleanup(self.td.cleanup)
         helpers.make_package(self.root)
-        self.app = Hostd(helpers.make_config(self.root))
+        web = Path(__file__).resolve().parents[2] / "web"
+        self.app = Hostd(helpers.make_config(self.root, web_static=str(web)))
         self.app.loop = asyncio.get_running_loop()
         self.app.settings.store.load()
         self.client = TestClient(TestServer(self.app.web.web_app, host="127.0.0.1"))
         await self.client.start_server()
         self.addAsyncCleanup(self.client.close)
 
-    async def test_absent_bundle_is_404(self):
+    async def test_blank_install_serves_original_fonts_before_pairing(self):
         r = await self.client.get("/assets/platinum/manifest.json")
         self.assertEqual(r.status, 404)
+        for name in ("RetroBoot-System-12", "RetroBoot-Small-10"):
+            r = await self.client.get(f"/assets/fonts/{name}.ttf")
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.content_type, "font/ttf")
+            self.assertTrue((await r.read()).startswith(b"\0\1\0\0"))
 
     async def test_served_with_cache_headers_and_no_escape(self):
         out = self.app.paths.platinum_assets

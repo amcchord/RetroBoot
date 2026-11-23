@@ -11,7 +11,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/rpi-lib.sh"
 require_root
-img=${1:?image}; root=${2:?rootdir}
+img=${1:?image}; root=${2:?rootdir}; factory_macs=${3:-0}
 fail() { echo "FAIL: $*"; exit 1; }
 ok() { echo "ok: $*"; }
 
@@ -123,3 +123,9 @@ else
   [ -x "$root/usr/lib/retroboot/qemu/bin/qemu-system-ppc" ] || fail "PPC emulator missing"
 fi
 [ -x "$root/usr/lib/retroboot/bin/rb-splash" ] && ok "rb-presenter, rb-splash, required emulator packages present"
+if [ "$factory_macs" = 1 ]; then
+  mount -o ro,norecovery "${loop}p$data_num" "$mnt"
+  PYTHONPATH="$root/usr/lib/retroboot/hostd" python3 "$here/starter_macs.py" "$mnt"
+  [ ! -e "$mnt/assets/platinum" ] || fail "public factory image includes a generated Platinum bundle"
+  umount "$mnt"
+fi

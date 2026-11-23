@@ -8,7 +8,9 @@ RetroBoot runs Mac OS on a dedicated PC, Raspberry Pi or Planet Computers Gemini
 
 *RetroBoot 3.0.0 cold-booting to Mac OS 9.2.1 Finder in Proxmox. Playback is shortened.*
 
-## RetroBoot 3.0.1
+## RetroBoot 3.0.3
+
+The Zero 2 W image includes System 7.5.5 and Mac OS 8.1. System 7.5.5 starts by default. Choose Mac OS 8.1 in **Startup Disk**. The web interface has a built-in theme on a fresh installation.
 
 For classic-style mouse acceleration in Mac OS 7, 8 and 9, open **Display & Sound → Keyboard** and turn on **Legacy mouse tracking**. The paired web interface offers the same setting under **Display & Input → Keyboard and Pointer**.
 
@@ -24,7 +26,7 @@ For classic-style mouse acceleration in Mac OS 7, 8 and 9, open **Display & Soun
 | --- | --- | --- |
 | **x86-64 PC** | Hybrid USB/DVD installer ISO. UEFI or legacy BIOS. | Classic PowerPC, Quadra 800 and PowerPC Mac OS X |
 | **Raspberry Pi 4 or 5** | Ready-to-flash microSD image | Classic PowerPC and Quadra 800 |
-| **Raspberry Pi Zero 2 W** | Separate microSD image | Quadra 800 |
+| **Raspberry Pi Zero 2 W** | Separate microSD image with System 7.5.5 and Mac OS 8.1 | Quadra 800 |
 | **Planet Computers Gemini PDA** | Installer bundle run from Gemian | Classic PowerPC and Quadra 800 |
 
 Download the installer or update for your computer without signing in. Consult the installation guide before writing an image or choosing a target disk. [Download RetroBoot](https://mcchord.net/retroboot-downloads/#installers)

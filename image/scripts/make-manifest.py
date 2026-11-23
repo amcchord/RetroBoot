@@ -111,6 +111,7 @@ def main():
                     help='embedded machine directory (repeatable; empty values are ignored)')
     ap.add_argument('--guest-id', action='append', default=[],
                     help='registered guest fixture id of the --machine-dir at the same position, or empty')
+    ap.add_argument('--factory-catalog', type=pathlib.Path, help='pinned public factory Mac archives in startup order')
     ap.add_argument('--artifact', action='append', default=[])
     ap.add_argument('--arm64-rootfs', help='the universal medium\'s arm64 live root (build.sh --universal)')
     ap.add_argument('--arm64-packages')
@@ -153,6 +154,8 @@ def main():
     if embedded:
         manifest['embedded_machine'] = embedded[0]        # the startup Mac (older readers)
         manifest['embedded_machines'] = embedded          # every embedded Mac, in install order
+    if a.factory_catalog:
+        manifest['factory_machines'] = json.loads(a.factory_catalog.read_text())['machines']
     for art in a.artifact:
         st = os.stat(art)
         entry = {'file': os.path.basename(art), 'size_bytes': st.st_size, 'allocated_bytes': st.st_blocks * 512,

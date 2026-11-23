@@ -5,7 +5,7 @@
 // desktop pattern and Platinum control sprites; see platinum/README.md).  When
 // it is present this module registers the fonts, exposes every sprite as a CSS
 // custom property and marks <html> with .pt / .pt-fonts.  When it is absent the
-// page keeps working with RetroBoot's original pixel icons and system fonts.
+// page uses RetroBoot's own bitmap fonts, icons, and CSS window chrome.
 //
 // Every Mac pixel is drawn as an integer number of device pixels: the body is
 // zoomed by k / devicePixelRatio, where k is the "Pixel size" (Auto, 1x-4x).
