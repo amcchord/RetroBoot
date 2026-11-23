@@ -11,6 +11,10 @@ If RetroBoot already runs on the device, use the [upgrade guide](upgrading.md). 
 3. Choose the destination disk. Select a Mac from an available source, or add your catalog through **Image Servers…**. Choose **Install RetroBoot Only…** if you want to add a Mac later.
 4. Review the erase confirmation. Complete installation, remove the installer and restart.
 
+![Choose a Disk shows the empty virtual disk in the running PC installer](../images/pc-install-disk.png)
+
+![Choose Macs to Install shows Internet images, Image Servers, and Install RetroBoot Only](../images/pc-install-machines.png)
+
 ## Raspberry Pi
 
 1. Choose the **Pi 4/5 SD image** or the separate **Zero 2 W SD image**. Write it to a microSD card of at least 16 GB. With Raspberry Pi Imager, choose **Use custom** and leave OS customisation off.
@@ -33,4 +37,4 @@ sudo sh gemini-install.sh --activate
 
 ## Add your first Mac
 
-Open **Download a Mac**, or import a machine archive from USB. If you host your own library, add the catalog URL under **Image Servers…**. Use **Startup Disk** to choose the default Mac. [Image server setup](image-servers.md) · [Mac disk library](disk-library.md)
+Open **Download a Mac**, or import a machine archive from USB. If you host your own library, add the catalog URL under **Image Servers…**. Use **Startup Disk** to choose the default Mac. [Image server setup](image-servers.md) · [Mac disk library](disk-library.md) · [Pair a browser](web-management.md#pair-a-browser)

@@ -17,6 +17,8 @@ flowchart LR
 
 On a PC, quiet GRUB draws the initial checkerboard. The initramfs splash takes over before Linux services start. The presenter then inherits the screen and shows the guest once usable guest frames arrive. Raspberry Pi and Gemini use their platform boot loaders and kernel paths. The host service records the boot stages and offers **Startup Details** on supported builds. The firmware, display handoff and guest startup are measured separately.
 
+[Watch a cold boot to Finder in Proxmox](../images/retroboot-proxmox-boot.gif)
+
 ## The control paths
 
 | Component | Job |

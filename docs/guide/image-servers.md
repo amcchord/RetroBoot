@@ -8,6 +8,8 @@ An image server publishes a small JSON catalog and downloadable machine archives
 - **In the PC installer** — choose **Image Servers…** from **Choose Macs to Install**. The installer carries the saved URLs to the installed system. Choose **Install RetroBoot Only…** if you want to add a guest after installing.
 - **In a paired browser** — open **Storage & Media → Image Servers**, enter one URL per line, then apply the settings.
 
+![The Image Servers panel shows the public RetroBoot catalog URL](../images/image-servers.png)
+
 Use addresses such as `https://macs.example.org/catalog.json` with a certificate trusted by RetroBoot. URLs accept no embedded credentials, query strings or fragments. Custom servers do not receive your RetroBoot downloads sign-in. Removing a server removes its listings. Macs already imported from it stay on your disk.
 
 ## Prepare an archive

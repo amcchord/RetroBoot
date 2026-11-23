@@ -4,6 +4,8 @@ Download a current Mac archive and its SHA-256 checksum. Keep the archive intact
 
 To browse and install from the library on RetroBoot 3.0.0, open **Startup Disk → Install Another… → Download a Mac → Image Servers…** and add `https://mcchord.net/retroboot-downloads/catalog.json`. [Add an image server](image-servers.md)
 
+![Download a Mac with System 7.5.5 selected from the public RetroBoot catalog](../images/download-a-mac.png)
+
 The library groups Macs by runtime and lists OS versions in numerical order. It shows the newest published revision of each edition. Standard and curated editions are separate Macs. Previously downloaded archives can still be imported.
 
 | Runtime | Available images | Requirements |
@@ -21,4 +23,6 @@ The device lists images its installed emulator can start. Add your own HTTPS cat
 - **SuperDeluxe** and **Mega Deluxe** are larger Mac OS 9.2.2 collections. Mega Deluxe v4 includes 111 games and creative activities in Launcher and ACTION GoMac.
 - **Period Edition** adds period software to Jaguar, Panther or Tiger. Tiger Deluxe includes Quake III Arena and iLife ’06. Set **Mac OS X memory** to 2048 MB and select **ATI Radeon** for the Tiger Deluxe setup. Allow 21.2 GB of free space to download and install it.
 
-Downloading another edition creates a new Mac. Choose which one starts in **Startup Disk**.
+Downloading another edition creates a new Mac. Choose **Not Now** to keep the current Mac running, or **Restart** to start the new Mac now. You can also select it later in **Startup Disk**.
+
+![RetroBoot confirms that System 7.5.5 is installed and offers to restart into it](../images/download-finished.png)

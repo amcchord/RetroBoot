@@ -4,7 +4,9 @@ RetroBoot runs Mac OS on a dedicated PC, Raspberry Pi or Planet Computers Gemini
 
 [Install RetroBoot](docs/guide/installing.md) · [Upgrade an existing system](docs/guide/upgrading.md) · [Mac disk library](docs/guide/disk-library.md) · [Host an image server](docs/guide/image-servers.md) · [How it works](docs/dev/how-it-works.md)
 
-![RetroBoot control panel preview on the checkerboard](docs/images/retroboot-panel.png)
+![A cold boot in Proxmox shows the RetroBoot checkerboard, Mac OS 9 startup and Finder](docs/images/retroboot-proxmox-boot.gif)
+
+*RetroBoot 3.0.0 cold-booting to Mac OS 9.2.1 Finder in Proxmox. Playback is shortened.*
 
 ## RetroBoot 3.0.0
 
@@ -30,6 +32,14 @@ Download the installer or update for your computer without signing in. Consult t
 3. Choose the Mac that starts by default. Use the Mac OS **Shut Down** and **Restart** commands for normal guest operation.
 4. For browser management, open **Network & Web Access** on RetroBoot and pair the browser using the displayed address and code.
 
+## Screenshots
+
+| PC installer | Download a Mac | Web overview |
+| --- | --- | --- |
+| [<img src="docs/images/pc-install-machines.png" width="280" alt="The PC installer lists Macs and offers Install RetroBoot Only">](docs/guide/installing.md#x86-64-pc) | [<img src="docs/images/download-a-mac.png" width="280" alt="System 7.5.5 selected in Download a Mac">](docs/guide/disk-library.md) | [<img src="docs/images/web-overview.jpg" width="280" alt="The paired browser shows the running Mac and its live screen">](docs/guide/web-management.md) |
+
+These screens were captured from RetroBoot 3.0.0 running in Proxmox.
+
 ## Under the hood
 
 The Debian host handles your hardware. QEMU runs the Mac, while RetroBoot's presenter draws the startup screen, guest and recovery. The local panel and web app use the same host service for settings and lifecycle commands. PC updates replace a system slot while keeping machines and settings on a separate data volume. [Architecture and boot sequence](docs/dev/how-it-works.md)
@@ -42,6 +52,7 @@ The Debian host handles your hardware. QEMU runs the Mac, while RetroBoot's pres
 | [Upgrade and recover](docs/guide/upgrading.md) | Data preservation and rollback by platform |
 | [Mac disk library](docs/guide/disk-library.md) | Supported guest versions and editions |
 | [Image servers](docs/guide/image-servers.md) | Configure a URL, package a disk and publish a catalog |
+| [Web management](docs/guide/web-management.md) | Pair a browser, see the running Mac, and manage storage |
 | [Build and test](docs/dev/source-builds.md) | Debian build prerequisites and verification |
 | [Appliance notices](image/NOTICES.md) | Third-party packages and firmware |
 
