@@ -789,3 +789,55 @@ def scroll_sprites(pal: Palette) -> dict[str, Canvas]:
     out["scroll-left"] = sprite(transpose(SCROLL_UP), pal)
     out["scroll-right"] = sprite(transpose(SCROLL_DOWN), pal)
     return out
+
+
+def crop_canvas(c, x, y, w, h):
+    out = Canvas(w, h, c.pal)
+    for j in range(h):
+        for i in range(w):
+            out.cells[j][i] = c.cells[y + j][x + i]
+    return out
+
+
+def draw_theme(pal: Palette, put) -> None:
+    """Draw the shared web and local control sprites with their slice widths."""
+    put("window", window(64, 64, pal), slice=[21, 8, 8, 6])
+    put("window-inactive", window(64, 64, pal, active=False), slice=[21, 8, 8, 6])
+    put("window-plain", window(64, 64, pal, title_bar=False), slice=[5, 8, 8, 6])
+    put("content-bevel", content_bevel(8, 8, pal), slice=[1, 1, 1, 1])
+    for kind in ("close", "zoom", "collapse"):
+        put(f"box-{kind}", title_box(kind, pal))
+    put("pinstripes", pinstripes(8, pal), slice=[0, 1, 0, 1])
+    for state in ("normal", "pressed", "disabled", "default", "default-pressed"):
+        c = button(40, 20, pal, state)
+        rows = {"normal": BUTTON, "pressed": BUTTON_PRESSED, "disabled": BUTTON_DISABLED,
+                "default": BUTTON_DEFAULT, "default-pressed": BUTTON_DEFAULT_PRESSED}[state]
+        rep = {"normal": 4, "pressed": 4, "disabled": 2}.get(state, 7)
+        put(f"button-{state}", c, slice=list(slices(rows, rep)), outset=3 if state.startswith("default") else 0)
+    for state, rows in CHECKBOX.items():
+        put(f"checkbox-{state}", sprite(rows, pal))
+    for state, rows in RADIO.items():
+        put(f"radio-{state}", sprite(rows, pal))
+    put("popup", popup(48, pal), slice=[10, 22, 10, 4])
+    put("popup-disabled", popup(48, pal, "disabled"), slice=[10, 22, 10, 4])
+    put("field", field(16, 16, pal), slice=[2, 2, 2, 2])
+    put("field-focus", field(16, 16, pal, True), slice=[3, 3, 3, 3], outset=1)
+    put("group", group_box(16, 16, pal), slice=[2, 2, 2, 2])
+    put("separator", separator(8, pal), slice=[0, 1, 0, 1])
+    put("progress", progress(32, pal, None), slice=[2, 3, 2, 3])
+    fill = progress(64, pal, None, fill_px=30)
+    # the fill as drawn from interior x=2 through the track shadow column after the boundary
+    put("progress-fill", crop_canvas(fill, 2, 2, 30 + 3, 10), slice=[0, 6, 0, 2])
+    put("slider-track", slider_track(16, pal), slice=[0, 3, 0, 2])
+    put("slider-thumb", sprite(SLIDER_THUMB, pal))
+    put("slider-thumb-pressed", sprite(SLIDER_THUMB_PRESSED, pal))
+    put("slider-thumb-plain", sprite(SLIDER_THUMB_PLAIN, pal))
+    put("slider-thumb-plain-pressed", sprite(SLIDER_THUMB_PLAIN_PRESSED, pal))
+    put("alert", alert(40, 40, pal), slice=[3, 5, 4, 4])
+    put("movable", movable(64, 64, pal), slice=[24, 8, 6, 8])
+    put("menubar", menubar(40, pal), slice=[0, 14, 0, 9])
+    put("menu", menu(32, 32, pal), slice=[1, 3, 3, 2])
+    for kind, rows in DISCLOSURE.items():
+        put(f"disclosure-{kind}", sprite(rows, pal))
+    for name, canvas in scroll_sprites(pal).items():
+        put(name, canvas)

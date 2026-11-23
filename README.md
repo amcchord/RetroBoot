@@ -8,9 +8,9 @@ RetroBoot runs Mac OS on a dedicated PC, Raspberry Pi or Planet Computers Gemini
 
 *RetroBoot 3.0.0 cold-booting to Mac OS 9.2.1 Finder in Proxmox. Playback is shortened.*
 
-## RetroBoot 3.0.4
+## RetroBoot 3.0.5
 
-The Zero 2 W image includes System 7.5.5 and Mac OS 8.1. System 7.5.5 starts by default. Choose Mac OS 8.1 in **Startup Disk**. The web interface has a built-in theme on a fresh installation.
+The Zero 2 W image includes System 7.5.5 and Mac OS 8.1. System 7.5.5 starts by default. Choose Mac OS 8.1 in **Startup Disk**. The web and local interfaces open in Platinum before Mac OS is installed.
 
 To use the original mouse tracking in Mac OS 7, 8 and 9, turn on **Legacy mouse tracking** in **Display & Sound → Keyboard**, then choose **Apply and Restart**. Set **Mouse DPI** to match your mouse, or enter **0** for automatic. The paired browser has both settings under **Display & Input → Keyboard and Pointer**.
 

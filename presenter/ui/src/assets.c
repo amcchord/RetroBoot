@@ -1,13 +1,9 @@
 /*
- * assets.c - Platinum fonts, icons and controls from the user's own Mac OS, at runtime.
+ * assets.c - Built-in Platinum controls and optional guest assets.
  *
- * hostd builds a bundle from the guest disk (platinum/README.md) into
- * /var/lib/retroboot/assets/platinum/. When it exists, rbui draws with the real
- * Charcoal 12 (smoothed, 16 coverage levels), Geneva 12 and Geneva 10, the
- * guest's own icons and, when the bundle has them (rbplatinum 2), its Mac OS
- * 9.2.1 control sprites and colours (platinum.c); otherwise the original MIT
- * fonts and icons and the Mac OS 8.1 control tables stay in use. Nothing
- * Apple-derived is compiled in. Formats: platinum/rbplatinum/rbfont.py (.rbf),
+ * rbui loads the image's Platinum controls alongside its own fonts and icons.
+ * A bundle from the user's Mac OS disk can supply these assets at runtime.
+ * Formats: platinum/rbplatinum/rbfont.py (.rbf),
  * bundle.py rbi() (.rbi) and manifest.json (sprite slices, palette).
  */
 #include "rbui_internal.h"
@@ -19,7 +15,12 @@
 
 #include "cJSON.h"
 
+#ifndef RBUI_ASSETS_DEFAULT
 #define RBUI_ASSETS_DEFAULT "/var/lib/retroboot/assets/platinum"
+#endif
+#ifndef RBUI_BUILTIN_ASSETS
+#define RBUI_BUILTIN_ASSETS "/usr/lib/retroboot/platinum-theme"
+#endif
 
 /* rbui font cname -> bundle font file */
 static const struct { const char *name, *file; } kFonts[] = {
@@ -71,6 +72,7 @@ static const int kIconSizes[] = {16, 32, 40, 64};
 static rbi_icon g_icons[NICONS * NSIZES];
 static int g_icon_n;
 static int g_tried;
+static int g_use_builtin;
 /* The loaded bundle's folder and its manifest's identity, to notice hostd's rebuild (a newer
  * rbplatinum swaps a new bundle in while the panel runs): assets_refresh. */
 static char g_dir[512];
@@ -233,12 +235,21 @@ static int load_chrome(const char *dir)
     const cJSON *pal = cJSON_GetObjectItemCaseSensitive(man, "palette");
     const cJSON *ramp = pal ? cJSON_GetObjectItemCaseSensitive(pal, "ramp") : NULL;
     const cJSON *hi = pal ? cJSON_GetObjectItemCaseSensitive(pal, "highlight") : NULL;
+    uint32_t colors[8], highlight;
     if (cJSON_IsArray(ramp) && cJSON_GetArraySize(ramp) == 8 && cJSON_IsString(hi) &&
-        parse_hex(hi->valuestring, &g_highlight) == 0) {
-        g_ramp_ok = 1;
+        parse_hex(hi->valuestring, &highlight) == 0) {
+        int valid = 1;
         for (int i = 0; i < 8; ++i) {
             const cJSON *c = cJSON_GetArrayItem(ramp, i);
-            if (!cJSON_IsString(c) || parse_hex(c->valuestring, &g_ramp[i]) != 0) g_ramp_ok = 0;
+            if (!cJSON_IsString(c) || parse_hex(c->valuestring, &colors[i]) != 0) {
+                valid = 0;
+                break;
+            }
+        }
+        if (valid) {
+            memcpy(g_ramp, colors, sizeof(g_ramp));
+            g_highlight = highlight;
+            g_ramp_ok = 1;
         }
     }
     const cJSON *chrome = cJSON_GetObjectItemCaseSensitive(man, "chrome");
@@ -270,10 +281,11 @@ static int load_chrome(const char *dir)
     return n;
 }
 
-int rbui_load_assets(const char *dir)
+static int load_assets(const char *dir)
 {
     int n = 0;
     g_tried = 1;
+    if (g_use_builtin) load_chrome(RBUI_BUILTIN_ASSETS);
     if (!dir || !*dir) return 0;
     if (dir != g_dir) snprintf(g_dir, sizeof(g_dir), "%s", dir);
     g_stamp = manifest_stamp(dir);
@@ -315,6 +327,12 @@ int rbui_load_assets(const char *dir)
     return n;
 }
 
+int rbui_load_assets(const char *dir)
+{
+    g_use_builtin = 0;
+    return load_assets(dir);
+}
+
 /* Tests: forget loaded assets. The memory stays with its slot until the next load reuses
  * it (an rbui object may still point at a slot). */
 void assets_reset(void)
@@ -333,7 +351,7 @@ int assets_refresh(void)
     long long now = manifest_stamp(g_dir);
     if (now == g_stamp) return 0;
     assets_reset();
-    rbui_load_assets(g_dir);
+    load_assets(g_dir);
     return 1;
 }
 
@@ -341,7 +359,8 @@ void assets_auto(void)
 {
     if (g_tried) return;
     const char *env = getenv("RBUI_ASSETS");
-    rbui_load_assets(env ? env : RBUI_ASSETS_DEFAULT);
+    g_use_builtin = env == NULL;
+    load_assets(env ? env : RBUI_ASSETS_DEFAULT);
 }
 
 const rbf_font *assets_font(const char *name)

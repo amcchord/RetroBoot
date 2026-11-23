@@ -54,6 +54,11 @@ class Image:
         return encode_png(self)
 
 
+def rbi(img: Image) -> bytes:
+    """rbui raw image: 'RBI1', little-endian u16 width and height, then RGBA rows."""
+    return b"RBI1" + struct.pack("<HH", img.w, img.h) + bytes(v for c in img.px for v in c)
+
+
 def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 

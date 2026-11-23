@@ -1,7 +1,7 @@
 // Original pixel-art icons and the RetroBoot wordmark, drawn for this project.
 // Each icon is a 16×16 grid; characters map to theme colors (see .px-* in CSS).
 
-import { bundleIcon } from './platinum.js';
+import { bundleIcon, onPlatinum } from './platinum.js';
 
 const PALETTE = {
   '#': 'ink',
@@ -323,18 +323,32 @@ function pixelSvg(rows, size, label) {
   return out + '</svg>';
 }
 
-/** Markup for an icon: the guest's own icon from the Platinum bundle when present,
- * otherwise RetroBoot's original pixel art (trusted, generated locally). */
-export function pixelIcon(name, size = 32) {
+function guestIcon(name, size) {
   const b = bundleIcon(name, size);
-  if (b) {
-    const px = size <= 20 ? 16 : size >= 64 ? 64 : 32;
-    return `<img class="pt-icon" src="${b.src}" width="${px}" height="${px}" alt="" draggable="false">`;
-  }
+  if (!b) return '';
+  const px = size <= 20 ? 16 : size >= 64 ? 64 : 32;
+  return `<img class="pt-icon" src="${b.src}" width="${px}" height="${px}" alt="" draggable="false">`;
+}
+
+/** Use RetroBoot's pixel art until the optional guest icon becomes available. */
+export function pixelIcon(name, size = 32) {
+  const guest = guestIcon(name, size);
+  if (guest) return guest;
   const key = `${name}:${size}`;
-  if (!cache.has(key)) cache.set(key, pixelSvg(PIXELS[name] || PIXELS.mac, size));
+  if (!cache.has(key)) {
+    const icon = pixelSvg(PIXELS[name] || PIXELS.mac, size);
+    cache.set(key, icon.replace('<svg ', `<svg data-platinum-icon="${encodeURIComponent(name)}" `));
+  }
   return cache.get(key);
 }
+
+onPlatinum(() => {
+  // Update existing icons without replacing the surrounding form or page.
+  for (const svg of document.querySelectorAll('svg[data-platinum-icon]')) {
+    const icon = guestIcon(decodeURIComponent(svg.dataset.platinumIcon), Number(svg.getAttribute('width')));
+    if (icon) svg.outerHTML = icon;
+  }
+});
 
 // ---- Wordmark: a chunky 5×7 pixel face, emboldened by smearing one pixel right.
 

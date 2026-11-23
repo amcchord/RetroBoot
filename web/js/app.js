@@ -6,7 +6,7 @@ import { pixelIcon, wordmark, lineIcon } from './icons.js';
 import { store, subscribe, refreshStatus, refreshSettings, startPolling, stopPolling } from './store.js';
 import { button, toast, mountToasts, guestStateInfo, led, docWindow, dialog } from './ui.js';
 import { menubar } from './menubar.js';
-import { loadPlatinum, pixelPref, setPixelPref, pt, autoScale, scaleExact } from './platinum.js';
+import { loadPlatinum, pixelPref, setPixelPref, autoScale, scaleExact } from './platinum.js';
 import { hw, formFactor } from './words.js';
 import { lifecycle, lifecycleAvailability, hostPower, collectEvidence } from './actions.js';
 import { mountTray } from './jobs.js';
@@ -107,8 +107,7 @@ function currentPage() {
 function aboutRetroBoot() {
   const s = store.status || {};
   const v = (s.update && s.update.current && s.update.current.label) || (s.host && s.host.version) || (s.versions && s.versions.RetroBoot) || 'unknown';
-  const fonts = pt.ready ? 'Fonts, icons and controls come from your own Mac OS disk.' : 'Mac OS fonts and icons appear here once RetroBoot has read them from your Mac OS disk.';
-  return dialog({ title: 'RetroBoot', icon: 'mac', message: [`Version ${v}.`, fonts], buttons: [{ label: 'OK', value: 'ok', variant: 'default', autofocus: true }] });
+  return dialog({ title: 'RetroBoot', icon: 'mac', message: `Version ${v}.`, buttons: [{ label: 'OK', value: 'ok', variant: 'default', autofocus: true }] });
 }
 
 function buildMenus() {
@@ -411,13 +410,8 @@ function bootError(err) {
 }
 
 let listenersInstalled = false;
-let platinumLoaded = false;
 async function boot() {
   stopPowerWatch();
-  if (!platinumLoaded) {
-    platinumLoaded = true;
-    await loadPlatinum();
-  }
   if (!listenersInstalled) {
     listenersInstalled = true;
     subscribe('host-power', showPowerScreen);
@@ -439,4 +433,5 @@ async function boot() {
   else startApp();
 }
 
+void loadPlatinum();
 boot();

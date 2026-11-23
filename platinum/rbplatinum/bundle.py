@@ -24,7 +24,6 @@ import hashlib
 import json
 import os
 import shutil
-import struct
 import sys
 import tempfile
 import time
@@ -32,7 +31,7 @@ from pathlib import Path
 
 from . import __version__, bitfont, chrome, icons, metal, pict, rbfont, startup, ttfwriter
 from .canvas import Palette, LAVENDER, PURPLE
-from .image import Image
+from .image import Image, rbi
 from .macdisk import open_disk
 from .rsrc import ResourceFile
 
@@ -312,46 +311,7 @@ class Bundle:
             self.write(f"chrome/{name}.rbi", rbi(img))      # the classic panel draws these (presenter/ui)
             m[name] = {"file": f"chrome/{name}.png", "rbi": f"chrome/{name}.rbi", "size": [img.w, img.h], **meta}
 
-        put("window", chrome.window(64, 64, pal), slice=[21, 8, 8, 6])
-        put("window-inactive", chrome.window(64, 64, pal, active=False), slice=[21, 8, 8, 6])
-        put("window-plain", chrome.window(64, 64, pal, title_bar=False), slice=[5, 8, 8, 6])
-        put("content-bevel", chrome.content_bevel(8, 8, pal), slice=[1, 1, 1, 1])
-        for kind in ("close", "zoom", "collapse"):
-            put(f"box-{kind}", chrome.title_box(kind, pal))
-        put("pinstripes", chrome.pinstripes(8, pal), slice=[0, 1, 0, 1])
-        for state in ("normal", "pressed", "disabled", "default", "default-pressed"):
-            c = chrome.button(40, 20, pal, state)
-            rows = {"normal": chrome.BUTTON, "pressed": chrome.BUTTON_PRESSED, "disabled": chrome.BUTTON_DISABLED,
-                    "default": chrome.BUTTON_DEFAULT, "default-pressed": chrome.BUTTON_DEFAULT_PRESSED}[state]
-            rep = {"normal": 4, "pressed": 4, "disabled": 2}.get(state, 7)
-            put(f"button-{state}", c, slice=list(chrome.slices(rows, rep)), outset=3 if state.startswith("default") else 0)
-        for state, rows in chrome.CHECKBOX.items():
-            put(f"checkbox-{state}", chrome.sprite(rows, pal))
-        for state, rows in chrome.RADIO.items():
-            put(f"radio-{state}", chrome.sprite(rows, pal))
-        put("popup", chrome.popup(48, pal), slice=[10, 22, 10, 4])
-        put("popup-disabled", chrome.popup(48, pal, "disabled"), slice=[10, 22, 10, 4])
-        put("field", chrome.field(16, 16, pal), slice=[2, 2, 2, 2])
-        put("field-focus", chrome.field(16, 16, pal, True), slice=[3, 3, 3, 3], outset=1)
-        put("group", chrome.group_box(16, 16, pal), slice=[2, 2, 2, 2])
-        put("separator", chrome.separator(8, pal), slice=[0, 1, 0, 1])
-        put("progress", chrome.progress(32, pal, None), slice=[2, 3, 2, 3])
-        fill = chrome.progress(64, pal, None, fill_px=30)
-        # the fill as drawn from interior x=2 through the track shadow column after the boundary
-        put("progress-fill", crop_canvas(fill, 2, 2, 30 + 3, 10), slice=[0, 6, 0, 2])
-        put("slider-track", chrome.slider_track(16, pal), slice=[0, 3, 0, 2])
-        put("slider-thumb", chrome.sprite(chrome.SLIDER_THUMB, pal))
-        put("slider-thumb-pressed", chrome.sprite(chrome.SLIDER_THUMB_PRESSED, pal))
-        put("slider-thumb-plain", chrome.sprite(chrome.SLIDER_THUMB_PLAIN, pal))
-        put("slider-thumb-plain-pressed", chrome.sprite(chrome.SLIDER_THUMB_PLAIN_PRESSED, pal))
-        put("alert", chrome.alert(40, 40, pal), slice=[3, 5, 4, 4])
-        put("movable", chrome.movable(64, 64, pal), slice=[24, 8, 6, 8])
-        put("menubar", chrome.menubar(40, pal), slice=[0, 14, 0, 9])
-        put("menu", chrome.menu(32, 32, pal), slice=[1, 3, 3, 2])
-        for kind, rows in chrome.DISCLOSURE.items():
-            put(f"disclosure-{kind}", chrome.sprite(rows, pal))
-        for name, canvas in chrome.scroll_sprites(pal).items():
-            put(name, canvas)
+        chrome.draw_theme(pal, put)
 
     # -- the installer's startup box ---------------------------------------------
     def startup(self, pal: Palette) -> None:
@@ -385,20 +345,6 @@ class Bundle:
             self.disk.close()
         self.write("manifest.json", json.dumps(self.manifest, indent=1, sort_keys=True).encode())
         return self.manifest
-
-
-def crop_canvas(c, x, y, w, h):
-    from .canvas import Canvas
-    out = Canvas(w, h, c.pal)
-    for j in range(h):
-        for i in range(w):
-            out.cells[j][i] = c.cells[y + j][x + i]
-    return out
-
-
-def rbi(img: Image) -> bytes:
-    """rbui raw icon: 'RBI1', u16 w, u16 h (little-endian), then RGBA rows."""
-    return b"RBI1" + struct.pack("<HH", img.w, img.h) + bytes(v for c in img.px for v in c)
 
 
 def build(source: str, out: str | os.PathLike, force: bool = False, wordmark_kit: str | None = None) -> dict:

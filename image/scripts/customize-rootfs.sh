@@ -147,8 +147,9 @@ else
   note_component apps '{"name":"apps","kind":"absent"}'
 fi
 if [ -d "$comp/platinum/rbplatinum" ]; then
-  # Builds the Platinum asset bundle (fonts, icons, chrome) from the guest disk;
-  # hostd runs it before a launch when /var/lib/retroboot/assets/platinum is missing.
+  # Install the default local theme independently of the optional guest bundle.
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$comp/platinum" \
+    python3 -m rbplatinum builtin --out "$root/usr/lib/retroboot/platinum-theme"
   install -d "$root/usr/lib/retroboot/platinum"
   cp -a "$comp/platinum/rbplatinum" "$root/usr/lib/retroboot/platinum/"
   find "$root/usr/lib/retroboot/platinum" -name __pycache__ -prune -exec rm -rf {} +

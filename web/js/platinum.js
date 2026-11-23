@@ -4,8 +4,8 @@
 // /assets/platinum/ (fonts drawn from Charcoal/Geneva/Monaco, icons, the
 // desktop pattern and Platinum control sprites; see platinum/README.md).  When
 // it is present this module registers the fonts, exposes every sprite as a CSS
-// custom property and marks <html> with .pt / .pt-fonts.  When it is absent the
-// page uses RetroBoot's own bitmap fonts, icons, and CSS window chrome.
+// custom property. RetroBoot's own bitmap fonts, icons, and control sprites
+// are available before any request for the guest bundle.
 //
 // Every Mac pixel is drawn as an integer number of device pixels: the body is
 // zoomed by k / devicePixelRatio, where k is the "Pixel size" (Auto, 1x-4x).
@@ -206,44 +206,52 @@ const FONT_VARS = {
 
 export async function loadPlatinum() {
   applyScale();
+  watchSnap();
   let manifest;
   try {
     const r = await fetch(`${BASE}manifest.json`, { credentials: 'same-origin', cache: 'no-cache' });
-    if (!r.ok) throw new Error(String(r.status));
+    if (!r.ok) return false;
     manifest = await r.json();
   } catch {
-    root.classList.add('pt-absent');
     return false;
   }
+  if (manifest?.format !== 1) return false;
   pt.manifest = manifest;
   pt.version = String(manifest.created || manifest.generator || '1');
   pt.icons = manifest.icons || {};
   const loads = [];
   if ('FontFace' in window && document.fonts) {
     for (const [name, f] of Object.entries(manifest.fonts || {})) {
-      const ttf = (f.files || []).find((p) => p.endsWith('.ttf'));
-      if (!ttf) continue;
-      const face = new FontFace(f.family, `url("${url(ttf)}") format("truetype")`, { display: 'block' });
-      document.fonts.add(face);
-      loads.push(face.load().then(() => FONT_VARS[name] && root.style.setProperty(FONT_VARS[name], `"${f.family}"`)).catch(() => null));
+      const ttf = Array.isArray(f?.files) && f.files.find((p) => typeof p === 'string' && p.endsWith('.ttf'));
+      if (!ttf || typeof f.family !== 'string') continue;
+      const face = new FontFace(f.family, `url("${url(ttf)}") format("truetype")`, { display: 'swap' });
+      loads.push(face.load().then(() => {
+        document.fonts.add(face);
+        if (FONT_VARS[name]) root.style.setProperty(FONT_VARS[name], `"${f.family}"`);
+        if (name === 'charcoal-12') root.classList.add('pt-fonts');
+        snapText();
+      }).catch(() => null));
     }
   }
   for (const [name, c] of Object.entries(manifest.chrome || {})) {
-    root.style.setProperty(`--pt-${name}`, `url("${url(c.file)}")`);
+    if (typeof c?.file === 'string') root.style.setProperty(`--pt-${name}`, `url("${url(c.file)}")`);
   }
   for (const [name, c] of Object.entries(manifest.cursors || {})) {
+    if (typeof c?.file !== 'string' || !Array.isArray(c.hotspot)) continue;
     root.style.setProperty(`--pt-cursor-${name}`, `url("${url(c.file)}") ${c.hotspot[0]} ${c.hotspot[1]}`);
     root.style.setProperty(`--pt-cursor-${name}-img`, `url("${url(c.file)}")`);
+    if (name === 'watch') root.classList.add('pt-guest-watch');
   }
-  if (manifest.desktop) root.style.setProperty('--pt-desktop', `url("${url(manifest.desktop.file)}")`);
+  if (typeof manifest.desktop?.file === 'string') {
+    root.style.setProperty('--pt-desktop', `url("${url(manifest.desktop.file)}")`);
+    root.style.setProperty('--pt-desktop-size', 'auto');
+  }
   const pal = manifest.palette || {};
-  (pal.ramp || []).forEach((c, i) => root.style.setProperty(`--pt-ramp-${i}`, c));
+  if (Array.isArray(pal.ramp)) pal.ramp.forEach((c, i) => root.style.setProperty(`--pt-ramp-${i}`, c));
   if (pal.highlight) root.style.setProperty('--pt-highlight', pal.highlight);
   pt.ready = true;
-  root.classList.add('pt');
   await Promise.race([Promise.all(loads), new Promise((res) => setTimeout(res, 3000))]);
-  if (manifest.fonts && manifest.fonts['charcoal-12']) root.classList.add('pt-fonts');
   for (const fn of listeners) fn(pt);
-  watchSnap();
+  snapText();
   return true;
 }

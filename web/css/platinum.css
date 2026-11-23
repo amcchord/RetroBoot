@@ -1,11 +1,8 @@
 /* RetroBoot web management in Mac OS 9 "Platinum".
  *
  * Lengths are Mac pixels: js/platinum.js zooms <body> so one Mac pixel is an
- * integer number of device pixels.  Chrome comes from the Platinum bundle that
- * hostd generates from the user's own Mac OS disk (--pt-* custom properties set
- * by js/platinum.js). Blank installs use RetroBoot's own fonts, icons and
- * CSS window chrome. Geometry and colors
- * follow the measured tables in platinum/rbplatinum/chrome.py.
+ * integer number of device pixels. platinum-theme.css supplies the default
+ * control sprites. js/platinum.js can apply assets from the user's Mac OS disk.
  */
 
 /* ---- Tokens ---------------------------------------------------------------------- */
@@ -82,7 +79,8 @@ body {
   font: 12px/16px var(--sys);
   color: var(--ink);
   background-color: var(--desk);
-  background-image: var(--pt-desktop, none);
+  background-image: var(--pt-desktop, conic-gradient(#66669d 25%, #606099 0 50%, #66669d 0 75%, #606099 0));
+  background-size: var(--pt-desktop-size, 4px 4px);
   image-rendering: pixelated;
   font-kerning: none;
   font-synthesis: none;
@@ -93,11 +91,6 @@ body {
 html.pt-fonts body {
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
-}
-
-html:not(.pt) body {
-  background-image: conic-gradient(#66669d 25%, #606099 0 50%, #66669d 0 75%, #606099 0);
-  background-size: 4px 4px;
 }
 
 h1, h2, h3, h4, p, ul, ol, dl, dd, figure {
@@ -1301,7 +1294,6 @@ html.pt .progress-fill {
   display: inline-block;
   width: 16px;
   height: 16px;
-  background: var(--pt-cursor-watch-img, none);
   border: 2px solid #000;
   border-right-color: transparent;
   border-radius: 50%;
@@ -1309,7 +1301,7 @@ html.pt .progress-fill {
 }
 
 /* With the bundle, busy is the Mac OS watch cursor. */
-html.pt .spinner {
+html.pt-guest-watch .spinner {
   border: 0;
   border-radius: 0;
   animation: none;

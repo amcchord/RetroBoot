@@ -40,11 +40,11 @@ enum { RBUI_BG_CHECKERBOARD = 0, RBUI_BG_BLACK = 1, RBUI_BG_IMAGE_DIMMED = 2,
        /* bg_image as it is (the presenter's DPI-aware checkerboard) */
        RBUI_BG_IMAGE = 3 };
 
-/* The first rbui_new() loads the Platinum asset bundle (fonts and icons generated
- * from the user's own Mac OS disk) from $RBUI_ASSETS, else
- * /var/lib/retroboot/assets/platinum; RBUI_ASSETS="" keeps the original fonts.
+/* The first rbui_new() loads the image's Platinum chrome, then optionally uses
+ * fonts, icons and controls from /var/lib/retroboot/assets/platinum.
+ * RBUI_ASSETS selects an explicit bundle; RBUI_ASSETS="" uses compiled-in assets.
  * rbui_load_assets() loads from a directory explicitly (before rbui_new);
- * returns the number of fonts and icons loaded. */
+ * returns the number of fonts, icons and sprites loaded. */
 int rbui_load_assets(const char *dir);
 rbui *rbui_new(void);
 void rbui_free(rbui *ui);

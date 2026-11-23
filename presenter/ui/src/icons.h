@@ -29,7 +29,7 @@ const rb_sprite *assets_sprite(const char *name);          /* assets.c; NULL if 
 int assets_ramp(uint32_t ramp[8], uint32_t *highlight);    /* 1 when the bundle has its colours */
 void assets_auto(void);
 int assets_refresh(void);   /* reload a bundle hostd has rebuilt since; 1 when it did */
-void assets_reset(void);  /* tests */   /* load the bundle once: $RBUI_ASSETS, else /var/lib/retroboot/assets/platinum */
+void assets_reset(void);  /* tests */
 
 extern const rbi_icon rbui_icons[];
 extern const int rbui_icon_count;

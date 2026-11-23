@@ -3,8 +3,10 @@
     python3 -m unittest discover -s platinum/tests -v
     RB_PLATINUM_DISK=/private/copy/disk.img also runs the fixture test.
 """
+from base64 import b64decode
 import json
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -177,6 +179,26 @@ class Chrome(unittest.TestCase):
 
 
 class BundleTests(unittest.TestCase):
+    def test_builtin_chrome_matches_the_web_stylesheet(self):
+        from rbplatinum import builtin
+
+        css = Path(__file__).resolve().parents[2] / "web" / "css" / "platinum-theme.css"
+        browser_sprites = dict(re.findall(r'--pt-([\w-]+): url\("data:image/png;base64,([^"]+)"\)', css.read_text()))
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "panel"
+            builtin.build(out, None)
+            manifest = json.loads((out / "manifest.json").read_text())
+            self.assertEqual(manifest["format"], 1)
+            sprites = manifest["chrome"]
+            self.assertIn("button-default", sprites)
+            self.assertEqual(browser_sprites.keys(), sprites.keys())
+            for name, entry in sprites.items():
+                with self.subTest(sprite=name):
+                    img = decode_png(b64decode(browser_sprites[name]))
+                    raw = (out / entry["rbi"]).read_bytes()
+                    self.assertEqual(struct.unpack("<4sHH", raw[:8]), (b"RBI1", img.w, img.h))
+                    self.assertEqual(raw[8:], bytes(channel for pixel in img.px for channel in pixel))
+
     def test_build_without_apple_data(self):
         from rbplatinum import bundle
         with tempfile.TemporaryDirectory() as td:
