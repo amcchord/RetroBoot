@@ -224,6 +224,7 @@ struct presenter {
     double gx, gy;
     bool pointer_dirty;
     bool relative_pointer; /* negotiated by QEMU; old backends retain absolute input */
+    bool classic_guest, legacy_mouse;
     struct rb_pointer_delta relative_remainder;
     unsigned guest_buttons;
     double px, py;
@@ -3490,7 +3491,7 @@ static void panel_pointer(struct presenter *p)
     }
 }
 
-static void on_motion(void *data, double dx, double dy)
+static void on_motion(void *data, double dx, double dy, const struct rb_pointer_delta *legacy)
 {
     struct presenter *p = data;
     touch_input(p);
@@ -3504,8 +3505,9 @@ static void on_motion(void *data, double dx, double dy)
     if (p->py > p->H - 1) p->py = p->H - 1;
     if (p->layout_ok) {
         double ratio = rb_layout_ratio(&p->layout);
-        p->gx += dx * p->speed / ratio;
-        p->gy += dy * p->speed / ratio;
+        bool use_legacy = legacy && p->classic_guest && !p->relative_pointer && guest_routing(p);
+        p->gx += use_legacy ? legacy->x * p->speed : dx * p->speed / ratio;
+        p->gy += use_legacy ? legacy->y * p->speed : dy * p->speed / ratio;
         clamp_guest_pointer(p);
         if (p->relative_pointer && guest_routing(p) && p->guest.px) {
             /* Physical mice/trackpads must reach InputSprocket as deltas.
@@ -4545,6 +4547,7 @@ static cJSON *status_json(struct presenter *p, const cJSON *id)
     cJSON_AddBoolToObject(cfg, "swap_command_option", p->swap);
     cJSON_AddStringToObject(cfg, "recovery_chord", rb_chord_name(p->chord_key));
     cJSON_AddNumberToObject(cfg, "pointer_speed", p->speed);
+    cJSON_AddBoolToObject(cfg, "legacy_mouse", p->legacy_mouse);
     cJSON_AddBoolToObject(cfg, "guest_input", p->guest_input);
     cJSON_AddItemToObject(r, "remote", remote_json(p));
     cJSON_AddItemToObject(r, "input", input_json(p));
@@ -4689,6 +4692,7 @@ static void on_request(void *data, const cJSON *req)
             return;
         }
         p->fallback = false;
+        p->classic_guest = s.classic_guest;
         set_scene(p, s.scene, s.reveal, s.background);
         cJSON *r = reply_new(id, true);
         cJSON_AddStringToObject(r, "scene", rb_scene_name(p->scene));
@@ -4775,6 +4779,10 @@ static void on_request(void *data, const cJSON *req)
             p->chord_key = in.chord;
         if (in.has_speed)
             p->speed = in.speed;
+        if (in.has_legacy_mouse) {
+            p->legacy_mouse = in.legacy_mouse;
+            rb_input_set_legacy_mouse(p->input, p->legacy_mouse);
+        }
         if (in.has_touch_gestures && in.touch_gestures != p->touch_gestures) {
             p->touch_gestures = in.touch_gestures;
             rb_gesture_cancel(&p->gesture);

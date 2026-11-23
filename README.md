@@ -8,7 +8,11 @@ RetroBoot runs Mac OS on a dedicated PC, Raspberry Pi or Planet Computers Gemini
 
 *RetroBoot 3.0.0 cold-booting to Mac OS 9.2.1 Finder in Proxmox. Playback is shortened.*
 
-## RetroBoot 3.0.0
+## RetroBoot 3.0.1
+
+For classic-style mouse acceleration in Mac OS 7, 8 and 9, open **Display & Sound → Keyboard** and turn on **Legacy mouse tracking**. The paired web interface offers the same setting under **Display & Input → Keyboard and Pointer**.
+
+### Image catalogs and installation
 
 - **Bring your own Mac images.** Add HTTPS catalog URLs in the installer, the local Download a Mac panel, or the paired browser. Import a machine archive directly if you already have the file.
 - **Set up the computer first.** Install RetroBoot without a guest, then choose or import a Mac after the first boot.

@@ -52,6 +52,12 @@ int rb_parse_set_scene(const cJSON *req, struct rb_scene_req *out, char *err, si
         snprintf(err, errlen, "unknown scene '%.40s'", s);
         return -1;
     }
+    const cJSON *classic = cJSON_GetObjectItemCaseSensitive(req, "classic_guest");
+    if (classic && !cJSON_IsBool(classic)) {
+        snprintf(err, errlen, "classic_guest must be a boolean");
+        return -1;
+    }
+    out->classic_guest = out->scene == RB_SCENE_GUEST && cJSON_IsTrue(classic);
     const cJSON *reveal = cJSON_GetObjectItemCaseSensitive(req, "reveal");
     out->reveal = RB_REVEAL_FIRST_CONTENT;
     if (reveal && !cJSON_IsNull(reveal)) {
@@ -273,6 +279,15 @@ int rb_parse_input_config(const cJSON *req, struct rb_input_req *out, char *err,
         }
         out->has_speed = true;
         out->speed = speed->valuedouble;
+    }
+    const cJSON *legacy = cJSON_GetObjectItemCaseSensitive(req, "legacy_mouse");
+    if (legacy) {
+        if (!cJSON_IsBool(legacy)) {
+            snprintf(err, errlen, "legacy_mouse must be a boolean");
+            return -1;
+        }
+        out->has_legacy_mouse = true;
+        out->legacy_mouse = cJSON_IsTrue(legacy);
     }
     const cJSON *tg = cJSON_GetObjectItemCaseSensitive(req, "touch_gestures");
     if (tg) {

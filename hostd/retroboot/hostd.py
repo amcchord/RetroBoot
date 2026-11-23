@@ -332,7 +332,10 @@ class Hostd:
 
     # -- presenter plumbing --------------------------------------------------------
     async def show_scene(self, scene: str, **kw) -> None:
-        if scene == "panel":
+        if scene == "guest":
+            machine = self.supervisor.machine
+            kw["classic_guest"] = machine is not None and not machine.osx
+        elif scene == "panel":
             # A stopped Mac may leave a different next-start Mac selected. Refresh
             # its neutral backdrop before displaying recovery or missing media.
             await self.startup.push_config()

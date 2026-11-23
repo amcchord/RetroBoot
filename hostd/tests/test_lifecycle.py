@@ -98,7 +98,7 @@ class AutostartLifecycle(Base):
         sup = self.app.supervisor
         scenes = self.fp.requests_of("set_scene")
         self.assertEqual(scenes[0]["scene"], "splash")
-        self.assertIn({"cmd": "set_scene", "scene": "guest", "reveal": "first-content"},
+        self.assertIn({"cmd": "set_scene", "scene": "guest", "reveal": "first-content", "classic_guest": True},
                       [{k: v for k, v in r.items() if k != "id"} for r in scenes])
         content = self.ev("guest_content")[0]
         self.assertEqual(content["via"], "presenter")
@@ -406,7 +406,8 @@ class RecoveryAndPower(Base):
         self.fp.click("cancel")
         await self.until_doc("recovery-main")
         self.fp.click("cancel")
-        await helpers.wait_for(lambda: self.fp.scene == {"scene": "guest", "reveal": "now"}, 5, what="guest scene")
+        await helpers.wait_for(lambda: self.fp.scene == {"scene": "guest", "reveal": "now", "classic_guest": True},
+                               5, what="guest scene")
         self.fp.emit({"event": "power_button"})
         await self.until_event("power_button")
         await self.until_event("power_dialog_detected")
@@ -624,6 +625,17 @@ class SettingsApply(Base):
         self.fp.click("cancel")                                 # the volume stays, as in Mac OS
         await self.until_doc("recovery-main")
         self.assertEqual(self.app.settings.applied["audio.volume"], 35)
+        self.fp.click("pane", {"pane": "display"})
+        await self.until_doc("display-sound")
+        self.fp.change("page", "keyboard")
+        await helpers.wait_for(lambda: find_item(self.fp.doc, "input.legacy_mouse") is not None, 5,
+                               what="Legacy mouse tracking")
+        self.assertFalse(self.app.settings.applied["input.legacy_mouse"])
+        self.fp.change("input.legacy_mouse", True)
+        self.fp.click("apply")
+        await self.until_doc("recovery-main")
+        self.assertTrue(self.app.settings.applied["input.legacy_mouse"])
+        self.assertTrue(self.fp.requests_of("input_config")[-1]["legacy_mouse"])
 
     async def test_display_mode_reverts_unless_kept(self):
         await self.running()

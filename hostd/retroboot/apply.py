@@ -31,7 +31,8 @@ DISPLAY_KEYS = ("display.pixel_scale", "display.guest_size", "display.scaling", 
                 "display.primary", "display.rotation", "display.rotation_lock")
 # What GRUB's background (rb-bootdisplay) depends on: the grid, the orientation and the startup indicator.
 BOOT_DISPLAY_KEYS = ("display.pixel_scale", "display.guest_size", "display.rotation", "startup.progress_indicator")
-INPUT_KEYS = ("input.swap_command_option", "input.recovery_chord", "input.pointer_speed", "input.touch_gestures")
+INPUT_KEYS = ("input.swap_command_option", "input.recovery_chord", "input.pointer_speed",
+              "input.legacy_mouse", "input.touch_gestures")
 
 
 class ApplyEngine:
@@ -61,6 +62,7 @@ class ApplyEngine:
         out = {"swap_command_option": a["input.swap_command_option"],
                "recovery_chord": a["input.recovery_chord"],
                "pointer_speed": a["input.pointer_speed"],
+               "legacy_mouse": a["input.legacy_mouse"],
                "touch_gestures": a.get("input.touch_gestures", True)}
         # Gemini PDA: its keyboard's keycaps (presenter gemkbd.c); lab: touchscreen axes.
         # Sent only when they apply, so a PC's request is unchanged.

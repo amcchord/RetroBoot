@@ -786,7 +786,8 @@ class PcHostdUnchangedTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("lid_sleep", st["power"])            # PCs: the lid blanks the panel only
             self.assertEqual(app.lidsleep.action, "blank")
             self.assertEqual(set(app.apply_engine.input_config()),
-                             {"swap_command_option", "recovery_chord", "pointer_speed", "touch_gestures"})
+                             {"swap_command_option", "recovery_chord", "pointer_speed",
+                              "legacy_mouse", "touch_gestures"})
             self.assertFalse(app.capabilities()["speaker_switch"])
             marker = root / "bootdisplay-ran"
             app.cfg.bootdisplay_cmd = ["touch", str(marker)]

@@ -18,6 +18,7 @@ struct rb_scene_req {
     enum rb_scene scene;
     enum rb_reveal reveal;
     enum rb_panel_bg background;
+    bool classic_guest;
 };
 
 struct rb_display_req {
@@ -57,6 +58,8 @@ struct rb_input_req {
     int chord; /* evdev trigger */
     bool has_speed;
     double speed;
+    bool has_legacy_mouse;
+    bool legacy_mouse;
     bool has_touch_gestures;
     bool touch_gestures; /* touch.h: tap, drag, two-finger tap / long press, two-finger scroll */
     bool has_keyboard_layout;

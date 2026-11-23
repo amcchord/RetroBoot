@@ -28,6 +28,10 @@ struct rb_input {
     void *data;
     int screen_w, screen_h;
     int devices;
+    bool legacy_mouse_enabled;
+    struct libinput_device *motion_device;
+    double mouse_dpi; /* zero for other devices, such as a touchpad */
+    struct rb_legacy_mouse legacy_mouse;
     /* touchscreens and tablets (touch.h): what the presenter binds to outputs */
     struct {
         struct libinput_device *dev;
@@ -289,6 +293,41 @@ static void handle_key(struct rb_input *in, struct libinput_event_keyboard *k, s
     deliver_key(in, code, down);
 }
 
+static bool legacy_mouse_sample(struct rb_input *in, struct libinput_event *ev,
+                                struct libinput_event_pointer *p, struct rb_pointer_delta *delta)
+{
+    if (!in->legacy_mouse_enabled)
+        return false;
+    struct libinput_device *device = libinput_event_get_device(ev);
+    if (device != in->motion_device) {
+        in->motion_device = device;
+        in->legacy_mouse = (struct rb_legacy_mouse){0};
+        in->mouse_dpi = 0;
+        struct udev_device *ud = libinput_device_get_udev_device(device);
+        if (ud) {
+            if (udev_device_get_property_value(ud, "ID_INPUT_MOUSE") &&
+                !udev_device_get_property_value(ud, "ID_INPUT_TOUCHPAD") &&
+                !udev_device_get_property_value(ud, "ID_INPUT_POINTINGSTICK"))
+                in->mouse_dpi = rb_mouse_dpi(udev_device_get_property_value(ud, "MOUSE_DPI"));
+            udev_device_unref(ud);
+        }
+    }
+    if (!in->mouse_dpi)
+        return false;
+    *delta = rb_legacy_mouse_motion(&in->legacy_mouse, libinput_event_pointer_get_time_usec(p),
+                                    libinput_event_pointer_get_dx_unaccelerated(p),
+                                    libinput_event_pointer_get_dy_unaccelerated(p), in->mouse_dpi);
+    return true;
+}
+
+void rb_input_set_legacy_mouse(struct rb_input *in, bool enabled)
+{
+    if (in && enabled != in->legacy_mouse_enabled) {
+        in->legacy_mouse_enabled = enabled;
+        in->motion_device = NULL;
+    }
+}
+
 static void handle_event(struct rb_input *in, struct libinput_event *ev)
 {
     enum libinput_event_type type = libinput_event_get_type(ev);
@@ -298,6 +337,8 @@ static void handle_event(struct rb_input *in, struct libinput_event *ev)
         break;
     case LIBINPUT_EVENT_DEVICE_REMOVED:
         in->devices--;
+        if (in->motion_device == libinput_event_get_device(ev))
+            in->motion_device = NULL;
         rb_log("input: device removed '%s'", libinput_device_get_name(libinput_event_get_device(ev)));
         remove_touch_device(in, libinput_event_get_device(ev));
         break;
@@ -306,8 +347,12 @@ static void handle_event(struct rb_input *in, struct libinput_event *ev)
         break;
     case LIBINPUT_EVENT_POINTER_MOTION: {
         struct libinput_event_pointer *p = libinput_event_get_pointer_event(ev);
-        if (in->cb.motion)
-            in->cb.motion(in->data, libinput_event_pointer_get_dx(p), libinput_event_pointer_get_dy(p));
+        if (in->cb.motion) {
+            struct rb_pointer_delta legacy;
+            bool have_legacy = legacy_mouse_sample(in, ev, p, &legacy);
+            in->cb.motion(in->data, libinput_event_pointer_get_dx(p), libinput_event_pointer_get_dy(p),
+                          have_legacy ? &legacy : NULL);
+        }
         break;
     }
     case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE: {

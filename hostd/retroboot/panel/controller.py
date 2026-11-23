@@ -1414,6 +1414,7 @@ class DisplaySound(Screen):
             ui.popup("input.pointer_speed", "Pointer speed:",
                      [(str(x), f"{x:g}×") for x in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)],
                      str(float(v["input.pointer_speed"]))),
+            ui.checkbox("input.legacy_mouse", "Legacy mouse tracking", v["input.legacy_mouse"]),
             # touchscreens and pens (4.8): only when one is connected
             ui.checkbox("input.touch_gestures", "Touch gestures: hold for menus, two fingers scroll",
                         bool(v.get("input.touch_gestures", True)))

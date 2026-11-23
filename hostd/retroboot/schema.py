@@ -612,6 +612,9 @@ SETTINGS: tuple[Setting, ...] = (
        help="The key combination that opens RetroBoot Recovery."),
     _s(key="input.pointer_speed", type="float", default=1.0, range=(0.25, 4.0), step=0.25,
        apply=LIVE, group="input", label="Pointer speed", help="Pointer speed multiplier."),
+    _s(key="input.legacy_mouse", type="bool", default=False, apply=LIVE, group="input",
+       label="Legacy mouse tracking",
+       help="Use classic-style mouse acceleration on the Mac OS 7, 8 and 9 desktop."),
     _s(key="input.touch_gestures", type="bool", default=True, apply=LIVE, capability="touch", group="input",
        label="Touch gestures",
        help="On a touchscreen: tap to click, drag to move things, touch and hold or tap with two fingers for a "

@@ -166,10 +166,12 @@ static void test_requests(void)
     CHECK_EQ(rb_parse_set_scene(j, &s, err, sizeof err), 0);
     CHECK_EQ(s.scene, RB_SCENE_GUEST);
     CHECK_EQ(s.reveal, RB_REVEAL_FIRST_CONTENT);
+    CHECK(!s.classic_guest);
     cJSON_Delete(j);
-    j = J("{\"scene\":\"guest\",\"reveal\":\"now\"}");
+    j = J("{\"scene\":\"guest\",\"reveal\":\"now\",\"classic_guest\":true}");
     CHECK_EQ(rb_parse_set_scene(j, &s, err, sizeof err), 0);
     CHECK_EQ(s.reveal, RB_REVEAL_NOW);
+    CHECK(s.classic_guest);
     cJSON_Delete(j);
     j = J("{\"scene\":\"guest\"}");
     CHECK_EQ(rb_parse_set_scene(j, &s, err, sizeof err), 0);
@@ -265,13 +267,16 @@ static void test_requests(void)
     CHECK(in.has_speed && in.speed == 1.5);
     CHECK(!in.has_touch_gestures);
     cJSON_Delete(j);
-    j = J("{\"touch_gestures\":false}");
+    CHECK(!in.has_legacy_mouse);
+    j = J("{\"touch_gestures\":false,\"legacy_mouse\":true}");
     CHECK_EQ(rb_parse_input_config(j, &in, err, sizeof err), 0);
     CHECK(in.has_touch_gestures && !in.touch_gestures);
+    CHECK(in.has_legacy_mouse && in.legacy_mouse);
     cJSON_Delete(j);
     const char *bad_input[] = {"{\"swap_command_option\":1}", "{\"recovery_chord\":\"ctrl+c\"}",
                                "{\"pointer_speed\":0.1}", "{\"pointer_speed\":\"fast\"}",
-                               "{\"pointer_speed\":5}", "{\"touch_gestures\":1}"};
+                               "{\"pointer_speed\":5}", "{\"touch_gestures\":1}",
+                               "{\"legacy_mouse\":\"true\"}"};
     for (size_t i = 0; i < sizeof bad_input / sizeof bad_input[0]; i++) {
         j = J(bad_input[i]);
         CHECK(rb_parse_input_config(j, &in, err, sizeof err) < 0);
