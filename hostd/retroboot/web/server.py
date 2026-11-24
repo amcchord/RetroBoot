@@ -122,6 +122,8 @@ class WebServer:
         r.add_get("/api/v1/jobs", self.jobs_list)
         r.add_get("/api/v1/jobs/{id}", self.job_get)
         r.add_get("/api/v1/screen.png", self.screen)
+        r.add_get("/api/v1/screen", self.screen)
+        r.add_get("/api/v1/diagnostics/screen", self.diagnostics_screen)
         r.add_get("/api/v1/machines", self.machines)
         r.add_get("/api/v1/machines/catalog", self.machines_catalog)
         r.add_get("/api/v1/machines/archives", self.machines_archives)
@@ -131,11 +133,18 @@ class WebServer:
         r.add_get("/api/v1/roms", self.roms_list)
         r.add_post("/api/v1/roms", self.roms_add)
         r.add_post("/api/v1/machines/{id}/start-cd", self.machines_start_cd)
+        r.add_get("/api/v1/machines/{id}/settings", self.machines_settings_get)
+        r.add_patch("/api/v1/machines/{id}/settings", self.machines_settings_patch)
         r.add_get("/api/v1/machines/{id}/checkpoints", self.checkpoints_list)
         r.add_post("/api/v1/machines/{id}/checkpoints", self.checkpoints_create)
         r.add_delete("/api/v1/machines/{id}/checkpoints/{cp}", self.checkpoints_delete)
         r.add_post("/api/v1/machines/{id}/restore", self.checkpoints_restore)
         r.add_post("/api/v1/machines/{id}/checkpoints/{cp}/restore", self.checkpoints_restore)
+        r.add_post("/api/v1/machines/{id}/reset-fresh", self.checkpoints_reset_fresh)
+        r.add_get("/api/v1/audio/outputs", self.audio_outputs)
+        r.add_post("/api/v1/audio/test", self.audio_test)
+        r.add_get("/api/v1/usb/drives", self.usb_drives)
+        r.add_post("/api/v1/usb/eject", self.usb_eject)
         r.add_get("/api/v1/network", self.network)
         r.add_post("/api/v1/network/wifi/{op}", self.wifi)
         r.add_get("/api/v1/logs", self.logs)
@@ -522,18 +531,28 @@ class WebServer:
             raise ApiError(404, "not_found", "That operation isn't known. It may have finished long ago.")
         return web.json_response(job.public())
 
+    async def diagnostics_screen(self, request):
+        return await self._screen(request, default_what="composed")
+
     async def screen(self, request):
-        what = request.query.get("what", "guest")
+        default_what = "composed" if request.path == "/api/v1/screen" else "guest"
+        return await self._screen(request, default_what=default_what)
+
+    async def _screen(self, request, *, default_what: str = "guest"):
+        what = request.query.get("what", default_what)
         if what not in ("guest", "composed"):
             raise ApiError(422, "invalid", "what must be guest or composed.", {"what": "Choose guest or composed."})
         sup = self.hostd.supervisor
         path = self.hostd.paths.screens / f"web-{secrets.token_hex(6)}.png"
         headers = {"Cache-Control": "no-store"}
+        masked = self.hostd.is_pairing_visible()
+        if masked:
+            headers["X-RetroBoot-Masked"] = "1"
         try:
-            if what == "guest" and not sup.active:
+            if not masked and what == "guest" and not sup.active:
                 raise ApiError(409, "guest-not-running", "Mac OS isn't running, so there is no screen to show.")
-            ok = await (sup.guest_screenshot(str(path), timeout=8.0) if what == "guest"
-                        else self.hostd.composed_screenshot(str(path)))
+            ok = await (self.hostd.composed_screenshot(str(path)) if (masked or what != "guest")
+                        else sup.guest_screenshot(str(path), timeout=8.0))
             if ok and path.exists():
                 data = path.read_bytes()
             elif what == "guest" and sup.last_frame_png:
@@ -565,16 +584,23 @@ class WebServer:
             p.update(active=m.id == desired, in_use=m.id == running, disk_bytes=d.get("bytes"),
                      disk_used_bytes=d.get("allocated_bytes"), system=p.get("os_version"),
                      checkpoints=len(cps), checkpoints_bytes=sum(c.get("allocated_bytes") or 0 for c in cps),
+                     fresh_install_checkpoint=next(
+                         (c["id"] for c in cps if c.get("kind") == "fresh-install" or c.get("label") == "Fresh Install"),
+                         None),
+                     settings=h.machine_settings(m.id),
                      can_remove=blocked is None, remove_blocked_reason=blocked[1] if blocked else None)
             out.append(p)
         # Every catalog (RetroBoot downloads with a stored sign-in, the Internet catalog) without
         # waiting: missing ones load in the background (catalogs.Catalogs.snapshot).
-        from ..catalogs import overall
+        from ..catalogs import overall, recommended
         results, states = h.catalogs.snapshot()
         state, error = overall(states)
         jobs = {(j.params.get("catalog"), j.params.get("id")): j.id for j in h.jobs.active()
                 if j.kind == "machines.import"}
-        catalog = [self._catalog_item(it, jobs) for it in h.catalogs.listing(results)]
+        listed = h.catalogs.listing(results)
+        rec = recommended(listed)
+        rec_key = (rec.source, rec.entry["id"]) if rec else None
+        catalog = [self._catalog_item(it, jobs, recommended_key=rec_key) for it in listed]
         drives = await asyncio.to_thread(h.optical.list) if h.optical.present() else []
         cds = [{k: c[k] for k in ("id", "label", "title", "where", "kind")} for c in sup.cd_sources(drives)]
         return web.json_response({"machines": out, "active": h.settings.applied.get("machine.active"),
@@ -585,27 +611,45 @@ class WebServer:
                                   "cds": cds, "blank_sizes_gb": list(BLANK_SIZES_GB),
                                   "blank_kinds": h.blank_kinds()})
 
-    def _catalog_item(self, it, jobs: dict | None = None) -> dict:
+    def _catalog_item(self, it, jobs: dict | None = None, *, recommended_key: tuple[str, str] | None = None) -> dict:
         """A catalog entry for the web client: the entry's own fields plus where it comes from
         (``catalog``: lab | internet), family facts and whether this device has it."""
         from ..catalogs import entry_family
         c = it.entry
+        dl = download_of(c)
         job = (jobs or {}).get((it.source, c["id"])) or (jobs or {}).get((None, c["id"]))
-        return dict(c, download_bytes=download_of(c)["archiveBytes"], installed_bytes=c["installedBytes"],
+        partial_bytes = 0
+        partial_complete = False
+        try:
+            part = self.hostd.paths.downloads / f"{dl['sha256']}.part"
+            if part.is_file():
+                partial_bytes = min(int(part.stat().st_size), dl["archiveBytes"])
+                partial_complete = partial_bytes >= dl["archiveBytes"] > 0
+        except OSError:
+            pass
+        return dict(c, download_bytes=dl["archiveBytes"], installed_bytes=c["installedBytes"],
                     disk_bytes=c["installedBytes"], description=c.get("summary"), system=c["osVersion"],
                     imported=it.known, job=job, catalog=it.source, catalog_label=self.hostd.catalogs.label(it.source),
-                    family=it.family, version=it.version, older=it.older, machine_family=entry_family(c))
+                    family=it.family, version=it.version, older=it.older, machine_family=entry_family(c),
+                    tags=list(c.get("tags") or []), highlights=list(c.get("highlights") or []),
+                    recommendedSettings=dict(c["recommendedSettings"]) if isinstance(c.get("recommendedSettings"), dict) else None,
+                    recommended=recommended_key == (it.source, c["id"]),
+                    partial_bytes=partial_bytes, partial_complete=partial_complete)
 
     async def machines_catalog(self, request):
         """Waits for every catalog; 502 only when none could be read."""
+        from ..catalogs import recommended
         h = self.hostd
         results, errors = await h.catalogs.fetch_all()
         states = [{"id": sid, "label": h.catalogs.label(sid), "state": "error" if sid in errors else "ready",
                    "error": errors.get(sid)} for sid, _ in results]
         if results and len(errors) == len(results):
             raise ApiError(502, "network", next(iter(errors.values())))
+        listed = h.catalogs.listing(results)
+        rec = recommended(listed)
+        rec_key = (rec.source, rec.entry["id"]) if rec else None
         return web.json_response({"url": h.catalog.url, "catalogs": states,
-                                  "machines": [self._catalog_item(it) for it in h.catalogs.listing(results)]})
+                                  "machines": [self._catalog_item(it, recommended_key=rec_key) for it in listed]})
 
     async def machines_archives(self, request):
         return web.json_response({"archives": await self.hostd.archives.list()})
@@ -807,6 +851,62 @@ class WebServer:
             raise ApiError(404, "not_found", "That checkpoint doesn't exist.")
         self._checkpoint_guard(m, creating=False)
         return self.jobres(self.begin(lambda: self.hostd.restore_job(m.id, cp, origin="web")))
+
+    async def checkpoints_reset_fresh(self, request):
+        m = self._machine(request)
+        self._checkpoint_guard(m, creating=False)
+        cp = self.hostd.fresh_install_checkpoint(m.id)
+        if cp is None:
+            raise ApiError(404, "not_found", "No Fresh Install checkpoint was found for this Mac.")
+        return self.jobres(self.begin(lambda: self.hostd.restore_job(m.id, cp["id"], origin="web")))
+
+    async def machines_settings_get(self, request):
+        m = self._machine(request)
+        return web.json_response({"machine": m.id, "family": m.family, "guest_os": m.guest_os,
+                                  "settings": self.hostd.machine_settings(m.id),
+                                  "gl_available": self.hostd.graphics.capable()})
+
+    async def machines_settings_patch(self, request):
+        m = self._machine(request)
+        data = await self.body(request)
+        changes = data["settings"] if isinstance(data.get("settings"), dict) and len(data) == 1 else data
+        try:
+            updated = await self.hostd.update_machine_settings(m.id, changes, origin="web")
+        except (ValueError, MachineError) as exc:
+            raise ApiError(422, "invalid", str(exc))
+        return web.json_response({"machine": m.id, "settings": updated})
+
+    async def audio_outputs(self, request):
+        return web.json_response({"outputs": self.hostd.list_audio_outputs(),
+                                  "selected": self.hostd.settings.desired.get("audio.output", "auto")})
+
+    async def audio_test(self, request):
+        data = await self.body(request, required=False)
+        out = data.get("output") if isinstance(data, dict) else None
+        if out is not None and (not isinstance(out, str) or not schema.AUDIO_OUTPUT_RE.fullmatch(out)):
+            raise ApiError(422, "invalid", "Choose a valid sound output.", {"output": "Invalid audio output."})
+        return web.json_response(await self.hostd.test_sound(out))
+
+    async def usb_drives(self, request):
+        enabled = bool(self.hostd.settings.applied.get("usb_share.enabled", True))
+        if self.hostd.cfg.allow_network_tools and enabled:
+            drives = await self.hostd.usbshare.refresh()
+        else:
+            drives = self.hostd.usbshare.list_drives()
+        return web.json_response({"drives": drives, "enabled": enabled})
+
+    async def usb_eject(self, request):
+        from ..usbshare import UsbDriveError
+        data = await self.body(request)
+        dev = data.get("device")
+        if not isinstance(dev, str) or not dev.strip():
+            raise ApiError(422, "invalid", "Specify which USB drive to eject.", {"device": "Device path or name."})
+        try:
+            res = await self.hostd.usbshare.eject(dev)
+        except UsbDriveError as exc:
+            status = 404 if exc.code == "not_found" else (409 if exc.code == "busy" else 422)
+            raise ApiError(status, exc.code, exc.message)
+        return web.json_response(res)
 
     # -- network / logs / diagnostics -------------------------------------------------------
     async def network(self, request):

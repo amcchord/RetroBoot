@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .. import labauth
+from .. import catalogs as _catalogs, labauth
 from ..catalog import CatalogClient, ImportError_, download_of
 from ..catalogs import (arrange, custom_label, entry_family, family_of, known_from, os_label, runnable,  # noqa: F401
                         runnable_families)
@@ -216,6 +216,34 @@ def hosted_choices(sources: list[tuple[str, list[dict], str, object]], disc: lis
     return out
 
 
+def hero_picks(choices: list[Choice]) -> tuple[Choice | None, Choice | None]:
+    """Return ``(featured_deluxe, featured_base)`` for first-boot Mac selection.
+
+    Uses :func:`catalogs.first_boot_picks` when present and matches ``os922-mega-deluxe``
+    + clean ``os922-full`` across Choice lists. Returns ``(None, None)`` unless both exist.
+    """
+    fn = getattr(_catalogs, "first_boot_picks", None)
+    if callable(fn):
+        try:
+            got = fn(choices)
+            if isinstance(got, tuple) and len(got) == 2 and all(got):
+                return got
+        except Exception:
+            pass
+
+    def _id(c: Choice) -> str:
+        return ((c.entry or {}).get("id") or c.machine_id or "").lower()
+
+    deluxe = next((c for c in choices if not c.older and ("os922-mega-deluxe" in _id(c) or "mega-deluxe" in _id(c))), None)
+    base = next((c for c in choices if not c.older and (
+        "os922-full" in _id(c)
+        or (c.os_version == "9.2.2" and "deluxe" not in _id(c) and "deluxe" not in c.name.lower())
+    )), None)
+    if deluxe and base and deluxe.key != base.key:
+        return deluxe, base
+    return None, None
+
+
 class Picker:
     """What the Choose Macs window knows; kept in InstallerState across its sub-windows."""
 
@@ -327,17 +355,29 @@ class Picker:
         await self._changed()
 
     def _recommend(self) -> None:
-        """Check the recommended download (the newest standard Mac OS this computer runs)
-        once, while no Mac is checked and the user hasn't changed a check, when it fits."""
+        """Check the recommended download (Mega Deluxe when offered on first boot, else the
+        newest standard Mac OS this computer runs) once, when it fits."""
         if self.touched or self.checked or self.recommended is not None:
             return
         from ..catalogs import recommended
         hosted = [c for src in ("lab", "catalog", *self.custom) for c in self.found.get(src, [])]
-        pick = recommended(hosted)
-        if pick is None:
-            return
+        deluxe, base = hero_picks(hosted)
         target = self.st.target
-        if target and (pick.size or 0) + pick.download + DOWNLOAD_RESERVE > room_for_macs(target):
+        room = room_for_macs(target) if target else None
+        def _fits(c: Choice) -> bool:
+            return room is None or (c.size or 0) + c.download + DOWNLOAD_RESERVE <= room
+
+        d_id = ((deluxe.entry or {}).get("id") or deluxe.machine_id or "").lower() if deluxe else ""
+        has_922 = any(str(c.os_version or "").startswith("9.2.2") for c in hosted)
+        hero_ok = deluxe is not None and base is not None and ("mega-deluxe" in d_id or not has_922)
+        pick = None
+        if hero_ok:
+            pick = deluxe if _fits(deluxe) else (base if _fits(base) else None)
+        if pick is None:
+            cand = recommended(hosted)
+            if cand is not None and _fits(cand):
+                pick = cand
+        if pick is None:
             return
         self.recommended = pick.key
         self.checked.add(pick.key)
@@ -466,6 +506,7 @@ class ChooseMacs(Screen):
             st.picker = Picker(panel)
         self.ps: Picker = st.picker
         self.selected: str | None = None
+        self.show_library: bool | None = None
         self._online_check = False
         if self.ps.loading is None or self.ps.loading.done():
             self.ps.loading = self.app.loop.create_task(self.ps.load())
@@ -510,21 +551,62 @@ class ChooseMacs(Screen):
     def doc(self):
         ps, d = self.ps, self.st.target
         chosen = ps.chosen()
+        vis = ps.visible()
+        deluxe, base = hero_picks(ps.all())
+        d_id = ((deluxe.entry or {}).get("id") or deluxe.machine_id or "").lower() if deluxe else ""
+        has_922 = any(str(c.os_version or "").startswith("9.2.2") for c in ps.all())
+        hero_shown = (
+            not (ps.found["disc"] or ps.found["usb"])
+            and deluxe is not None and base is not None
+            and ("mega-deluxe" in d_id or not has_922)
+        )
+        non_hero_checked = any(c.key not in {deluxe.key, base.key} for c in chosen) if hero_shown else False
+        show_lib = (not hero_shown) or bool(self.show_library) or non_hero_checked or bool(ps.found["disc"] or ps.found["usb"])
+
         rows = [ui.row(c.key, c.name, recommended_detail(c.detail()) if c.key == ps.recommended else c.detail(),
                        SOURCE_ICON.get(c.source, "web"), checked=c.key in ps.checked)
-                for c in ps.visible()]
+                for c in vis]
         rows += self.status_rows()
         if not rows:
             rows = [ui.row("status:none", "Looking for Macs…" if ps.status["disc"]["state"] == "loading"
                            else "No Macs found", None, "mac", checked=False, disabled=True)]
+        if not ps.get(self.selected) or not any(c.key == self.selected for c in vis):
+            self.selected = (ps.recommended if ps.get(ps.recommended) else (vis[0].key if vis else None))
         sel = self.selected if ps.get(self.selected) else None
-        items = [ui.text("Choose the Macs to install. Click a Mac to check or uncheck it."),
-                 ui.lst("macs", rows, sel, rows=6, activate="click")]
-        if ps.has_older():
-            items.append(ui.checkbox("older", "Show older versions", ps.show_older))
+
+        items = []
+        if hero_shown:
+            hero_val = deluxe.key if deluxe.key in ps.checked else (base.key if base.key in ps.checked else "")
+            is_mega = "mega-deluxe" in d_id
+            d_label = "Mac OS 9.2.2 Mega Deluxe (Recommended)" if is_mega else f"{deluxe.name} (Recommended)"
+            b_label = "Mac OS 9.2.2 (Classic Clean desktop)" if is_mega else f"{base.name} (Classic Clean desktop)"
+            d_desc = ("Mega Deluxe: Kids & Family — Kid Pix Studio Deluxe, Zoombinis & 111 classic games · "
+                      if is_mega else f"{deluxe.name}: {ui.clip_words((deluxe.entry or {}).get('summary') or '', 110)} · ")
+            b_desc = ("Mac OS 9.2.2: Classic Clean Mac OS 9 desktop · "
+                      if is_mega else f"{base.name}: Classic Clean desktop · ")
+            items.append(ui.group("Recommended for First-Time Setup", [
+                ui.radio("hero_pick", "", [
+                    (deluxe.key, d_label),
+                    (base.key, b_label),
+                ], hero_val),
+                ui.text(d_desc + ui.human_bytes(deluxe.size), "small"),
+                ui.text(b_desc + ui.human_bytes(base.size), "small"),
+            ]))
+            lib_n = len(ps.all())
+            items.append(ui.checkbox("library", f"Browse all {lib_n} Library Macs", show_lib))
+
+        if show_lib:
+            items += [ui.text("Choose the Macs to install. Click a Mac or press Space to check or uncheck it."),
+                      ui.lst("macs", rows, sel, rows=5 if hero_shown else 6, activate="click")]
+            if ps.has_older():
+                items.append(ui.checkbox("older", "Show older versions", ps.show_older))
+        elif not vis:
+            items += [ui.lst("macs", rows, None, rows=3)]
+
         first = ps.startup_choice()
-        items.append(ui.popup("startup", "Starts first:", [(c.key, c.name) for c in chosen] or [("none", "—")],
-                              first.key if first else "none", disabled=len(chosen) < 2))
+        if show_lib or len(chosen) >= 2:
+            items.append(ui.popup("startup", "Starts first:", [(c.key, c.name) for c in chosen] or [("none", "—")],
+                                  first.key if first else "none", disabled=len(chosen) < 2))
         room = room_for_macs(d)
         need = ps.needed()
         if not chosen:
@@ -544,8 +626,9 @@ class ChooseMacs(Screen):
         items.append(ui.buttons(ui.btn("servers", "Image Servers…", align="left"),
                                 ui.btn("host-only", "Install RetroBoot Only…")))
         sel_c = ps.get(sel)
-        buttons = [ui.btn("toggle", "Remove" if sel_c and sel_c.key in ps.checked else "Add",
-                          disabled=sel_c is None, align="left")]
+        buttons = []
+        if show_lib and sel_c is not None:
+            buttons.append(ui.btn("toggle", "Remove" if sel_c.key in ps.checked else "Add", align="left"))
         if "offline" in (ps.status["lab"]["state"], ps.status["catalog"]["state"]) or \
                 ps.status["catalog"]["state"] == "error":
             buttons.append(ui.btn("wifi", "Wi-Fi…"))
@@ -568,7 +651,20 @@ class ChooseMacs(Screen):
 
     async def change(self, id, value):
         ps = self.ps
-        if id == "macs":
+        if id == "hero_pick" and isinstance(value, str):
+            deluxe, base = hero_picks(ps.all())
+            hero_keys = {c.key for c in (deluxe, base) if c is not None}
+            if value in hero_keys and ps.get(value):
+                ps.checked -= hero_keys
+                ps.checked.add(value)
+                ps.touched = True
+                ps._fix_startup()
+                self.selected = value
+                await self.panel.refresh()
+        elif id == "library":
+            self.show_library = bool(value)
+            await self.panel.refresh()
+        elif id == "macs":
             before = ps.get(self.selected)
             self.selected = value if isinstance(value, str) else None
             after = ps.get(self.selected)

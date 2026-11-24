@@ -313,3 +313,73 @@ def test_panel_alert_continuation_survives_closing_the_panel():
         await asyncio.wait_for(done.wait(), 2)
         assert not panel.visible and panel._ticker is None
     run(run_it())
+
+
+def test_volume_down_while_muted_respects_mute_and_updates_mixer(tmp_path):
+    from retroboot.network import AudioMixer
+    make_backlight(tmp_path, cur=600, mx=1200)
+    calls = []
+
+    async def amixer_run(argv, timeout=None):
+        calls.append(argv)
+        if "scontrols" in argv:
+            return 0, "Simple mixer control 'Master',0\n", ""
+        if argv[-2:] == ["sget", "Master"]:
+            return 0, "Simple mixer control 'Master',0\n  Capabilities: pvolume pswitch\n", ""
+        return 0, "", ""
+
+    app = FakeApp(tmp_path, [])
+    app.mixer = AudioMixer(runner=amixer_run)
+    lp = Laptop(app)
+
+    async def go():
+        await app.mixer.probe("PCH", detect_switch=True)
+        await lp.set_mute(True)
+        assert lp.muted is True
+        calls.clear()
+        res = await lp.on_host_key("volume_down")
+        assert res["muted"] is True
+        assert lp.muted is True
+        assert app.settings.applied["audio.volume"] == 64
+        # ALSA must NOT be sent "unmute" when volume_down is pressed while muted (#40).
+        assert app.volume_pushes == 0
+        assert calls == [["amixer", "-c", "PCH", "-q", "sset", "Master", "64%"]]
+        # Pressing volume_up unmutes cleanly at the new level.
+        res_up = await lp.on_host_key("volume_up")
+        assert res_up["muted"] is False and lp.muted is False
+        assert app.settings.applied["audio.volume"] == 70
+        assert app.volume_pushes == 1
+
+    run(go())
+
+
+def test_volume_down_while_muted_switchless_keeps_zero_percent(tmp_path):
+    from retroboot.network import AudioMixer
+    make_backlight(tmp_path, cur=600, mx=1200)
+    calls = []
+
+    async def amixer_run(argv, timeout=None):
+        calls.append(argv)
+        if "scontrols" in argv:
+            return 0, "Simple mixer control 'PCM',0\n", ""
+        if argv[-2:] == ["sget", "PCM"]:
+            return 0, "Simple mixer control 'PCM',0\n  Capabilities: pvolume\n", ""
+        return 0, "", ""
+
+    app = FakeApp(tmp_path, [])
+    app.mixer = AudioMixer(runner=amixer_run)
+    lp = Laptop(app)
+
+    async def go():
+        await app.mixer.probe("USBDAC", detect_switch=True)
+        await lp.set_mute(True)
+        assert calls[-1] == ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "0%"]
+        calls.clear()
+        await lp.on_host_key("volume_down")
+        assert lp.muted is True
+        assert app.mixer.last_percent == 64
+        assert calls == []     # never raise ALSA above 0% while switchless mute is active
+        await lp.set_mute(False)
+        assert calls[-1] == ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "64%"]
+
+    run(go())

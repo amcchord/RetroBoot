@@ -125,7 +125,7 @@ if [ -f "$menu_bdf" ]; then
 else
   log "startup options font: $menu_bdf missing; Shift at power-on shows nothing"
 fi
-cp "$x86boot/esp/grub/retroboot/checker-default.png" "$tree/boot/grub/retroboot/"
+cp "$x86boot/esp/grub/retroboot/checker-default"*.png "$tree/boot/grub/retroboot/"
 
 log "squashfs: aarch64 root"
 mksquashfs "$arm" "$tree/live/aarch64/rootfs.squashfs" -comp zstd -Xcompression-level 15 -b 1M -noappend -xattrs -quiet -no-progress

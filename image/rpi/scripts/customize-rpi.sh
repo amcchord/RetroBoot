@@ -44,10 +44,12 @@ if [ "${RB_RPI_MODEL:-pi4-5}" = zero2w ]; then
     [ -s "$bfs/$f" ] || die "Zero 2 W boot partition: $f missing"
   done
   [ ! -e "$root/usr/lib/retroboot/qemu/bin/qemu-system-ppc" ] || die "Zero 2 W image contains the PPC emulator"
-  # The helper starts on demand. Bound its memory beside the Mac on a 512 MiB board.
+  # The helper starts on demand. Bound its memory beside the Mac on a 512 MiB board,
+  # while keeping enough headroom for lxml/readability/Pillow and cairosvg/svgworker.
   install -d "$root/etc/systemd/system/retroboot-webproxy.service.d"
-  printf '%s\n' '[Service]' 'MemoryMax=64M' > "$root/etc/systemd/system/retroboot-webproxy.service.d/50-zero2w.conf"
+  printf '%s\n' '[Service]' 'MemoryHigh=96M' 'MemoryMax=128M' > "$root/etc/systemd/system/retroboot-webproxy.service.d/50-zero2w.conf"
 fi
+[ -d "$root/usr/share/retroboot/chimes" ] || stage_startup_chimes "$root"
 # The example is deliberately not imported until the user renames and fills it.
 install -d "$bfs/retroboot"
 cat > "$bfs/retroboot/network.conf.example" <<'EOF'
@@ -118,4 +120,6 @@ b.update({'kernel': kver, 'bootfs_files_sha256': files, 'raspberrypi_packages': 
 b['raspberrypi_archive']['packages'] = sorted(rpt)
 json.dump(b, open(path, 'w'), indent=2)
 PY
+cp "$boot/boot.json" "$root/usr/lib/retroboot/boot/boot.json"
+chown 0:0 "$root/usr/lib/retroboot/boot/boot.json"
 log "boot partition: $(du -sh "$bfs" | cut -f1), kernel8.img $(stat -c %s "$bfs/kernel8.img") bytes, initramfs8 $(stat -c %s "$bfs/initramfs8") bytes"

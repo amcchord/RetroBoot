@@ -11,6 +11,7 @@ import asyncio
 import os
 import re
 import shutil
+import sys
 import time
 import ctypes
 import errno
@@ -67,9 +68,12 @@ async def copy_disk(src: Path, dst: Path) -> str:
     except FileNotFoundError:
         pass
     rc, _, err = await run_cmd(["cp", "--sparse=always", str(src), str(dst)], timeout=6 * 3600)
-    if rc != 0:
-        raise CheckpointError(f"Copying the disk failed: {err.strip()[:200]}")
-    return "sparse"
+    if rc == 0:
+        return "sparse"
+    if sys.platform == "darwin" or any(w in err.lower() for w in ("illegal option", "unrecognized option", "invalid option")):
+        await asyncio.to_thread(shutil.copyfile, src, dst)
+        return "copy"
+    raise CheckpointError(f"Copying the disk failed: {err.strip()[:200]}")
 
 
 class Checkpoints:
@@ -91,7 +95,7 @@ class Checkpoints:
                 meta = read_json(c / "checkpoint.json", 1024 * 1024)
             except (OSError, ValueError):
                 continue
-            out.append({k: meta.get(k) for k in ("id", "label", "created", "machine", "disk_bytes",
+            out.append({k: meta.get(k) for k in ("id", "label", "kind", "created", "machine", "disk_bytes",
                                                  "allocated_bytes", "method", "package", "settings_revision")})
         return out
 
@@ -102,7 +106,7 @@ class Checkpoints:
         return p if (p / "checkpoint.json").is_file() and (p / "disk.img").is_file() else None
 
     async def create(self, machine: Machine, label: str, settings: dict, settings_revision: int,
-                     package: dict | None) -> dict:
+                     package: dict | None, *, kind: str | None = None) -> dict:
         st = machine.state()
         if not st.get("clean", False):
             raise CheckpointError("Checkpoints need Mac OS to have shut down cleanly first.", "not_clean")
@@ -130,6 +134,8 @@ class Checkpoints:
                     "machine": machine.id, "disk_bytes": stat.st_size, "allocated_bytes": stat.st_blocks * 512,
                     "method": method, "settings": settings, "settings_revision": settings_revision,
                     "package": package, "last_exit": st.get("last_exit")}
+            if kind:
+                meta["kind"] = str(kind)[:32]
             if nvram is not None:
                 from .quadra import write_new, open_regular
                 write_new(staging, staging / "nvram.img", nvram, 0o660)
@@ -147,7 +153,8 @@ class Checkpoints:
         finally:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
-        return {k: meta[k] for k in ("id", "label", "created", "machine", "disk_bytes", "allocated_bytes", "method")}
+        return {k: meta.get(k) for k in ("id", "label", "kind", "created", "machine", "disk_bytes",
+                                          "allocated_bytes", "method")}
 
     async def restore(self, machine: Machine, cp_id: str) -> dict:
         cp = self.get(machine.id, cp_id)

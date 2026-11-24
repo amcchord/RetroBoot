@@ -578,3 +578,36 @@ def test_probe_waits_for_a_late_render_node(tmp_path, monkeypatch):
     run(g.reprobe_if_changed())
     assert calls == [0, 1] and graphics.host_gl_ok()
     graphics.set_host_gl(GL_OK)
+
+
+def test_auto_scale_floor_and_osx_scale_context():
+    # #22: 640x480 auto floor yields 2x on 1680x1050 and 1280x1024; ui_context exposes Keep/Auto.
+    assert graphics.auto_scale_for(1680, 1050) == 2
+    assert graphics.auto_scale_for(1280, 1024) == 2
+    assert graphics.auto_scale_for(1920, 1080) == 2
+
+    td, paths, m = setup()
+    try:
+        m.meta["guest_os"] = "macosx-10.4"
+        m.meta["os_build"] = "8S165"
+        m.update_meta(graphics={"ati_software": "present"})
+        app, _ = _app(paths, m, {"display.graphics": "ati-radeon", "display.guest_size": "auto",
+                                  "display.pixel_scale": "auto"}, [])
+        app.presenter.display = {"mode": [1920, 1080, 60], "scale": 2, "suggested_scale": 2}
+        app.supervisor.active = True
+        app.supervisor.guest_surface = [1024, 768]
+        g = graphics.Graphics(app)
+        g.running = graphics.ATI
+        pub = g.public()
+        # #18: OS X running 1024x768 on 1920x1080 is 1x guest_scale even while host grid scale is 2.
+        assert pub["guest_scale"] == 1
+        assert pub["scale"] == 1
+        assert pub["host_scale"] == 2
+        assert pub["ati_screen"] == [1024, 768]
+        assert pub["mac_screen"] == [1024, 768]
+        ctx = g.ui_context()
+        assert ctx["auto_floor"] == [640, 480]
+        assert ctx["keep_auto"]["auto"] is True
+        assert ctx["keep_auto"]["keep"] is False
+    finally:
+        td.cleanup()

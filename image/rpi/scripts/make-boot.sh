@@ -40,7 +40,7 @@ root = pathlib.Path(out)
 profile = json.loads((root / 'rpi-profile.json').read_text())
 boards = (['Raspberry Pi Zero 2 W'] if profile['model'] == 'zero2w' else
           ['Raspberry Pi 4 Model B', 'Raspberry Pi 400', 'Compute Module 4', 'Raspberry Pi 5', 'Raspberry Pi 500'])
-json.dump({'board': 'rpi', 'boards': boards, 'profile': profile,
+json.dump({'board': 'rpi', 'arch': profile.get('arch', 'arm64'), 'boards': boards, 'profile': profile,
            'partition_table': profile['partition_table'],
            'kernel_cmdline': (root / 'cmdline.txt.in').read_text().strip(),
            'config_txt_sha256': hashlib.sha256((root / 'config.txt').read_bytes()).hexdigest(),

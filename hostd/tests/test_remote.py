@@ -33,9 +33,18 @@ class KeymapTests(unittest.TestCase):
         hdr = Path("/usr/include/linux/input-event-codes.h")
         if not hdr.exists():
             self.skipTest("no kernel headers")
-        defs = dict(re.findall(r"#define\s+KEY_(\w+)\s+(0x[0-9a-fA-F]+|\d+)", hdr.read_text()))
+        raw = dict(re.findall(r"#define\s+KEY_(\w+)\s+(0x[0-9a-fA-F]+|\d+|KEY_\w+)", hdr.read_text()))
+
+        def resolve(name: str) -> int:
+            seen = set()
+            val = raw[name]
+            while isinstance(val, str) and val.startswith("KEY_") and val not in seen:
+                seen.add(val)
+                val = raw[val[4:]]
+            return int(val, 0)
+
         for name, value in E.items():
-            self.assertEqual(int(defs[name], 0), value, name)
+            self.assertEqual(resolve(name), value, name)
 
     def test_every_browser_key_reaches_the_guest(self):
         """Each evdev code we send has a QKeyCode in the presenter's table (presenter/src/keymap.c)."""

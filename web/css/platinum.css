@@ -431,13 +431,101 @@ html.pt .menu {
   padding: 10px 12px 16px 10px;
 }
 
+.main {
+  min-width: 0;
+}
+
+.mobile-nav {
+  display: none;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  padding: 4px 5px;
+  background: var(--face);
+  border: 1px solid #000;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #999, 1px 1px 0 #000;
+}
+
+.mobile-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-nav-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid #888;
+  background: #eee;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #bbb;
+  color: #000;
+  text-decoration: none;
+  font: 10px/13px var(--small);
+  white-space: nowrap;
+}
+
+.mobile-nav-pill:hover {
+  color: #000;
+  background: #fff;
+}
+
+.mobile-nav-pill[aria-current="page"] {
+  background: var(--pt-highlight);
+  border-color: #000;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 var(--pt-ramp-3);
+  font: 10px/13px var(--small-bold);
+}
+
+.mobile-nav-icon img.pt-icon,
+.mobile-nav-icon svg.px {
+  width: 14px;
+  height: 14px;
+}
+
 html.mac-narrow .layout {
   grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
   padding: 6px 4px 12px;
 }
 
 html.mac-narrow .sidenav {
   display: none;
+}
+
+html.mac-narrow .mobile-nav {
+  display: flex;
+}
+
+html.mac-narrow .mb-app .mb-app-title span:last-child {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 619px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 6px 4px 12px;
+  }
+  .sidenav {
+    display: none;
+  }
+  .mobile-nav {
+    display: flex;
+  }
+  .mb-app .mb-app-title span:last-child {
+    max-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 .main:focus,
@@ -695,7 +783,9 @@ html:not(.pt) .title-box.collapse::after {
 
 .page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
+  min-width: 0;
   container: page / inline-size;   /* layouts follow the window, not the browser */
 }
 
@@ -2060,6 +2150,30 @@ dialog.dlg::backdrop {
   display: flex;
   gap: 8px;
   align-items: flex-start;
+  min-width: 0;
+}
+
+.device, .cp {
+  flex-wrap: wrap;
+}
+
+.device-main {
+  flex: 1 1 160px;
+}
+
+.cp > div {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+@container page (max-width: 380px) {
+  .kv-compact .kv-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+  .kv-compact dt {
+    text-align: left;
+  }
 }
 
 .machine-main, .device-main, .iface-main {
@@ -2339,6 +2453,96 @@ button.net-row:disabled {
 
 .text-wrap {
   max-width: 360px;
+}
+
+.text-wrap-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  max-width: 360px;
+}
+
+.text-wrap-compact input {
+  width: 96px;
+  flex: none;
+}
+
+.inline-hint {
+  font: 10px/13px var(--small);
+  color: var(--ink-2);
+}
+
+.catalog-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 4px;
+  margin-top: 3px;
+}
+
+.catalog-details {
+  margin-top: 4px;
+}
+
+.catalog-paused {
+  display: grid;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.badge-kids {
+  background: #ffe6cc;
+  border-color: #995500;
+}
+
+.badge-arch {
+  background: #e2e8ff;
+  border-color: #334499;
+}
+
+.screen-gamebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  padding: 6px 10px;
+  border-top: 1px solid #999;
+  box-shadow: inset 0 1px 0 #fff;
+  background: var(--pane);
+}
+
+.screen-gamebar[hidden] {
+  display: none;
+}
+
+.game-dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 30px);
+  grid-template-rows: repeat(2, 26px);
+  gap: 3px;
+}
+
+.game-dpad .game-key-up { grid-column: 2; grid-row: 1; }
+.game-dpad .game-key-left { grid-column: 1; grid-row: 2; }
+.game-dpad .game-key-down { grid-column: 2; grid-row: 2; }
+.game-dpad .game-key-right { grid-column: 3; grid-row: 2; }
+
+.game-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.game-key {
+  min-width: 30px;
+  height: 26px;
+  padding: 0 8px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .chip-list, .tag-row {

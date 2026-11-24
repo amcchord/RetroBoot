@@ -7,7 +7,7 @@ import { h, Scope } from '../util.js';
 import { button, dialog, led } from '../ui.js';
 import { store, subscribe } from '../store.js';
 import { onPlatinum } from '../platinum.js';
-import { ScreenStream } from '../kvm/stream.js';
+import { ScreenStream, WebAudioSink } from '../kvm/stream.js';
 import { InputController } from '../kvm/input.js';
 import { hw } from '../words.js';
 import { lifecycle } from '../actions.js';
@@ -17,6 +17,7 @@ export const meta = { title: 'Screen', icon: 'screen' };
 const SIZE_KEY = 'rb.screenSize';
 const TRACKPAD_KEY = 'rb.screenTrackpad';
 const SWAP_KEY = 'rb.screenAltIsCommand';
+const GAMEBAR_KEY = 'rb.screenGameBar';
 const SIZES = [
   ['fit', 'Fit in Window'],
   ['1', 'Actual Size'],
@@ -75,6 +76,9 @@ export function render() {
   let privateNow = false;
   let displayDown = false;
   let extraNote = null;
+  let pinchScale = null;
+  let audioOn = false;
+  let gameBarOpen = pref(GAMEBAR_KEY, touchDevice() ? 'true' : 'false') === 'true';
 
   const title = h('h1', { tabindex: '-1', class: 'page-title' }, 'Screen');
   const canvas = h('canvas', { class: 'kvm-canvas', width: 640, height: 480, tabindex: '0', role: 'img', 'aria-label': 'Mac OS screen. Click it to use your keyboard and mouse with Mac OS.' });
@@ -87,6 +91,7 @@ export function render() {
   const statusLed = h('span', { class: 'kvm-led' }, led('busy'));
   const extra = h('span', { class: 'kvm-status-extra' });
   const statusbar = h('div', { class: 'screen-statusbar', 'aria-live': 'polite' }, statusLed, statusText, extra);
+  const audioSink = new WebAudioSink();
 
   const stream = new ScreenStream({
     canvas,
@@ -100,6 +105,7 @@ export function render() {
     },
     onMessage: (msg) => onMessage(msg),
     onFrame: (frame, at) => input.frameDrawn(frame, at),
+    onAudio: (frame) => audioSink.feed(frame),
     onResize: () => layout(),
   });
   const swapPref = pref(SWAP_KEY, null);
@@ -109,6 +115,8 @@ export function render() {
     stream,
     keyboardSink: sink,
     canControl: () => mode === 'control' && stream.open && !privateNow,
+    canPan: () => bezel.classList.contains('is-scrolling') || (pinchScale != null && pinchScale > 1.02),
+    onPinch: (ev) => handlePinch(ev),
     onLatch: () => updateLatches(),
   });
   input.trackpad = pref(TRACKPAD_KEY, 'false') === 'true';
@@ -116,12 +124,43 @@ export function render() {
   // ---- toolbar -----------------------------------------------------------------
   const sizePopup = popup('Size', SIZES, size, (v) => {
     size = v;
+    pinchScale = null;
     setPref(SIZE_KEY, v);
     layout();
   });
   const sourcePopup = popup('Show', [['composed', `What the ${hw().display} shows`], ['guest', 'Mac OS only']], 'composed', (v) => stream.setSource(v));
   const pasteBtn = button('Paste Text…', { className: 'btn-small', onClick: () => pasteDialog() });
   const kbdBtn = button('Keyboard', { className: 'btn-small', onClick: () => sink.focus({ preventScroll: true }) });
+  const soundBtn = button('Sound: Off', {
+    className: 'btn-small',
+    title: 'Play Mac OS sound in this browser',
+    onClick: () => toggleAudio(),
+  });
+  soundBtn.setAttribute('aria-pressed', 'false');
+  async function toggleAudio() {
+    audioOn = !audioOn;
+    soundBtn.setAttribute('aria-pressed', String(audioOn));
+    soundBtn.classList.toggle('is-pressed', audioOn);
+    const lbl = soundBtn.querySelector('.btn-label');
+    if (lbl) lbl.textContent = audioOn ? 'Sound: On' : 'Sound: Off';
+    if (audioOn) await audioSink.enable();
+    else audioSink.disable();
+    stream.setAudio(audioOn);
+  }
+  const gameBtn = button('Game Keys', {
+    className: 'btn-small',
+    title: 'Show or hide touch arrow and game keys',
+    onClick: () => {
+      gameBarOpen = !gameBarOpen;
+      setPref(GAMEBAR_KEY, gameBarOpen);
+      gameBtn.setAttribute('aria-pressed', String(gameBarOpen));
+      gameBtn.classList.toggle('is-pressed', gameBarOpen);
+      update();
+      requestAnimationFrame(layout);
+    },
+  });
+  gameBtn.setAttribute('aria-pressed', String(gameBarOpen));
+  gameBtn.classList.toggle('is-pressed', gameBarOpen);
   const trackpadBox = h('input', { type: 'checkbox', checked: input.trackpad, onchange: (e) => {
     input.trackpad = e.target.checked;
     setPref(TRACKPAD_KEY, e.target.checked);
@@ -140,8 +179,10 @@ export function render() {
     sizePopup.el,
     sourcePopup.el,
     h('span', { class: 'tb-gap' }),
+    soundBtn,
     pasteBtn,
     touchDevice() ? kbdBtn : null,
+    gameBtn,
     touchDevice() ? trackpad : null,
     ['mac', 'ios'].includes(stream.platform) ? null : altCmd,
     fsAvailable ? fsBtn : null,
@@ -159,7 +200,7 @@ export function render() {
     ...KEYS.map(([name, label, tip]) => button(label, { className: 'btn-small key-btn', title: tip, ariaLabel: tip, onClick: () => combo(name) })),
     h('span', { class: 'tb-gap' }),
     button('Shut Down…', { className: 'btn-small key-btn', title: 'The Mac’s Power key: Mac OS asks whether to shut down', onClick: () => combo('power') }),
-    button('Recovery…', { className: 'btn-small key-btn', title: `Opens RetroBoot Recovery on ${hw().the} (Mac OS keeps running)`, onClick: () => combo('recovery') }),
+    button('Recovery…', { className: 'btn-small key-btn', title: `Opens the RetroBoot window on ${hw().the} (Mac OS keeps running)`, onClick: () => combo('recovery') }),
     h('span', { class: 'tb-gap' }),
     ...LATCHES.map(([name, label]) => {
       const b = button(label, { className: 'btn-small latch-btn', title: `${name === 'command' ? 'Command' : label}: held down for the next key or click`, onClick: () => {
@@ -172,6 +213,68 @@ export function render() {
     }),
   );
 
+  function gameKeyBtn(code, label, titleText, extraClass = '') {
+    const b = h('button', {
+      type: 'button',
+      class: `btn btn-small game-key${extraClass ? ` ${extraClass}` : ''}`,
+      title: titleText,
+      'aria-label': titleText,
+    }, h('span', { class: 'btn-label' }, label));
+    const release = (e) => {
+      if (!b.classList.contains('is-pressed')) return;
+      b.classList.remove('is-pressed');
+      if (e && e.pointerId != null) {
+        try { b.releasePointerCapture(e.pointerId); } catch {}
+      }
+      input.key(code, false, false);
+    };
+    b.addEventListener('pointerdown', (e) => {
+      if (b.disabled || !input.canControl()) return;
+      e.preventDefault();
+      b.classList.add('is-pressed');
+      if (e.pointerId != null) {
+        try { b.setPointerCapture(e.pointerId); } catch {}
+      }
+      input.key(code, true, false);
+    });
+    b.addEventListener('pointerup', release);
+    b.addEventListener('pointercancel', release);
+    b.addEventListener('lostpointercapture', release);
+    b.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        if (!e.repeat && input.canControl()) input.key(code, true, false);
+      }
+    });
+    b.addEventListener('keyup', (e) => {
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        input.key(code, false, false);
+      }
+    });
+    return b;
+  }
+
+  const gamebar = h(
+    'div',
+    { class: 'screen-gamebar', role: 'toolbar', 'aria-label': 'Game keys', hidden: !gameBarOpen },
+    h(
+      'div',
+      { class: 'game-dpad', role: 'group', 'aria-label': 'Arrow keys' },
+      gameKeyBtn('ArrowUp', '▲', 'Up Arrow', 'game-key-up'),
+      gameKeyBtn('ArrowLeft', '◀', 'Left Arrow', 'game-key-left'),
+      gameKeyBtn('ArrowDown', '▼', 'Down Arrow', 'game-key-down'),
+      gameKeyBtn('ArrowRight', '▶', 'Right Arrow', 'game-key-right'),
+    ),
+    h(
+      'div',
+      { class: 'game-actions', role: 'group', 'aria-label': 'Action keys' },
+      gameKeyBtn('Space', 'Space', 'Space bar'),
+      gameKeyBtn('Enter', 'Return', 'Return key'),
+      gameKeyBtn('Escape', 'Esc', 'Escape key'),
+    ),
+  );
+
   function updateLatches() {
     for (const [name, b] of latchBtns) {
       const on = input.latched.has(name);
@@ -180,7 +283,7 @@ export function render() {
     }
   }
 
-  const shell = h('div', { class: 'screen-shell' }, toolbar, stage, keybar, statusbar);
+  const shell = h('div', { class: 'screen-shell' }, toolbar, stage, keybar, gamebar, statusbar);
   const el = h('div', { class: 'page page-screen' }, h('header', { class: 'page-head' }, title), shell);
 
   // ---- messages from hostd --------------------------------------------------------
@@ -308,10 +411,14 @@ export function render() {
     const control = mode === 'control' && streamState === 'live' && !privateNow;
     canvas.classList.toggle('is-control', control);
     keybar.hidden = mode === 'view';
+    gamebar.hidden = mode === 'view' || !gameBarOpen;
+    soundBtn.disabled = streamState !== 'live';
     pasteBtn.disabled = !control;
     kbdBtn.disabled = !control;
+    gameBtn.disabled = !control;
     sourcePopup.select.disabled = mode !== 'control'; // one picture for every browser; changing it is control
     for (const b of keybar.querySelectorAll('button')) b.disabled = !control;
+    for (const b of gamebar.querySelectorAll('button')) b.disabled = !control;
   }
 
   // ---- size --------------------------------------------------------------------------
@@ -321,13 +428,52 @@ export function render() {
     return stage.clientWidth ? r.width / stage.clientWidth : 1;
   }
 
+  function currentScale(aw, ah, pic) {
+    if (pinchScale != null) return pinchScale;
+    if (size === 'fit') {
+      const f = Math.min(aw / pic.w, ah / pic.h);
+      return f >= 1 ? Math.floor(f) : Math.max(0.1, f);
+    }
+    return Number(size) || 1;
+  }
+
+  function handlePinch(ev) {
+    const pic = { w: canvas.width, h: canvas.height };
+    if (!pic.w || !pic.h) return;
+    const aw = Math.max(100, stage.clientWidth - 24);
+    const ah = Math.max(100, stage.clientHeight - 24);
+    if (ev.phase === 'start') {
+      if (pinchScale == null) pinchScale = currentScale(aw, ah, pic);
+      return;
+    }
+    if (ev.phase !== 'move') return;
+    const k = ratio() || 1;
+    const rectBefore = canvas.getBoundingClientRect();
+    const dx = ev.dx || 0;
+    const dy = ev.dy || 0;
+    const u = rectBefore.width ? ((ev.midX - dx) - rectBefore.left) / rectBefore.width : 0.5;
+    const v = rectBefore.height ? ((ev.midY - dy) - rectBefore.top) / rectBefore.height : 0.5;
+    if (ev.scaleRatio && ev.scaleRatio !== 1) {
+      const base = pinchScale != null ? pinchScale : currentScale(aw, ah, pic);
+      pinchScale = Math.max(0.25, Math.min(6, base * ev.scaleRatio));
+    }
+    layout();
+    const rectAfter = canvas.getBoundingClientRect();
+    const targetX = rectAfter.left + u * rectAfter.width;
+    const targetY = rectAfter.top + v * rectAfter.height;
+    stage.scrollLeft += (targetX - ev.midX) / k;
+    stage.scrollTop += (targetY - ev.midY) / k;
+  }
+
   function layout() {
     const s = stream.surface;
     const k = ratio() || 1;
     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
       // The stage fills the window down to the bottom of the browser window.
       const top = stage.getBoundingClientRect().top + window.scrollY;
-      const below = (keybar.hidden ? 0 : keybar.getBoundingClientRect().height) + statusbar.getBoundingClientRect().height;
+      const below = (keybar.hidden ? 0 : keybar.getBoundingClientRect().height)
+        + (gamebar.hidden ? 0 : gamebar.getBoundingClientRect().height)
+        + statusbar.getBoundingClientRect().height;
       const avail = Math.floor((window.innerHeight - top - below) / k) - 26;
       stage.style.height = `${Math.max(220, avail)}px`;
     } else {
@@ -339,17 +485,11 @@ export function render() {
     // The stage's padding (6 + 6) and the bezel (4 + 1 on each side, plus its 1-pixel shadow).
     const aw = stage.clientWidth - 24;
     const ah = stage.clientHeight - 24;
-    let scale = 1;
-    if (size === 'fit') {
-      const f = Math.min(aw / pic.w, ah / pic.h);
-      scale = f >= 1 ? Math.floor(f) : Math.max(0.1, f);
-    } else {
-      scale = Number(size) || 1;
-    }
+    const scale = currentScale(aw, ah, pic);
     // A phone held upright: the picture is limited by the width, so the stage shrinks to it
     // and the key bar stays close under the screen.
     const fullscreen = document.fullscreenElement || document.webkitFullscreenElement;
-    if (!fullscreen && size === 'fit' && Math.round(pic.h * scale) + 24 < stage.clientHeight) {
+    if (!fullscreen && size === 'fit' && pinchScale == null && Math.round(pic.h * scale) + 24 < stage.clientHeight) {
       stage.style.height = `${Math.max(120, Math.round(pic.h * scale) + 24)}px`;
     }
     canvas.style.width = `${Math.round(pic.w * scale)}px`;
@@ -415,8 +555,10 @@ export function render() {
   const onVisibility = () => {
     if (document.visibilityState === 'hidden') {
       input.releaseAll();
+      audioSink.disable();
       stream.stop('paused');
     } else {
+      if (audioOn) audioSink.enable();
       stream.start();
     }
   };
@@ -434,6 +576,7 @@ export function render() {
   scope.add(subscribe('status', update));
   scope.interval(update, 1000);
   scope.add(() => input.destroy());
+  scope.add(() => audioSink.destroy());
   scope.add(() => stream.stop('closed'));
   stream.start();
   update();

@@ -1131,3 +1131,93 @@ class MicrocodeTest(unittest.TestCase):
             self.assertEqual(self.m.main(['--esp', str(esp), '--boot', str(boot), '--cpuinfo', str(cpuinfo),
                                           '--firmware', fw, '--state', str(pathlib.Path(tmp, 's.json'))]), 0)
             self.assertFalse(pathlib.Path(tmp, 's.json').exists())   # not recorded: retried next boot
+
+
+class ListDisksBitLockerTest(unittest.TestCase):
+    """list-disks recognizes Windows BitLocker and Device Encryption drives (#4)."""
+    tool = IMAGE / 'rootfs/usr/lib/retroboot/installer/list-disks'
+
+    def setUp(self):
+        self.m = load(self.tool, 'rb_list_disks')
+
+    def test_bitlocker_and_device_encryption_detected(self):
+        esp = {'type': 'part', 'parttype': self.m.ESP_TYPE, 'fstype': 'vfat', 'label': 'SYSTEM', 'partlabel': 'EFI system partition'}
+        msr = {'type': 'part', 'parttype': self.m.MSR_TYPE, 'fstype': None, 'label': None, 'partlabel': 'Microsoft reserved partition'}
+        winre = {'type': 'part', 'parttype': self.m.WIN_RE_TYPE, 'fstype': 'ntfs', 'label': 'Recovery', 'partlabel': ''}
+        # Standard Windows 11 with BitLocker + WinRE NTFS + MSR + ESP
+        dev = {'children': [esp, msr, {'type': 'part', 'parttype': self.m.BASIC_DATA_TYPE, 'fstype': 'BitLocker', 'label': None}, winre]}
+        c = self.m.contents(dev)
+        self.assertEqual(c['os'], 'Windows (encrypted)')
+        self.assertEqual(c['summary'], 'Windows (encrypted)')
+        # BitLocker-To-Go / standalone encrypted volume (no ESP)
+        c_togo = self.m.contents({'children': [{'type': 'part', 'parttype': self.m.BASIC_DATA_TYPE, 'fstype': 'BitLocker', 'label': 'Work'}]})
+        self.assertEqual(c_togo['os'], 'Windows (encrypted)')
+        # Windows Device Encryption where blkid leaves Basic Data fstype blank alongside ESP + MSR
+        c_blank = self.m.contents({'children': [esp, msr, {'type': 'part', 'parttype': self.m.BASIC_DATA_TYPE, 'fstype': '', 'label': None}]})
+        self.assertEqual(c_blank['os'], 'Windows (encrypted)')
+        # Standard unencrypted Windows still identifies as Windows
+        c_win = self.m.contents({'children': [esp, msr, {'type': 'part', 'parttype': self.m.BASIC_DATA_TYPE, 'fstype': 'ntfs', 'label': 'OS'}]})
+        self.assertEqual(c_win['os'], 'Windows')
+        # Plain exFAT/FAT32 USB drive is not misclassified as Windows
+        c_usb = self.m.contents({'children': [{'type': 'part', 'parttype': self.m.BASIC_DATA_TYPE, 'fstype': 'exfat', 'label': 'THUMB'}]})
+        self.assertIsNone(c_usb['os'])
+        self.assertEqual(c_usb['summary'], 'THUMB')
+        # Standard Linux, Mac OS, and RetroBoot remain accurate
+        self.assertEqual(self.m.contents({'children': [esp, {'type': 'part', 'fstype': 'ext4', 'parttype': '0fc63daf-8483-4772-8e79-3d69d8477de4'}]})['os'], 'Linux')
+        self.assertEqual(self.m.contents({'children': [{'type': 'part', 'fstype': 'apfs'}]})['os'], 'Mac OS')
+        self.assertEqual(self.m.contents({'children': [{'type': 'part', 'partlabel': 'RBROOT_A', 'fstype': 'ext4'}]})['os'], 'RetroBoot')
+
+
+class Boot4KAndIsoContinuityTest(unittest.TestCase):
+    """4K checker-default, 1366x768 GRUB fallback, ISO ESP notes, chimes, and arm64 OTA build (#5, #12, #13, #55)."""
+
+    def test_initial_background_covers_4k_and_low_res_variants(self):
+        mod = load(IMAGE / 'rootfs/usr/lib/retroboot/image/rb_bootdisplay' if False else IMAGE / 'rootfs/usr/lib/retroboot/image/rb-bootdisplay', 'rb_bootdisplay_4k')
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            esp = pathlib.Path(tmp, 'esp')
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(mod.main(['--initial', '--esp', str(esp), '--settings', str(pathlib.Path(tmp, 'none.json'))]), 0)
+            rbdir = esp / 'grub/retroboot'
+            for fname in ('checker-default.png', 'checker-default-s1.png'):
+                ihdr = png_chunks((rbdir / fname).read_bytes())[b'IHDR']
+                w, h = struct.unpack('>II', ihdr[:8])
+                self.assertEqual((w, h), (3840, 2160), fname)
+        for tmpl in ('grub/grub.cfg.in', 'grub/grub-iso.cfg.in'):
+            txt = (IMAGE / tmpl).read_text()
+            self.assertIn('checker-default-s1.png', txt, tmpl)
+            self.assertIn('1366', txt, tmpl)
+
+    def test_make_iso_esp_includes_wifi_example_and_setup(self):
+        src = (IMAGE / 'scripts/make-iso.sh').read_text()
+        self.assertIn('::/retroboot/network.conf.example', src)
+        self.assertIn('::/SETUP.txt', src)
+
+    def test_stage_startup_chimes_handles_unset_and_wav_dir(self):
+        lib = IMAGE / 'scripts/lib.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp, 'root')
+            chimes = pathlib.Path(tmp, 'chimes')
+            root.mkdir()
+            chimes.mkdir()
+            (chimes / 'os9.wav').write_bytes(b'RIFFdemo')
+            (chimes / 'README.txt').write_text('ignore non-wav')
+            env_unset = {k: v for k, v in os.environ.items() if k != 'RB_CHIMES_DIR'}
+            r1 = subprocess.run(['bash', '-c', f'. "{lib}" && stage_startup_chimes "{root}"'], env=env_unset, capture_output=True, text=True, check=True)
+            self.assertIn('skipping', r1.stderr)
+            self.assertFalse((root / 'usr/share/retroboot/chimes').exists())
+            env_set = dict(env_unset, RB_CHIMES_DIR=str(chimes))
+            subprocess.run(['bash', '-c', f'. "{lib}" && stage_startup_chimes "{root}"'], env=env_set, capture_output=True, text=True, check=True)
+            self.assertTrue((root / 'usr/share/retroboot/chimes/os9.wav').is_file())
+            self.assertFalse((root / 'usr/share/retroboot/chimes/README.txt').exists())
+
+    def test_make_update_target_arch_avoids_x86_bcj_on_arm64(self):
+        mu = load(IMAGE / 'scripts/make-update.py', 'rb_make_update')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp, 'root')
+            (root / 'usr/lib/retroboot').mkdir(parents=True)
+            self.assertEqual(mu.target_arch('auto', str(root), {}), 'x86_64')
+            self.assertEqual(mu.target_arch('auto', str(root), {'board': 'rpi', 'arch': 'arm64'}), 'arm64')
+            (root / 'usr/lib/retroboot/rpi-profile.json').write_text('{}')
+            self.assertEqual(mu.target_arch('auto', str(root), {}), 'arm64')
+            self.assertEqual(mu.target_arch('x86_64', str(root), {}), 'x86_64')

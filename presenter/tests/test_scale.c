@@ -14,9 +14,13 @@ static void test_policy(void)
     CHECK_EQ(rb_suggested_scale(1024, 768), 1);
     CHECK_EQ(rb_suggested_scale(1280, 800), 1);
     CHECK_EQ(rb_suggested_scale(1366, 768), 1);
+    CHECK_EQ(rb_suggested_scale(1440, 900), 1);
+    CHECK_EQ(rb_suggested_scale(1280, 1024), 2);
+    CHECK_EQ(rb_suggested_scale(1680, 1050), 2);
     CHECK_EQ(rb_suggested_scale(1920, 1080), 2);
     CHECK_EQ(rb_suggested_scale(1920, 1200), 2);
-    CHECK_EQ(rb_suggested_scale(2560, 1600), 2);
+    CHECK_EQ(rb_suggested_scale(2560, 1440), 3);
+    CHECK_EQ(rb_suggested_scale(2560, 1600), 3);
     CHECK_EQ(rb_suggested_scale(3840, 2160), 4);
     CHECK_EQ(rb_suggested_scale(640, 480), 1);
     int w, h;
@@ -31,6 +35,9 @@ static void test_policy(void)
     CHECK_EQ(h, 540);
     /* clamped to the emulator's -g range, like hostd's guest_geometry */
     rb_auto_guest_size(5120, 1440, rb_suggested_scale(5120, 1440), &w, &h);
+    CHECK_EQ(w, 1704);
+    CHECK_EQ(h, 480);
+    rb_auto_guest_size(5120, 1440, 2, &w, &h);
     CHECK_EQ(w, 2560);
     CHECK_EQ(h, 720);
     rb_auto_guest_size(5120, 2880, 1, &w, &h);
@@ -620,6 +627,44 @@ static void test_region(void)
     CHECK(rb_rect_empty(rb_rect_clip((rb_rect){20, 20, 5, 5}, 10, 10)));
 }
 
+static void test_panel_layout(void)
+{
+    rb_layout phys, panel;
+    memset(&phys, 0, sizeof phys);
+    memset(&panel, 0, sizeof panel);
+    /* 800x600 integer (k=1) on 1920x1080 (s=2): panel layout keeps exact 800x600 / 2 = 400x300
+     * centered at (280, 120) instead of shrinking to 720x540 / 2 = 360x270. */
+    CHECK_EQ(rb_layout_compute_ex(&phys, 1920, 1080, 800, 600, RB_SCALING_INTEGER, 2, 2), 0);
+    CHECK_EQ(phys.dst.x, 560);
+    CHECK_EQ(phys.dst.y, 240);
+    CHECK_EQ(phys.dst.w, 800);
+    CHECK_EQ(phys.dst.h, 600);
+    CHECK_EQ(rb_layout_logical(&phys, 2, &panel), -1);
+    CHECK_EQ(rb_layout_panel(&phys, 2, &panel), 0);
+    CHECK_EQ(panel.dst.x, 280);
+    CHECK_EQ(panel.dst.y, 120);
+    CHECK_EQ(panel.dst.w, 400);
+    CHECK_EQ(panel.dst.h, 300);
+    uint32_t *src = calloc(800 * 600, 4), *dst = calloc(960 * 540, 4);
+    for (int i = 0; i < 800 * 600; i++)
+        src[i] = 0x004080c0u;
+    rb_layout_render(&panel, dst, 960, src, 800, (rb_rect){0, 0, 960, 540});
+    CHECK_EQ(dst[120 * 960 + 280], 0x004080c0u);
+    CHECK_EQ(dst[119 * 960 + 280], 0u);
+    rb_layout_free(&panel);
+    /* fit mode 640x480 on 1920x1080 (s=2): panel dst = (120, 0, 720, 540). */
+    CHECK_EQ(rb_layout_compute_ex(&phys, 1920, 1080, 640, 480, RB_SCALING_FIT, 2, 2), 0);
+    CHECK_EQ(rb_layout_panel(&phys, 2, &panel), 0);
+    CHECK_EQ(panel.dst.x, 120);
+    CHECK_EQ(panel.dst.y, 0);
+    CHECK_EQ(panel.dst.w, 720);
+    CHECK_EQ(panel.dst.h, 540);
+    rb_layout_free(&panel);
+    rb_layout_free(&phys);
+    free(src);
+    free(dst);
+}
+
 int main(void)
 {
     test_policy();
@@ -637,6 +682,7 @@ int main(void)
     test_pixel_scale();
     test_pixel_scale_layouts();
     test_logical_layout();
+    test_panel_layout();
     test_checker();
     test_region();
     TEST_DONE();

@@ -949,3 +949,58 @@ class WaitForSoundTests(unittest.IsolatedAsyncioTestCase):
         (tmp / "745" / "comm").write_text("python3\n")
         self.assertFalse(audio.alsactl_running(tmp))
         self.assertFalse(audio.alsactl_running(tmp / "missing"))
+
+
+class Retroboot310MixerAndOutputTests(unittest.IsolatedAsyncioTestCase):
+    async def test_anchored_pcm_match_ignores_pcm_capture(self):
+        from retroboot.network import AudioMixer
+        calls = []
+
+        async def run(argv, timeout=None):
+            calls.append(argv)
+            if "scontrols" in argv:
+                return 0, "Simple mixer control 'PCM Capture',0\nSimple mixer control 'Speaker',0\n", ""
+            return 0, "Simple mixer control 'Speaker',0\n  Capabilities: pvolume pswitch\n", ""
+
+        m = AudioMixer(runner=run)
+        self.assertTrue(await m.probe("USBDAC"))
+        self.assertEqual(m.control, "Speaker")
+        self.assertTrue(m.has_switch)
+
+    async def test_usb_dac_without_pswitch_falls_back_to_zero_percent(self):
+        from retroboot.network import AudioMixer
+        calls = []
+
+        async def run(argv, timeout=None):
+            calls.append(argv)
+            if "scontrols" in argv:
+                return 0, "Simple mixer control 'PCM',0\nSimple mixer control 'PCM Capture',0\n", ""
+            if argv[-2:] == ["sget", "PCM"]:
+                return 0, "Simple mixer control 'PCM',0\n  Capabilities: pvolume\n", ""
+            return 0, "", ""
+
+        m = AudioMixer(runner=run)
+        self.assertTrue(await m.probe("USBDAC", detect_switch=True))
+        self.assertEqual(m.control, "PCM")
+        self.assertFalse(m.has_switch)
+        await m.set_volume(55)
+        self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "55%"])
+        await m.set_mute(True)
+        self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "0%"])
+        await m.set_mute(False)
+        self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "55%"])
+
+    def test_choose_honors_audio_output_and_list_outputs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            make_tree(root, hdmi_sink=True, analog=True, usb_playback=True)
+            bt = [{"pw_sink": "bluez_output.AA_BB_CC.1", "name": "Bluetooth Headphones", "available": True}]
+            items = audio.list_outputs(root, active_output="speakers", bluetooth_sinks=bt)
+            self.assertEqual([i["id"] for i in items], ["auto", "speakers", "hdmi", "usb", "bluetooth"])
+            self.assertTrue(next(i for i in items if i["id"] == "speakers")["active"])
+            self.assertEqual(audio.choose(root, output="speakers")["alsa"], "plughw:CARD=Generic_1,DEV=0")
+            self.assertEqual(audio.choose(root, output="hdmi")["alsa"], "plughw:CARD=Generic,DEV=7")
+            self.assertEqual(audio.choose(root, output="usb")["alsa"], "plughw:CARD=POROSVOC,DEV=0")
+            self.assertEqual(audio.choose(root, output="bluetooth", bluetooth_sinks=bt)["pw_sink"],
+                             "bluez_output.AA_BB_CC.1")
+            self.assertTrue(audio.supports_48khz(audio.choose(root, output="speakers"), root))

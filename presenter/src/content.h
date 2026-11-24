@@ -61,3 +61,6 @@ int rb_content_inspect(rb_content *c, const uint32_t *px, int w, int h, int stri
  * pixel (RGB), mean[i] the mean of its 2 x 2 block. Returns how many (at most
  * RB_CONTENT_SAMPLES). */
 int rb_content_sample(const uint32_t *px, int w, int h, int stride_px, uint32_t *raw, uint32_t *mean);
+/* True once an OS X guest frame has left the uniform #bfbfbf/#c0c0c0 BootX stage
+ * and rendered the LoginWindow/Finder desktop (menu bar or non-boot-gray body). */
+bool rb_content_is_osx_desktop(const uint32_t *px, int w, int h, int stride_px);

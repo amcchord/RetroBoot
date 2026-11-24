@@ -325,9 +325,10 @@ class PiHostdTests(unittest.IsolatedAsyncioTestCase):
                       json.dumps(Diagnostics(self.app.panel).doc(), ensure_ascii=False))
         upd = self.app.updates.public()
         self.assertFalse(upd["available"])
-        self.assertEqual(upd["reason"], update_manager.UNAVAILABLE_PI)
+        expected_reason = "This RetroBoot wasn't installed with room for updates."
+        self.assertEqual(upd["reason"], expected_reason)
         self.assertFalse(upd["can_install"])
-        self.assertEqual(helpers.events(self.app, "update_unavailable")[0]["reason"], update_manager.UNAVAILABLE_PI)
+        self.assertEqual(helpers.events(self.app, "update_unavailable")[0]["reason"], expected_reason)
         self.assertTrue(helpers.events(self.app, "platform"))
         # The classic panel's Diagnostics names the board.
         from retroboot.panel.controller import Diagnostics

@@ -30,6 +30,14 @@ ROTATION_LABELS = {"auto": "Automatic", "0": "Standard", "90": "90° clockwise",
                    "270": "90° counterclockwise"}
 PIXEL_SCALES = ("auto", "1", "2", "3", "4")
 RECOVERY_CHORDS = ("ctrl+alt+delete", "ctrl+alt+backspace", "ctrl+alt+escape")
+CHIME_CHOICES = ("auto", "os9", "quadra", "powermac", "macii", "se", "off")
+CHIME_LABELS = {"auto": "Automatic (by Mac model)", "os9": "Mac OS 9", "quadra": "Quadra",
+                "powermac": "Power Mac", "macii": "Mac II", "se": "Macintosh SE", "off": "Off"}
+GAMEPAD_MODES = ("arrows", "wasd", "off")
+GAMEPAD_MODE_LABELS = {"arrows": "Arrow keys", "wasd": "WASD", "off": "Off"}
+AUDIO_OUTPUT_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}\Z")
+AUDIO_OUTPUT_LABELS = {"auto": "Automatic", "speakers": "Speakers", "analog": "Analog",
+                       "hdmi": "HDMI", "usb": "USB Audio", "bluetooth": "Bluetooth"}
 HOSTNAME_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 VOLUME_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,27}$")
 UPDATE_URL_RE = re.compile(r"^(|https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~%/+=&?:@!$,;-]{0,1900})?)$")
@@ -137,12 +145,13 @@ class ValidationContext:
     machine_families: dict[str, str] | None = None   # machine id -> family (machines.FAMILIES)
     quadra_ram_max_mb: int | None = None            # image/board budget (Zero 2 W: 128)
     machine_guest_os: dict[str, str] | None = None   # exact selected operating-system profile
+    audio_outputs: dict[str, str] | None = None      # available audio outputs: id -> label
 
 
 @dataclass(frozen=True)
 class Setting:
     key: str
-    type: str                      # enum | bool | int | float | string | machine | host_mode
+    type: str                      # enum | bool | int | float | string | machine | host_mode | audio_output
     default: Any
     apply: str
     label: str
@@ -162,7 +171,8 @@ class Setting:
     def describe(self, ctx: ValidationContext | None = None) -> dict:
         """Wire form for GET /api/v1/settings (dynamic kinds are presented as enums)."""
         wire_type = {"machine": "enum", "host_mode": "enum", "timezone": "enum", "media": "enum",
-                     "float": "number", "pixel_scale": "enum", "redirects": "list", "catalog_urls": "list"}.get(self.type, self.type)
+                     "audio_output": "enum", "float": "number", "pixel_scale": "enum",
+                     "redirects": "list", "catalog_urls": "list"}.get(self.type, self.type)
         d: dict[str, Any] = {
             "key": self.key, "type": wire_type, "kind": self.type, "default": self.default,
             "apply": self.apply, "capability": self.capability,
@@ -177,10 +187,14 @@ class Setting:
             d["choices"] = pixel_scale_choices(ctx)
         elif choices is not None:
             labels = dict(self.choice_labels or {})
+            if self.type == "audio_output":
+                labels = {**AUDIO_OUTPUT_LABELS, **labels}
             if ctx is not None and self.type == "machine":
                 labels.update(ctx.machine_names or {})
             if ctx is not None and self.type == "media":
                 labels.update(ctx.media_cds or {})
+            if ctx is not None and self.type == "audio_output" and ctx.audio_outputs is not None:
+                labels.update(ctx.audio_outputs)
             d["choices"] = [{"value": c, "label": labels.get(c, choice_label(self.type, c))} for c in choices]
             if ctx is not None and self.type == "machine" and ctx.machine_families is not None:
                 for c in d["choices"]:
@@ -246,6 +260,10 @@ class Setting:
             return ["auto"]
         if self.key == "machine.quadra_ram_mb" and ctx and ctx.quadra_ram_max_mb is not None:
             return tuple(c for c in self.choices if c <= ctx.quadra_ram_max_mb)
+        if self.type == "audio_output":
+            if ctx and ctx.audio_outputs is not None:
+                return ["auto"] + [k for k in ctx.audio_outputs if k != "auto"]
+            return ["auto"]
         return self.choices
 
     def validate(self, value: Any, ctx: ValidationContext | None = None) -> Any:
@@ -331,6 +349,10 @@ class Setting:
             if ctx is not None and ctx.host_modes is not None and value not in ctx.host_modes:
                 raise ValueError("This display does not offer that mode.")
             return value
+        if t == "audio_output":
+            if not isinstance(value, str) or not AUDIO_OUTPUT_RE.fullmatch(value):
+                raise ValueError("Choose a valid sound output.")
+            return value
         raise ValueError("Unsupported setting type.")
 
 
@@ -378,9 +400,9 @@ def validate_redirects(value: Any) -> list[dict]:
 
 
 GROUP_TITLES = {"machine": "Machine", "system": "Date & Time", "startup": "Startup", "display": "Display",
-                "input": "Keyboard & Mouse", "bluetooth": "Bluetooth", "audio": "Sound", "network": "Network", "share": "Sharing",
-                "management": "Web Management", "media": "CD-ROM", "remote": "Remote Screen", "update": "Software Update",
-                "power": "Battery"}
+                "input": "Keyboard & Mouse", "bluetooth": "Bluetooth", "audio": "Sound", "network": "Network",
+                "share": "Sharing", "storage": "Storage", "management": "Web Management", "media": "CD-ROM",
+                "remote": "Remote Screen", "update": "Software Update", "power": "Battery"}
 WARNINGS = {
     "management.web": {"off": "Turning web management off ends this session. Only the RetroBoot panel on the "
                               "computer itself can turn it back on."},
@@ -662,6 +684,12 @@ SETTINGS: tuple[Setting, ...] = (
        label="Touch gestures",
        help="On a touchscreen: tap to click, drag to move things, touch and hold or tap with two fingers for a "
             "contextual menu, and drag two fingers to scroll. Off: a touch is a plain mouse button."),
+    _s(key="input.gamepad_mode", type="enum", default="arrows", choices=GAMEPAD_MODES,
+       choice_labels=GAMEPAD_MODE_LABELS, apply=LIVE, group="input", label="Game controller",
+       help="Map USB and Bluetooth game controllers to Mac OS Arrow keys or WASD, or turn mapping off."),
+    _s(key="input.natural_scroll", type="bool", default=False, apply=LIVE, group="input",
+       label="Natural scrolling",
+       help="Move content in the same direction your fingers drag on a trackpad or scroll wheel."),
     _s(key="input.mac_os_keys", type="bool", default=True, apply=GUEST_RESTART, capability="mac_os_keys",
        group="input", label="Volume and brightness keys in Mac OS", families=POWERMAC_ONLY,
        help="On a laptop the volume, mute and brightness keys work as on a PowerBook: Mac OS changes its own "
@@ -684,6 +712,13 @@ SETTINGS: tuple[Setting, ...] = (
        label="Sound", help="Play Mac OS sound through this computer."),
     _s(key="audio.volume", type="int", default=70, range=(0, 100), apply=LIVE,
        capability="audio", group="audio", label="Volume", help="Output volume, 0 to 100."),
+    _s(key="audio.startup_chime", type="enum", default="auto", choices=CHIME_CHOICES,
+       choice_labels=CHIME_LABELS, apply=LIVE, group="audio", label="Startup chime",
+       help="Classic Macintosh chime played when Mac OS starts."),
+    _s(key="audio.output", type="audio_output", default="auto", apply=GUEST_RESTART, group="audio",
+       label="Sound output",
+       help="Audio device used for sound and chimes. Changes apply to host controls right away and to Mac OS "
+            "when it restarts."),
     _s(key="network.guest", type="enum", default="nat", choices=("nat", "none"),
        choice_labels={"nat": "Share this computer's connection", "none": "No network"},
        apply=GUEST_RESTART, group="network", label="Mac OS networking",
@@ -735,6 +770,12 @@ SETTINGS: tuple[Setting, ...] = (
        pattern=VOLUME_NAME_RE.pattern, apply=GUEST_RESTART, group="share",
        label="Shared volume name",
        help="1 to 27 letters, digits, spaces, hyphens or underscores."),
+    _s(key="printer.enabled", type="bool", default=True, apply=LIVE, group="storage",
+       label="Print to PDF",
+       help="Listen for Mac OS PostScript print jobs and save PDFs into RetroBoot Share/Printed PDFs."),
+    _s(key="usb_share.enabled", type="bool", default=True, apply=LIVE, group="storage",
+       label="USB flash drives in Share",
+       help="Show plugged-in USB flash drives inside RetroBoot Share/USB Drives."),
     _s(key="management.web", type="enum", default="on", choices=("on", "off"), apply=LIVE,
        group="management", label="Web management",
        help="Allow paired browsers on the local network to manage this computer."),

@@ -252,12 +252,16 @@ static void test_requests(void)
                                  "{\"guest_size\":[10,10]}", "{\"guest_size\":[1024.5,768]}",
                                  "{\"host_mode\":[1920,1080]}", "{\"guest_size\":\"auto\"}",
                                  "{\"pixel_scale\":5}", "{\"pixel_scale\":-1}", "{\"pixel_scale\":2.5}",
-                                 "{\"pixel_scale\":\"2\"}", "{\"pixel_scale\":true}"};
+                                 "{\"pixel_scale\":\"2\"}", "{\"pixel_scale\":true}", "{\"crt_bezel\":1}"};
     for (size_t i = 0; i < sizeof bad_display / sizeof bad_display[0]; i++) {
         j = J(bad_display[i]);
         CHECK(rb_parse_display_config(j, &d, err, sizeof err) < 0);
         cJSON_Delete(j);
     }
+    j = J("{\"crt_bezel\":true}");
+    CHECK_EQ(rb_parse_display_config(j, &d, err, sizeof err), 0);
+    CHECK(d.has_crt_bezel && d.crt_bezel);
+    cJSON_Delete(j);
 
     struct rb_input_req in;
     j = J("{\"swap_command_option\":true,\"recovery_chord\":\"ctrl+alt+backspace\",\"pointer_speed\":1.5}");
@@ -269,22 +273,46 @@ static void test_requests(void)
     cJSON_Delete(j);
     CHECK(!in.has_legacy_mouse);
     CHECK(!in.has_mouse_dpi);
-    j = J("{\"touch_gestures\":false,\"legacy_mouse\":true,\"mouse_dpi\":64000}");
+    j = J("{\"touch_gestures\":false,\"legacy_mouse\":true,\"mouse_dpi\":64000,\"gamepad_mode\":\"wasd\",\"natural_scroll\":true}");
     CHECK_EQ(rb_parse_input_config(j, &in, err, sizeof err), 0);
     CHECK(in.has_touch_gestures && !in.touch_gestures);
     CHECK(in.has_legacy_mouse && in.legacy_mouse);
     CHECK(in.has_mouse_dpi && in.mouse_dpi == 64000);
+    CHECK(in.has_gamepad_mode && in.gamepad_mode == 1);
+    CHECK(in.has_natural_scroll && in.natural_scroll);
     cJSON_Delete(j);
     const char *bad_input[] = {"{\"swap_command_option\":1}", "{\"recovery_chord\":\"ctrl+c\"}",
                                "{\"pointer_speed\":0.1}", "{\"pointer_speed\":\"fast\"}",
                                "{\"pointer_speed\":5}", "{\"touch_gestures\":1}",
                                "{\"legacy_mouse\":\"true\"}", "{\"mouse_dpi\":99}", "{\"mouse_dpi\":100001}",
-                               "{\"mouse_dpi\":1200.5}", "{\"mouse_dpi\":\"64000\"}"};
+                               "{\"mouse_dpi\":1200.5}", "{\"mouse_dpi\":\"64000\"}",
+                               "{\"gamepad_mode\":\"analog\"}", "{\"natural_scroll\":1}"};
     for (size_t i = 0; i < sizeof bad_input / sizeof bad_input[0]; i++) {
         j = J(bad_input[i]);
         CHECK(rb_parse_input_config(j, &in, err, sizeof err) < 0);
         cJSON_Delete(j);
     }
+
+    struct rb_set_config_req cfg;
+    j = J("{\"cmd\":\"set_config\",\"gamepad_mode\":\"off\",\"natural_scroll\":true,\"crt_bezel\":true}");
+    CHECK_EQ(rb_parse_set_config(j, &cfg, err, sizeof err), 0);
+    CHECK(cfg.has_gamepad_mode && cfg.gamepad_mode == 2);
+    CHECK(cfg.has_natural_scroll && cfg.natural_scroll);
+    CHECK(cfg.has_crt_bezel && cfg.crt_bezel);
+    cJSON_Delete(j);
+    j = J("{\"cmd\":\"set_config\",\"gamepad_mode\":\"arrows\"}");
+    CHECK_EQ(rb_parse_set_config(j, &cfg, err, sizeof err), 0);
+    CHECK(cfg.has_gamepad_mode && cfg.gamepad_mode == 0 && !cfg.has_natural_scroll && !cfg.has_crt_bezel);
+    cJSON_Delete(j);
+    j = J("{\"gamepad_mode\":\"bad\"}");
+    CHECK(rb_parse_set_config(j, &cfg, err, sizeof err) < 0);
+    cJSON_Delete(j);
+    j = J("{\"natural_scroll\":\"yes\"}");
+    CHECK(rb_parse_set_config(j, &cfg, err, sizeof err) < 0);
+    cJSON_Delete(j);
+    j = J("{\"crt_bezel\":0}");
+    CHECK(rb_parse_set_config(j, &cfg, err, sizeof err) < 0);
+    cJSON_Delete(j);
     CHECK(!strcmp(rb_scene_name(RB_SCENE_BLACK), "black"));
     CHECK(!strcmp(rb_panel_bg_name(RB_PANEL_BG_GUEST_DIMMED), "guest-dimmed"));
 }

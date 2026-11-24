@@ -190,6 +190,47 @@ class Navigation(unittest.IsolatedAsyncioTestCase):
             await self.run_ui(restart_by_shutdown=True)
         self.assertIsNone(self.sup.restart_by_shutdown)
 
+    async def test_jaguar_and_graphite_keyboard_fallback_verifies_menu_and_modal(self):
+        # Baseline 640x480 desktop, menu opened box, menu selection moved, and centered modal box.
+        w, h = 640, 480
+        base = bytearray([210] * (w * h * 3))
+
+        def paint(buf, x0, y0, x1, y1, r, g, b):
+            out = bytearray(buf)
+            for y in range(y0, y1):
+                for x in range(x0, x1):
+                    off = (y * w + x) * 3
+                    out[off:off + 3] = bytes((r, g, b))
+            return bytes(out)
+
+        menu_open = paint(base, 12, 22, 160, 290, 245, 245, 245)
+        menu_sel = paint(menu_open, 14, 244, 156, 266, 130, 140, 150)  # Graphite highlight
+        modal = paint(base, 150, 150, 490, 290, 240, 240, 240)
+        self.assertTrue(power_osx.detect_menu_opened(w, h, bytes(base), menu_open))
+        self.assertTrue(power_osx.detect_menu_selection_moved(w, h, menu_open, menu_sel))
+        self.assertTrue(power_osx.detect_confirmation_dialog(w, h, bytes(base), modal))
+        self.assertFalse(power_osx.detect_menu_opened(w, h, bytes(base), bytes(base)))
+
+        # Jaguar 10.2.8 (usb-mouse -> absolute=False) succeeds via verified visual diff fallback (#45).
+        self.sup.machine = SimpleNamespace(guest_os="macosx-10.2", meta={"os_version": "10.2.8", "os_build": "6R73"})
+        self.sup.qmp = SimpleNamespace(send_key=AsyncMock(), key_event=AsyncMock(),
+                                       execute=AsyncMock(return_value=[{"current": True, "absolute": False}]))
+        self.sup.dump_frame = AsyncMock(side_effect=[
+            (w, h, bytes(base)),
+            (w, h, menu_open),
+            (w, h, menu_sel),
+            (w, h, modal),
+        ])
+        self.assertTrue(await self.run_ui())
+        self.assertEqual(self.keys(), [("down",), ("end",), ("up",), ("ret",), ("ret",)])
+        self.assertIsNone(self.sup.power_failure)
+
+        # Unchanged frames fail closed without pressing Return.
+        self.sup.dump_frame = AsyncMock(side_effect=[(w, h, bytes(base)), (w, h, bytes(base))])
+        self.sup.qmp.send_key.reset_mock()
+        self.assertFalse(await self.run_ui())
+        self.assertNotIn(("ret",), self.keys())
+
     async def test_ui_wait_requires_consecutive_positive_frames(self):
         self.sup._osx_power_state.side_effect = ["shutdown-selected", None, "shutdown-selected", "shutdown-selected"]
         with patch("retroboot.supervisor.asyncio.sleep", new=AsyncMock()):

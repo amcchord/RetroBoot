@@ -46,13 +46,12 @@ grep -q '^# retroboot-slots: 1$' "$out/esp/grub/grub.cfg" || die "grub.cfg lacks
 python3 "$IMAGE_SRC/scripts/make-blank-font.py" "$out/esp/grub/fonts/blank.pf2"
 # Default background until rb-bootdisplay records this machine's mode (installer
 # ISO, raw image first boot). GRUB draws it 1:1 from the top-left corner and fills
-# whatever it does not cover with black, so it is as large as the modes we expect
-# (2560x1600). Scale 2 is the section 4.5 scale for 1920-2879 pixel wide modes,
-# i.e. most laptop panels and HDMI monitors (a 1920x1080 mini PC showed black
-# bars right and bottom with the earlier 1680x1050 scale-1 default, and a finer
-# pattern than the splash). Scale-1 modes (1280x800 VMs, 1366x768) see the
-# coarser pattern until the splash takes over.
-python3 "$IMAGE_SRC/rootfs/usr/lib/retroboot/image/rb-checkerboard" 2560 1600 2 "$out/esp/grub/retroboot/checker-default.png"
+# whatever it does not cover with black, so it covers up to 4K UHD (3840x2160)
+# cleanly without black borders. Scale 2 suits >= 1440px wide displays (1080p/
+# 1440p/4K), while checker-default-s1.png gives crisp 1x matching on 1366x768 and
+# smaller displays when GRUB's $gfxmode specifies a smaller mode.
+python3 "$IMAGE_SRC/rootfs/usr/lib/retroboot/image/rb-checkerboard" 3840 2160 2 "$out/esp/grub/retroboot/checker-default.png"
+python3 "$IMAGE_SRC/rootfs/usr/lib/retroboot/image/rb-checkerboard" 3840 2160 1 "$out/esp/grub/retroboot/checker-default-s1.png"
 
 python3 - "$out" "$grub" "$cmdline" "$efi_mods" "$bios_mods" <<'EOF'
 import hashlib, json, pathlib, sys

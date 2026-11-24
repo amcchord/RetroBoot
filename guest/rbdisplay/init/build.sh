@@ -14,7 +14,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
-tc=${RETRO68_TOOLCHAIN:-/opt/retro68/toolchain}
+tc=${RETRO68_TOOLCHAIN:-/Users/austinmcchord/Development/ClassicMac/vendor/Retro68-build/toolchain}
 build=${BUILD:-$here/../build/init}
 out=${OUT:-$build/tree}
 name=${INIT_NAME:- RetroBoot Display Startup}

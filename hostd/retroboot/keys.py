@@ -330,7 +330,8 @@ class FunctionKeys:
         if not result:
             return
         await self._show(result)
-        if result.get("kind") in ("volume", "mute") and not self._guest_running() and not repeat:
+        panel_open = bool(getattr(self.app.panel, "visible", False))
+        if result.get("kind") in ("volume", "mute") and not repeat and (not self._guest_running() or panel_open):
             self._click(result)
 
     async def _show(self, result: dict) -> None:
@@ -341,15 +342,16 @@ class FunctionKeys:
                                              muted=bool(result.get("muted")))
 
     def _click(self, result: dict) -> None:
-        """The host's feedback sound at the new level (Mac OS not running)."""
+        """The host's feedback sound at the new level (Mac OS stopped, or panel open)."""
         if result.get("muted") or not (result.get("level") or 0) > 0:
             return
         try:
+            from . import audio as hostaudio
             out = self.app.choose_audio_output()
             path = self.app.paths.run / CLICK_NAME
             if not path.exists():
                 path.write_bytes(click_wav())
-            cmd = ["aplay", "-q"] + (["-D", out["alsa"]] if out and out.get("alsa") else []) + [str(path)]
+            cmd = hostaudio.playback_command(path, out)
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         except Exception as exc:      # no aplay, no device: the indicator alone
             log.info("key click not played: %s", exc)

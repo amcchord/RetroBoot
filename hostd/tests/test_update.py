@@ -821,5 +821,202 @@ class RestartToUpdateFinishedLate(Base):
         self.assertFalse(self.app.powered_off)
 
 
+class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
+    """Raspberry Pi 4 / 5 A/B OTA updates using firmware ``tryboot.txt`` and ``0 tryboot``."""
+
+    def setUp(self):
+        self.td, self.root = helpers.scratch()
+        self.addCleanup(self.td.cleanup)
+        self.key, self.pem, self.kid = keypair()
+        (self.root / "keys").mkdir()
+        (self.root / "keys/dev.pub").write_bytes(self.pem)
+        self.esp = self.root / "boot/efi"
+        (self.esp / "retroboot").mkdir(parents=True)
+        self.base_cfg = (
+            "[all]\narm_64bit=1\nkernel=kernel8.img\ninitramfs initramfs8 followkernel\n"
+            "include retroboot/display.txt\n"
+        )
+        (self.esp / "config.txt").write_text(self.base_cfg)
+        (self.esp / "cmdline.txt").write_text("quiet root=PARTLABEL=RBROOT_A retroboot.slot=a\n")
+        (self.esp / "retroboot/display.txt").write_text("hdmi_force_hotplug=1\n")
+        (self.esp / "retroboot/installer-config.txt").write_text("# installer config\n")
+        self.slots = {s: self.root / "slots" / s for s in "ab"}
+        for d in self.slots.values():
+            d.mkdir(parents=True)
+        self._make_rpi_root(self.root, "0.2.0", "0.2.0-20261011T153043Z-abcdef01")
+        self._make_rpi_root(self.slots["a"], "0.2.0", "0.2.0-20261011T153043Z-abcdef01", hostd_update=False)
+        (self.root / "etc/hostname").write_text("pi-mac\n")
+        self.cmdline = self.root / "cmdline"
+        self.cmdline.write_text("quiet root=PARTLABEL=RBROOT_A retroboot.slot=a\n")
+        self.new = self._make_rpi_root(self.root / "newroot", "0.3.0", "0.3.0-20261124T010203Z-abcdef02")
+        self.bundle = self._make_rpi_bundle(self.root / "rpi.rbu", self.new)
+
+    def _make_rpi_root(self, path: Path, version: str, build_id: str, hostd_update: bool = True) -> Path:
+        import hashlib
+        (path / "usr/lib/retroboot/boot/overlays").mkdir(parents=True, exist_ok=True)
+        (path / "etc").mkdir(parents=True, exist_ok=True)
+        (path / "boot").mkdir(exist_ok=True)
+        (path / "boot/vmlinuz").write_bytes(b"rpi-kernel-" + version.encode())
+        (path / "etc/hostname").write_text("retroboot\n")
+        (path / "etc/machine-id").write_text("")
+        (path / "etc/fstab").write_text(
+            "PARTLABEL=RBROOT_A / ext4 rw 0 1\n"
+            "PARTLABEL=RBEFI /boot/firmware vfat defaults 0 2\n"
+            "PARTLABEL=RBDATA /var/lib/retroboot xfs nofail 0 0\n"
+        )
+        (path / "usr/lib/retroboot/release.json").write_text(json.dumps(
+            {"product": "RetroBoot", "version": version, "flavor": "debug", "build_id": build_id,
+             "arch": "arm64", "board": "rpi", "settings_schema": 1}))
+        boot = path / "usr/lib/retroboot/boot"
+        (boot / "kernel8.img").write_bytes(b"k8-" + version.encode())
+        (boot / "initramfs8").write_bytes(b"init-" + version.encode())
+        (boot / "bcm2712-rpi-5-b.dtb").write_bytes(b"dtb-" + version.encode())
+        (boot / "overlays/vc4-kms-v3d.dtbo").write_bytes(b"dtbo-" + version.encode())
+        (boot / "config.txt").write_text(self.base_cfg)
+        files = {str(p.relative_to(boot)): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in boot.rglob("*") if p.is_file() and p.name != "boot.json"}
+        (boot / "boot.json").write_text(json.dumps({
+            "board": "rpi", "kernel_cmdline": "console=serial0,115200 root=PARTUUID=@ROOT_PARTUUID@ retroboot.slot=a",
+            "config_txt_sha256": files["config.txt"], "bootfs_files_sha256": files,
+        }))
+        if hostd_update:
+            (path / "usr/lib/retroboot/hostd/retroboot/update").mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _make_rpi_bundle(self, out: Path, root: Path) -> Path:
+        files = gzip.compress(json.dumps(tree.build(str(root))).encode())
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            tf.add(str(root), arcname=".")
+        payload = buf.getvalue()
+        import hashlib
+        manifest = {
+            "format": B.FORMAT, "product": "RetroBoot", "version": "0.3.0",
+            "build_id": "0.3.0-20261124T010203Z-abcdef02", "flavor": "debug", "min_version": "0.2.0",
+            "arch": "arm64", "board": "rpi", "settings_schema": 1, "settings_schema_min": 1,
+            "kernel": {"version": "6.12-rpi", "cmdline": "console=serial0,115200 root=PARTUUID=@ROOT_PARTUUID@ quiet"},
+            "root": {"member": "root.sqfs", "format": "squashfs", "compression": "tar", "bytes": len(payload),
+                     "sha256": hashlib.sha256(payload).hexdigest(), "installed_bytes": 4096, "files": 10},
+            "files": {"member": "root-files.json.gz", "bytes": len(files),
+                      "sha256": hashlib.sha256(files).hexdigest()},
+            "notes": "Pi tryboot test update.",
+        }
+        mbytes = json.dumps(manifest).encode()
+        sig = B.signature_document(self.kid, self.key.sign(mbytes))
+        with tarfile.open(out, "w", format=tarfile.USTAR_FORMAT) as tf:
+            for n, raw in (("manifest.json", mbytes), ("manifest.sig", sig),
+                           ("root-files.json.gz", files), ("root.sqfs", payload)):
+                ti = tarfile.TarInfo(n)
+                ti.size = len(raw)
+                tf.addfile(ti, io.BytesIO(raw))
+        return out
+
+    async def make_rpi_app(self, *, current="a", zero2w=False):
+        from types import SimpleNamespace
+        helpers.make_package(self.root)
+        cfg = helpers.make_config(self.root)
+        cfg.update_esp = str(self.esp)
+        cfg.update_keys_dir = str(self.root / "keys")
+        cfg.cmdline_path = str(self.cmdline)
+        cfg.update_panel_health_s = 1.0
+        if zero2w:
+            cfg.update_layout = None
+        else:
+            cfg.update_layout = {"current": current, "a": str(self.slots["a"]), "b": str(self.slots["b"]),
+                                 "esp": "x", "data": "y"}
+        app = Hostd(cfg)
+        app.platform = SimpleNamespace(
+            has_grub=False, is_raspberry_pi=True, is_zero2w=zero2w, is_gemini=False,
+            family="raspberrypi", board="zero2w" if zero2w else "pi5", model="", ram_mb=512 if zero2w else 4096,
+            features={}, public=lambda: {},
+        )
+        app.loop = asyncio.get_running_loop()
+        app.settings.store.load()
+        app.updates.ops = FakeOps()
+        await app.updates.start()
+        self.addAsyncCleanup(app.updates.stop)
+        return app
+
+    async def test_rpi_tryboot_install_arm_commit_and_rollback(self):
+        zapp = await self.make_rpi_app(zero2w=True)
+        self.assertIsNotNone(zapp.updates.unavailable)
+
+        app = await self.make_rpi_app()
+        self.assertIsNone(app.updates.unavailable)
+        self.assertEqual(app.updates.boot_mode, "rpi")
+        incoming = app.updates.new_incoming()
+        shutil.copy(self.bundle, incoming)
+        job = app.updates.install_job({"kind": "file", "path": str(incoming)})
+        await job.done.wait()
+        self.assertEqual(job.state, "succeeded", job.error)
+        self.assertEqual(app.updates.public()["staged"]["slot"], "b")
+        # User display tweaks untouched, config.txt still points to old slot until trial commits.
+        self.assertEqual((self.esp / "retroboot/display.txt").read_text(), "hdmi_force_hotplug=1\n")
+        self.assertEqual((self.esp / "config.txt").read_text(), self.base_cfg)
+        self.assertTrue((self.esp / "retroboot/slot-b/kernel8.img").is_file())
+        self.assertTrue((self.esp / "retroboot/slot-b/overlays/vc4-kms-v3d.dtbo").is_file())
+        self.assertIn("root=PARTLABEL=RBROOT_B", (self.esp / "retroboot/slot-b/cmdline.txt").read_text())
+        self.assertIn("retroboot.trial=1", (self.esp / "retroboot/slot-b/cmdline-trial.txt").read_text())
+
+        # Restart arms tryboot.txt and reboots with "0 tryboot".
+        rjob = app.updates.restart_job()
+        await rjob.done.wait()
+        self.assertEqual(rjob.state, "succeeded", rjob.error)
+        tb = (self.esp / "tryboot.txt").read_text()
+        self.assertIn("os_prefix=retroboot/slot-b/", tb)
+        self.assertIn("cmdline=cmdline-trial.txt", tb)
+        ev = helpers.events(app, "host_reboot")
+        self.assertEqual(ev[-1].get("arg"), "0 tryboot")
+
+        # Simulated trial boot into slot b commits config.txt and restores installer tryboot.txt.
+        self.cmdline.write_text((self.esp / "retroboot/slot-b/cmdline-trial.txt").read_text())
+        shutil.copy(self.new / "usr/lib/retroboot/release.json", self.root / "usr/lib/retroboot/release.json")
+        app2 = await self.make_rpi_app(current="b")
+        self.assertEqual(app2.updates.boot["kind"], "trial")
+        app2.supervisor.content_seen, app2.supervisor.state, app2.supervisor.session = True, "running", "s1"
+        await helpers.wait_for(lambda: app2.updates.committed, 5, 0.1, "rpi commit")
+        cfg_txt = (self.esp / "config.txt").read_text()
+        self.assertIn("os_prefix=retroboot/slot-b/", cfg_txt)
+        self.assertIn("cmdline=cmdline.txt", cfg_txt)
+        self.assertEqual((self.esp / "tryboot.txt").read_text(), "# installer config\n")
+        env, _ = slotenv.read_env(self.esp, env_name=slotenv.RPI_ENV_NAME)
+        self.assertEqual((env["rb_active"], env["rb_other_ok"]), ("b", "1"))
+
+        # Rollback returns config.txt to slot a cleanly.
+        app2.supervisor.state = "stopped"
+        rb = app2.updates.rollback_job()
+        await rb.done.wait()
+        self.assertEqual(rb.state, "succeeded", rb.error)
+        self.assertEqual((self.esp / "config.txt").read_text(), self.base_cfg)
+
+    async def test_rpi_tryboot_failed_trial_falls_back(self):
+        app = await self.make_rpi_app()
+        incoming = app.updates.new_incoming()
+        shutil.copy(self.bundle, incoming)
+        ijob = app.updates.install_job({"kind": "file", "path": str(incoming)})
+        await ijob.done.wait()
+        self.assertEqual(ijob.state, "succeeded", ijob.error)
+        rjob = app.updates.restart_job()
+        await rjob.done.wait()
+        # Tryboot failed and hardware booted config.txt (slot a) on a new boot_id (rb_tries still 1).
+        self.cmdline.write_text("quiet root=PARTLABEL=RBROOT_A retroboot.slot=a\n")
+        app.updates.state["armed"]["boot_id"] = "previous-boot-id"
+        app.updates.save()
+        app2 = await self.make_rpi_app(current="a")
+        self.assertEqual(app2.updates.boot["kind"], "fell-back")
+        self.assertEqual(app2.updates.public()["staged"]["status"], "failed")
+        self.assertEqual((self.esp / "tryboot.txt").read_text(), "# installer config\n")
+
+    def test_bundle_arch_and_board_mismatch(self):
+        b = B.Bundle(self.bundle)
+        m = b.verify(B.trusted_keys(self.root / "keys"))
+        with self.assertRaises(B.BundleError) as e:
+            B.compatibility(m, {"version": "0.2.0", "flavor": "debug", "arch": "amd64"}, 1)
+        self.assertEqual(e.exception.code, "wrong-arch")
+        with self.assertRaises(B.BundleError) as e2:
+            B.compatibility(m, {"version": "0.2.0", "flavor": "debug", "arch": "arm64", "board": "pc"}, 1)
+        self.assertEqual(e2.exception.code, "wrong-board")
+
+
 if __name__ == "__main__":
     unittest.main()

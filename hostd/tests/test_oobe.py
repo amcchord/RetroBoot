@@ -49,8 +49,11 @@ class RecommendedMacTests(unittest.TestCase):
         self.assertEqual(pick.entry["id"], "mac-os-8.1-v1")
 
     def test_installed_or_only_editions_fall_back(self):
+        # Installing clean Mac OS 9.2.2 never recommends downgrading to 9.2.1;
+        # it recommends Mega Deluxe while uninstalled, or nothing once installed.
         pick = catalogs.recommended(listed(known={"os922-full-v5"}))
-        self.assertEqual(pick.entry["id"], "os921-full-v4")
+        self.assertEqual(pick.entry["id"], "os922-mega-deluxe-v4")
+        self.assertIsNone(catalogs.recommended(listed(known={"os922-full-v5", "os922-mega-deluxe-v4"})))
         only_editions = [r for r in LIBRARY if "deluxe" in r[0] or "tiger" in r[0]]
         self.assertEqual(catalogs.recommended(listed(only_editions)).entry["id"], "os922-deluxe-v9")
         self.assertIsNone(catalogs.recommended(listed([r for r in LIBRARY if "tiger" in r[0]])))

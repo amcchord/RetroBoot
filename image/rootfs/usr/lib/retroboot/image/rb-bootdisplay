@@ -316,12 +316,13 @@ def initial_background(esp, style):
     """
     rbdir = os.path.join(esp, 'grub', 'retroboot')
     os.makedirs(rbdir, exist_ok=True)
-    png = os.path.join(rbdir, 'checker-default.png')
-    subprocess.run([sys.executable, FALLBACK, '2560', '1600', '2', png + '.new'] +
-                   (['--style', 'macosx'] if style == 'macosx' else []),
-                   check=True, timeout=120)
-    fsync_path(png + '.new')
-    os.replace(png + '.new', png)
+    style_args = ['--style', 'macosx'] if style == 'macosx' else []
+    for fname, scale in (('checker-default.png', '2'), ('checker-default-s1.png', '1')):
+        png = os.path.join(rbdir, fname)
+        subprocess.run([sys.executable, FALLBACK, '3840', '2160', scale, png + '.new'] + style_args,
+                       check=True, timeout=120)
+        fsync_path(png + '.new')
+        os.replace(png + '.new', png)
     write_atomic(os.path.join(rbdir, 'display.cfg'),
                  ('# Initial selected Mac; display geometry is learned on first boot.\n'
                   f'set rb_startup_style={style}\nset rb_progress=off\n'
@@ -442,7 +443,7 @@ def main(argv):
                 ('retroboot', 0o040755, b''), ('retroboot/startup-icon.rbi', 0o100644, art_data)]))
         write_atomic(cfg_path, config_text(checker_scale, indicator, initrd).encode())
         for old in os.listdir(rbdir):
-            if (old.startswith('checker-') and old != name and old != 'checker-default.png') or \
+            if (old.startswith('checker-') and old not in (name, 'checker-default.png', 'checker-default-s1.png')) or \
                     (old.startswith('startup-') and old.endswith('.cpio') and old != initrd):
                 os.unlink(os.path.join(rbdir, old))
         dirfd = os.open(rbdir, os.O_RDONLY)

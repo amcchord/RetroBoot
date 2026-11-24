@@ -100,5 +100,13 @@ int main(void)
     CHECK(!strcmp(u, ""));
     CHECK_EQ(rb_evdev_to_rbui_fallback(KEY_SPACE, false, u), RBUI_KEY_SPACE);
     CHECK(!strcmp(u, " "));
+    CHECK_EQ(rb_evdev_to_rbui_fallback(KEY_KP7, false, u), RBUI_KEY_NONE);
+    CHECK(!strcmp(u, "7"));
+    CHECK_EQ(rb_evdev_to_rbui_fallback(KEY_KPPLUS, false, u), RBUI_KEY_NONE);
+    CHECK(!strcmp(u, "+"));
+    CHECK_EQ(rb_evdev_to_rbui_fallback(KEY_KPDOT, true, u), RBUI_KEY_NONE);
+    CHECK(!strcmp(u, "."));
+    CHECK_EQ(rb_evdev_to_rbui_fallback(KEY_KPENTER, false, u), RBUI_KEY_KP_ENTER);
+    CHECK(!strcmp(u, ""));
     TEST_DONE();
 }

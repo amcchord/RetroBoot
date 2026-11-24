@@ -41,11 +41,10 @@ def _short(text: str, n: int = 160) -> str:
 
 
 class SoftwareUpdate(Screen):
-    """One status and one main button.  Opening the window checks the update server (RetroBoot
-    downloads when this computer is signed in, or the update.url setting) unless it was checked
-    in the last CHECK_AGE_S, and looks on USB disks; then it says what there is: an update ready
-    to install (Restart to Update), one to download (Download and Install), one on a USB disk,
-    or that RetroBoot is up to date.  Go Back to the previous version sits at the left."""
+    """One status and one main button.  Opening the window checks the automatic mcchord.net
+    update feed (or custom update.url setting) unless checked in the last CHECK_AGE_S, and
+    looks on USB disks for .rbu update files; then it shows what is ready: Restart to Update,
+    Download and Install, a USB update, or up to date.  Go Back sits at the left."""
     doc_id = "software-update"
     tick = 1.0
     CHECK_AGE_S = 600.0
@@ -149,9 +148,10 @@ class SoftwareUpdate(Screen):
         elif self.scanning:
             items.append(ui.text("Looking for updates on USB disks…"))
         else:
-            items.append(ui.text("No update server is set, and no USB disk has an update.", "emphasis"))
-            items.append(ui.text("Sign in to RetroBoot downloads in the installer, or put a RetroBoot update file on a "
-                                 "USB disk and connect it. Software Update on the web page works too.", "small"))
+            items.append(ui.text("No update server is configured, and no USB disk has an update.", "emphasis"))
+            items.append(ui.text("RetroBoot checks the automatic mcchord.net update feed when online, or you can "
+                                 "put a .rbu update file on a USB disk and connect it. Software Update on the web page "
+                                 "works too.", "small"))
         if last.get("message") and last.get("result") in ("failed", "rolled-back") and not job \
                 and st.get("status") != "ready":
             items.append(ui.text(_short(last["message"], 220), "small"))

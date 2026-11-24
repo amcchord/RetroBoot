@@ -1,9 +1,11 @@
+import { get, post, asJob, friendlyMessage } from '../api.js';
 import { h, swap, Scope, fmtDateTime, sameValue, plural } from '../util.js';
-import { win, button, pageHeader, guestStateInfo, led, loading } from '../ui.js';
+import { win, button, pageHeader, guestStateInfo, led, loading, confirm, toast } from '../ui.js';
 import { pixelIcon } from '../icons.js';
-import { store, subscribe } from '../store.js';
+import { store, subscribe, refreshStatus } from '../store.js';
 import { lifecycle, lifecycleAvailability, collectEvidence, hostPower } from '../actions.js';
 import { restoreKnownGood } from '../settings.js';
+import { track, doneMessage } from '../jobs.js';
 import { formatValue } from '../schema.js';
 import { hw } from '../words.js';
 
@@ -83,7 +85,7 @@ function laptopBlock() {
   const def = m && m.defs.get('input.recovery_chord');
   const keys = chord ? (def ? formatValue(def, chord) : CHORD_TEXT[chord] || chord) : 'the recovery keys';
   return [
-    h('p', null, 'Press ', h('kbd', null, keys), ` on ${hw().the} to open RetroBoot Recovery, even if Mac OS is frozen. It works without a network or this page.`),
+    h('p', null, 'Press ', h('kbd', null, keys), ` on ${hw().the} to open the RetroBoot window, even if Mac OS is frozen. It works without a network or this page.`),
     h('p', { class: 'muted' }, 'From there you can restart Mac OS, restore a checkpoint, collect evidence, and show this page’s address and a new pairing code.'),
   ];
 }
@@ -94,7 +96,87 @@ export function render() {
   const forceEl = h('div');
   const powerEl = h('div');
   const settingsEl = h('div');
+  const freshEl = h('div', null, loading());
   const laptopEl = h('div');
+  let activeMachine = null;
+  let freshCp = null;
+  let freshBlocked = null;
+  let freshLoaded = false;
+
+  async function loadFresh() {
+    try {
+      const mRes = await get('/api/v1/machines');
+      const list = (mRes && mRes.machines) || [];
+      const activeId = store.settings && store.settings.applied['machine.active'];
+      activeMachine = list.find((m) => m.in_use) || list.find((m) => m.id === activeId) || list.find((m) => m.active) || list[0] || null;
+      if (activeMachine) {
+        const cpRes = await get(`/api/v1/machines/${encodeURIComponent(activeMachine.id)}/checkpoints`);
+        const cps = (cpRes && cpRes.checkpoints) || [];
+        freshCp = cps.find((cp) => cp.label === 'Fresh Install' || cp.kind === 'fresh') || null;
+        freshBlocked = (cpRes && cpRes.blocked_reason) || null;
+      } else {
+        freshCp = null;
+        freshBlocked = null;
+      }
+    } catch {
+      /* ignore */
+    }
+    freshLoaded = true;
+    update();
+  }
+
+  async function resetFresh() {
+    if (!activeMachine) return;
+    const m = activeMachine;
+    const ok = await confirm({
+      title: `Reset “${m.name}” to Fresh Install?`,
+      icon: 'stop',
+      danger: true,
+      message: [
+        `${m.name}’s ${m.guest_os?.startsWith('macosx-') ? 'disk and startup memory go' : 'disk goes'} back to how it was right after it was installed.`,
+        'Everything saved on that disk since then is lost, including documents, installed applications and settings made in Mac OS. Files in the shared volume are not affected.',
+      ],
+      acknowledge: 'I understand that changes since Fresh Install will be lost.',
+      confirmLabel: 'Reset to Fresh Install',
+    });
+    if (!ok) return;
+    try {
+      const res = await post(`/api/v1/machines/${encodeURIComponent(m.id)}/reset-fresh`, {})
+        .catch((err) => (err.status === 404 && freshCp ? post(`/api/v1/machines/${encodeURIComponent(m.id)}/checkpoints/${encodeURIComponent(freshCp.id)}/restore`, {}) : Promise.reject(err)));
+      const job = asJob(res);
+      if (job) {
+        const final = await track(job, { label: `Resetting ${m.name} to Fresh Install` });
+        if (final.state === 'succeeded') toast(doneMessage(final, `${m.name} reset to Fresh Install.`), { level: 'ok', timeout: 9000 });
+      }
+    } catch (err) {
+      toast(friendlyMessage(err), { level: 'error', timeout: 8000 });
+    }
+    loadFresh();
+    refreshStatus().catch(() => {});
+  }
+
+  function freshBlock(status) {
+    if (!freshLoaded) return [loading()];
+    if (!activeMachine || !freshCp) {
+      return [
+        h('p', { class: 'muted' }, 'Automatic Fresh Install checkpoints are created when machines are imported. View all checkpoints on ', h('a', { href: '#/storage' }, 'Storage & Media'), '.'),
+      ];
+    }
+    const g = (status && status.guest) || {};
+    const running = g.state && g.state !== 'stopped' && g.state !== 'failed';
+    const disabled = running || !!freshBlocked;
+    return [
+      h('p', null, `Restore ${activeMachine.name} to its original Fresh Install state (${fmtDateTime(freshCp.created_at)}). Files in RetroBoot Share are kept.`),
+      disabled ? h('p', { class: 'muted small' }, freshBlocked || 'Shut down Mac OS first before resetting to Fresh Install.') : null,
+      h(
+        'div',
+        { class: 'row-actions' },
+        button('Reset to Fresh Install…', { variant: 'danger', className: 'btn-small', disabled, focusKey: 'rc-fresh', onClick: resetFresh }),
+        h('a', { class: 'btn btn-small', href: '#/storage' }, 'All Checkpoints'),
+      ),
+    ].filter(Boolean);
+  }
+
   const el = h(
     'div',
     { class: 'page' },
@@ -108,6 +190,7 @@ export function render() {
         { class: 'col' },
         win({ title: 'Turn Off or Restart RetroBoot', icon: 'mac' }, powerEl),
         win({ title: 'Known Working Settings', icon: 'machine' }, settingsEl),
+        win({ title: 'Fresh Install Checkpoint', icon: 'storage' }, freshEl),
         win({ title: `Recovery on the ${hw().Title}`, icon: 'devices' }, laptopEl),
         win({ title: 'Before You Force', icon: 'diagnostics' }, h('p', null, 'Collecting evidence first records logs and screenshots of the problem.'), h('div', { class: 'row-actions' }, button('Collect Evidence', { icon: 'box', onClick: () => collectEvidence() }))),
       ),
@@ -119,18 +202,25 @@ export function render() {
     sigs[k] = sig;
     swap(target, ...[].concat(build()));
   };
+  let lastGuestState = store.status && store.status.guest && store.status.guest.state;
   const update = () => {
     const s = store.status;
     const g = (s && s.guest) || {};
     const a = lifecycleAvailability(s);
+    if (g.state !== lastGuestState) {
+      lastGuestState = g.state;
+      loadFresh();
+    }
     patch('clean', cleanEl, JSON.stringify([g.state, g.responsive, g.detail, a]), () => cleanBlock(s));
     patch('force', forceEl, JSON.stringify([g.state, g.responsive, a]), () => forceBlock(s));
     patch('power', powerEl, JSON.stringify([a.on, a.canPower]), () => powerBlock(s).filter(Boolean));
     const m = store.settings;
     patch('settings', settingsEl, JSON.stringify(m ? [m.knownGood, m.desired] : null), settingsBlock);
+    patch('fresh', freshEl, JSON.stringify([freshLoaded, activeMachine && activeMachine.id, freshCp && freshCp.id, freshBlocked, g.state]), () => freshBlock(s));
     patch('laptop', laptopEl, JSON.stringify(m ? [m.applied['input.recovery_chord']] : null), laptopBlock);
   };
   update();
+  loadFresh();
   scope.add(subscribe('status', update));
   scope.add(subscribe('settings', update));
   scope.add(subscribe('jobs', update));

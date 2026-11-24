@@ -50,6 +50,7 @@ from .. import labauth, netconf, schema
 from ..catalog import CatalogClient, ExtractLimits, ImportError_, download_of, install_machine
 from ..jobs import Job, JobFailed, SUCCEEDED
 from ..network import NetworkError
+from ..security import qr_matrix
 from ..util import atomic_write_json, run as run_cmd
 from . import ui
 from .controller import JobScreen, KeepSetting, Panel, Screen, TimeZone, WiFi
@@ -204,7 +205,7 @@ class InstallerPanel(Panel):
             if not isinstance(d, dict) or not isinstance(d.get("path"), str) or not d["path"].startswith("/dev/"):
                 continue
             contents = d.get("contents") if isinstance(d.get("contents"), dict) else {}
-            disk = {"path": d["path"], "model": str(d.get("model") or "Disk")[:60],
+            disk = {"path": d["path"], "model": _dedupe_model(d.get("model")),
                     "size_bytes": int(d.get("size_bytes") or 0), "removable": bool(d.get("removable")),
                     "transport": str(d.get("transport") or ""), "is_boot_medium": bool(d.get("is_boot_medium")),
                     "serial": str(d.get("serial") or "")[:40],
@@ -213,8 +214,12 @@ class InstallerPanel(Panel):
             disks.append(disk)
             if disk["is_boot_medium"] and self.board != "rpi":
                 self.st.medium_name = f"installation {medium_name(disk)}"
-            if disk["is_boot_medium"] and self.board == "rpi":
-                free = self.free_space_target(disk, d.get("free_space"))
+        disks.sort(key=lambda item: (bool(item["is_boot_medium"]), bool(item["removable"]), item["path"]))
+        if self.board == "rpi":
+            boot_raw = next((r for r in data if isinstance(r, dict) and r.get("is_boot_medium")), None)
+            boot_disk = next((d for d in disks if d.get("is_boot_medium")), None)
+            if boot_raw is not None and boot_disk is not None:
+                free = self.free_space_target(boot_disk, boot_raw.get("free_space"))
                 if free:
                     disks.insert(0, free)
         return disks
@@ -239,6 +244,23 @@ class InstallerPanel(Panel):
                 "serial": medium["serial"], "existing": "RetroBoot" if existing else None,
                 "contents": ("RetroBoot after the installer" if existing else "Free space after the installer"),
                 "retroboot": False}
+
+
+def _dedupe_model(raw: str | None) -> str:
+    """Collapse repeated vendor/model tokens such as 'QEMU QEMU HARDDISK' -> 'QEMU HARDDISK'."""
+    words = str(raw or "Disk").split()
+    if not words:
+        return "Disk"
+    for n in range(len(words) // 2, 0, -1):
+        if [w.lower() for w in words[:n]] == [w.lower() for w in words[n:2 * n]]:
+            words = words[n:]
+            break
+    out: list[str] = []
+    for w in words:
+        if out and out[-1].lower() == w.lower():
+            continue
+        out.append(w)
+    return (" ".join(out) or "Disk")[:60]
 
 
 def medium_name(d: dict) -> str:
@@ -373,6 +395,14 @@ class HardwareCheck(IScreen):
         items = [ui.text("Checking this computer…" if self.st.disks is None else "This computer is ready."
                          if self.candidates() else "RetroBoot needs a disk to install on.", "emphasis")]
         items += [ui.text(f"{k}: {v}") for k, v in lines]
+        swap = bool(self.app.settings.desired.get("input.swap_command_option"))
+        items += [
+            ui.popup("input.swap_command_option", "Command key:",
+                     [("mac", "Mac-style (Win = Command)"), ("pc", "PC-style (Alt = Command)")],
+                     "pc" if swap else "mac"),
+            ui.text("In Mac OS, press Alt+Q to quit or Alt+S to save (Windows key = Option)." if swap else
+                    "In Mac OS, press Windows+Q to quit or Windows+S to save (Alt = Option).", "small"),
+        ]
         media = netconf.describe(self.st.media_network, self.st.media_network_error)
         if media:
             items.append(ui.text(media, "small"))
@@ -384,7 +414,19 @@ class HardwareCheck(IScreen):
         items.append(ui.buttons(*buttons))
         return ui.window(self.doc_id, "Hardware Check", items, width=520)
 
+    async def change(self, id, value):
+        if id == "input.swap_command_option":
+            swap = value == "pc" if isinstance(value, str) else bool(value)
+            if swap != bool(self.app.settings.desired.get("input.swap_command_option")):
+                await self.app.apply_engine.change_and_apply({"input.swap_command_option": swap}, origin="installer")
+            await self.panel.refresh()
+
     async def action(self, id, values):
+        if "input.swap_command_option" in values:
+            val = values["input.swap_command_option"]
+            swap = val == "pc" if isinstance(val, str) else bool(val)
+            if swap != bool(self.app.settings.desired.get("input.swap_command_option")):
+                await self.app.apply_engine.change_and_apply({"input.swap_command_option": swap}, origin="installer")
         if id == "back":
             await self.panel.show(Welcome(self.panel))
         elif id == "rescan":
@@ -588,6 +630,26 @@ class EraseConfirm(IScreen):
             await self.panel.show(ChooseMacs(self.panel))
 
 
+def _fitting_guest_sizes(mode) -> list[str]:
+    """Return guest screen presets that fit inside the physical display ``mode`` ([w, h, hz])."""
+    if not mode or len(mode) < 2:
+        return list(schema.GUEST_SIZES)
+    mw, mh = int(mode[0]), int(mode[1])
+    out = []
+    for s in schema.GUEST_SIZES:
+        if s == "auto":
+            out.append(s)
+            continue
+        try:
+            gw, gh = (int(x) for x in s.split("x", 1))
+        except ValueError:
+            out.append(s)
+            continue
+        if gw <= mw and gh <= mh:
+            out.append(s)
+    return out or ["auto"]
+
+
 class DisplayCheck(IScreen):
     doc_id = "installer-display"
 
@@ -596,18 +658,25 @@ class DisplayCheck(IScreen):
         self.mode = self.app.settings.desired["display.host_mode"]
         self.size = self.app.settings.desired["display.guest_size"]
 
+    def sync_from_settings(self) -> None:
+        self.mode = self.app.settings.desired["display.host_mode"]
+        self.size = self.app.settings.desired["display.guest_size"]
+
     def doc(self):
         d = self.app.presenter.display or {}
         mode = d.get("mode")
         modes = self.app.host_modes()
         mode_opts = [("auto", "Automatic")] + [(m, m.replace("x", " × ").replace("@", " @ ") + " Hz") for m in modes]
+        cur_mode = self.mode if self.mode in dict(mode_opts) else "auto"
+        fitting = _fitting_guest_sizes(mode)
+        cur_size = self.size if self.size in fitting else "auto"
         return ui.window(self.doc_id, "Display", [
             ui.text("Is this screen sharp and fully visible?", "emphasis"),
             ui.text(f"Current mode: {mode[0]} × {mode[1]} at {mode[2]} Hz, scale {d.get('scale') or d.get('suggested_scale', 1)}×."
                     if mode else "The display mode could not be read."),
-            ui.popup("display.host_mode", "Resolution:", mode_opts, self.mode, disabled=not modes),
+            ui.popup("display.host_mode", "Resolution:", mode_opts, cur_mode, disabled=not modes),
             ui.popup("display.guest_size", "Mac screen:", [(s, "Best for this display" if s == "auto" else
-                                                            s.replace("x", " × ")) for s in schema.GUEST_SIZES], self.size),
+                                                            s.replace("x", " × ")) for s in fitting], cur_size),
             ui.buttons(ui.btn("back", "Back"), ui.btn("apply", "Try Resolution", disabled=not modes),
                        ui.btn("continue", "Continue", default=True)),
         ], width=500)
@@ -628,11 +697,12 @@ class DisplayCheck(IScreen):
             try:
                 res = await self.app.apply_engine.change_and_apply({"display.host_mode": self.mode}, origin="installer")
             except schema.ValidationError as exc:
+                self.sync_from_settings()
                 await p.message("caution", "That mode is not available.", "; ".join(exc.fields.values()),
                                 then=lambda: p.show(self))
                 return
             if res.get("confirm"):
-                await p.show(KeepSetting(p, DisplayCheck(p)))
+                await p.show(KeepSetting(p, self))
         elif id == "continue":
             try:
                 if self.size != self.app.settings.desired["display.guest_size"]:
@@ -645,6 +715,7 @@ class DisplayCheck(IScreen):
 class NetworkStep(IScreen):
     doc_id = "installer-network"
     tick = 5.0
+    pairing_visible = True
 
     def __init__(self, panel):
         super().__init__(panel)
@@ -670,9 +741,15 @@ class NetworkStep(IScreen):
         url = self.app.web.url_for(self.primary)
         if url:
             code, _ = self.app.pairing.current_code()
-            items += [ui.text("To follow the installation from a phone or computer, open:"), ui.text(url, "emphasis"),
-                      ui.text("Pairing code:"), ui.text(" ".join(code), "large"),
-                      ui.text("Browsers paired now must pair again after the restart.", "small")]
+            fp_lines = ui.format_fingerprint(getattr(self.app.web, "fingerprint", None))
+            info = [ui.text("To follow the installation from a phone or computer, open:"), ui.text(url, "emphasis"),
+                    ui.text("Pairing code:"), ui.text(" ".join(code), "large")]
+            if fp_lines:
+                info.append(ui.text("Certificate SHA-256:", "small"))
+                info += [ui.text(line, "small") for line in fp_lines]
+            info.append(ui.text("Browsers paired now must pair again after the restart.", "small"))
+            matrix = qr_matrix(url)
+            items.append(ui.columns(ui.group("Web Access", info), ui.qr(matrix)) if matrix else ui.group("Web Access", info))
         else:
             items.append(ui.text("Not connected to a network.", "small"))
         media = netconf.describe(self.st.media_network, self.st.media_network_error)
@@ -680,7 +757,7 @@ class NetworkStep(IScreen):
             items.append(ui.text(media, "small"))
         items.append(ui.buttons(ui.btn("wifi", "Wi-Fi…"), ui.btn("back", "Back"),
                                 ui.btn("continue", "Install", default=True)))
-        return ui.window(self.doc_id, "Network", items, width=520)
+        return ui.window(self.doc_id, "Network", items, width=560)
 
     async def action(self, id, values):
         p = self.panel
@@ -779,12 +856,14 @@ class InstallProgress(JobScreen):
     def doc(self):
         j, st = self.job, self.panel.st
         items = [ui.text(self.title, "emphasis"), ui.text(j.message or "Working…"), ui.progress(j.progress)]
-        if len(st.plan) > 1 or any(m["choice"].remote for m in st.plan):
+        if len(st.plan) > 1:
             for m in st.plan[:8]:
                 r = st.results.get(m["key"]) or {}
                 word = STATUS_WORDS.get(r.get("state", "waiting"), "")
-                if r.get("state") == "downloading" and isinstance(r.get("fraction"), (int, float)):
-                    word = f"downloading… {int(r['fraction'] * 100)} %"
+                if r.get("state") == "downloading":
+                    word = r.get("detail") or (
+                        f"{int(round(r['fraction'] * 100))}%" if isinstance(r.get("fraction"), (int, float)) else word
+                    )
                 items.append(ui.text(f"{m['name']}: {word}", "small"))
         return ui.window(self.doc_id, "RetroBoot", items, width=460)
 
@@ -1040,7 +1119,9 @@ async def install_remote(app, st: InstallerState, m: dict, data: Path, progress)
 
         def dl_progress(f, message):
             res["fraction"] = f
-            progress((f or 0.0) * 0.7, f"{c.name}: {message}")
+            status = ui.format_download_status(f, message)
+            res["detail"] = status
+            progress((f or 0.0) * 0.7, f"{c.name}: {status}")
         archive = await client.download(c.entry, dl_progress)
         res["state"] = "unpacking"
         dl = download_of(c.entry)

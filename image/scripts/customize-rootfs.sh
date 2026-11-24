@@ -259,6 +259,7 @@ for k in "$comp"/update-keys/*.pub "$comp"/update-keys/revoked; do
 done
 install -d "$root/usr/share/doc/retroboot"
 cp "$IMAGE_SRC/NOTICES.md" "$root/usr/share/doc/retroboot/NOTICES.md"
+stage_startup_chimes "$root"
 
 chroot_mounts
 # sysusers/tmpfiles from component packaging (rbguest, rbdata, ...)

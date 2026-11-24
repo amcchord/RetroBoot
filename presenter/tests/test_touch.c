@@ -192,7 +192,7 @@ static void test_portrait_rules(void)
     /* the automatic scale does not change with the orientation */
     CHECK_EQ(rb_suggested_scale(1080, 1920), rb_suggested_scale(1920, 1080));
     CHECK_EQ(rb_suggested_scale(720, 1280), 1);
-    CHECK_EQ(rb_suggested_scale(1440, 2560), 2);
+    CHECK_EQ(rb_suggested_scale(1440, 2560), 3);
     CHECK_EQ(rb_suggested_scale(2160, 3840), 4);
     int w, h;
     rb_auto_guest_size(720, 1280, 1, &w, &h); /* GPD MicroPC turned to portrait */

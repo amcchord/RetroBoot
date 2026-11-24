@@ -137,8 +137,8 @@ static void window9(rb_gfx *g, rb_rect f, const char *title, int titled, const r
     /* Centred with integer maths; the stripes stop 4 (white) and 3 (gray) pixels short. */
     int pen = f.x + (f.w - tw) / 2;
     for (int i = 0; i < 6; ++i) {
-        g_hline(g, pen - 4, f.y + 4 + 2 * i, tw + 6, 0xCCCCCCu);
-        g_hline(g, pen - 3, f.y + 5 + 2 * i, tw + 6, 0xCCCCCCu);
+        g_hline(g, pen - 4, f.y + 4 + 2 * i, tw + 8, 0xCCCCCCu);
+        g_hline(g, pen - 3, f.y + 5 + 2 * i, tw + 8, 0xCCCCCCu);
     }
     tx_draw_fit(g, font, pen, f.y + 15, f.w - 60, title, C_BLACK);
 }
@@ -725,10 +725,23 @@ static uint32_t gray_of(uint32_t c)
     return (v << 16) | (v << 8) | v;
 }
 
+static void nine_s_disabled(rb_gfx *g, const rb_sprite *s, rb_rect r, int t, int rt, int b, int l)
+{
+    if (!s || r.w <= 0 || r.h <= 0) return;
+    for (int y = 0; y < r.h; ++y) {
+        const uint32_t *row = s->argb + (size_t)map9(y, r.h, t, b, s->h) * (size_t)s->w;
+        for (int x = 0; x < r.w; ++x) {
+            uint32_t c = row[map9(x, r.w, l, rt, s->w)];
+            unsigned a = c >> 24;
+            if (a) g_blend(g, r.x + x, r.y + y, (a << 24) | gray_of(c));
+        }
+    }
+}
+
 /* 9.2.1 progress bar: etch, black frame and track from the bundle; the fill keeps its
  * rounded end and the track's shadow after it (Mac OS: fill = round(interior * v), at
  * least 5). The indeterminate stripes are designed, not measured. */
-static void progress9(rb_gfx *g, rb_rect r, double v, int indeterminate, int phase)
+static void progress9(rb_gfx *g, rb_rect r, double v, int indeterminate, int phase, int disabled)
 {
     rb_rect box = r_out(r, 1);
     nine(g, "progress", box);
@@ -738,8 +751,10 @@ static void progress9(rb_gfx *g, rb_rect r, double v, int indeterminate, int pha
     rb_rect old = g_push_clip(g, in);
     if (indeterminate) {
         for (int y = 0; y < in.h; ++y)
-            for (int x = 0; x < inner; ++x)
-                g_pixel(g, in.x + x, in.y + y, (((x + y - phase) % 8 + 8) % 8) < 4 ? g_ramp[2] : g_ramp[4]);
+            for (int x = 0; x < inner; ++x) {
+                uint32_t c = (((x + y - phase) % 8 + 8) % 8) < 4 ? g_ramp[2] : g_ramp[4];
+                g_pixel(g, in.x + x, in.y + y, disabled ? gray_of(c) : c);
+            }
     } else if (v > 0) {
         if (v > 1) v = 1;
         int n = (int)(inner * v + 0.5);
@@ -747,7 +762,10 @@ static void progress9(rb_gfx *g, rb_rect r, double v, int indeterminate, int pha
         /* The fill's leading edge throws a 3 px shadow onto the track; a full bar ends in the
          * edge itself, its shadow cut off by the frame (About This Computer, 9.2.2). */
         if (n > inner) n = inner;
-        nine_s(g, assets_sprite("progress-fill"), rr(in.x, in.y, n + 3, in.h), 0, 6, 0, 2);
+        if (disabled)
+            nine_s_disabled(g, assets_sprite("progress-fill"), rr(in.x, in.y, n + 3, in.h), 0, 6, 0, 2);
+        else
+            nine_s(g, assets_sprite("progress-fill"), rr(in.x, in.y, n + 3, in.h), 0, 6, 0, 2);
     }
     g->clip = old;
 }
@@ -755,7 +773,7 @@ static void progress9(rb_gfx *g, rb_rect r, double v, int indeterminate, int pha
 void pt_progress(rb_gfx *g, rb_rect r, double v, int indeterminate, int phase, int disabled)
 {
     if (g_v9) {
-        progress9(g, r, v, indeterminate, phase);
+        progress9(g, r, v, indeterminate, phase, disabled);
         return;
     }
     /* Sunken bevel, black frame, then a lavender bar shaded top to bottom

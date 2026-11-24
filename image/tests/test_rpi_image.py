@@ -83,8 +83,9 @@ class ConfigTxtTest(unittest.TestCase):
     def test_silent_firmware_and_kms(self):
         a = self.sections()['all']
         for k in ('disable_splash=1', 'dtoverlay=vc4-kms-v3d', 'camera_auto_detect=0', 'include retroboot/display.txt',
-                  'dtparam=audio=on', 'disable_overscan=1'):
+                  'dtparam=audio=on', 'dtparam=watchdog=on', 'disable_overscan=1'):
             self.assertIn(k, a)
+        self.assertLess(a.index('dtparam=watchdog=on'), a.index('dtoverlay=vc4-kms-v3d'))
 
 
 class InitramfsConfTest(unittest.TestCase):
@@ -211,3 +212,50 @@ class BootDisplayRpiTest(unittest.TestCase):
     def test_missing_boot_partition_never_fails(self):
         (self.tmp / 'cmdline.txt').unlink()
         self.assertFalse(self.run_main()['changed'])
+
+    def test_macosx_startup_style_writes_and_clears_cmdline(self):
+        import contextlib, io
+        machines = self.tmp / 'machines'
+        (machines / 'tiger').mkdir(parents=True)
+        (machines / 'tiger/machine.json').write_text(json.dumps({
+            'schema_version': 3, 'family': 'powermac', 'guest_os': 'macosx-10.4',
+            'template': {'machineFamily': 'powerMacOSX', 'guestOS': 'macosx-10.4'},
+        }))
+        (machines / 'os9').mkdir()
+        (machines / 'os9/machine.json').write_text('{"schema_version": 1}')
+        (self.tmp / 'settings.json').write_text(json.dumps({'applied': {'machine.active': 'tiger'}}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self.mod.main(['--esp', str(self.tmp), '--settings', str(self.tmp / 'settings.json'),
+                                '--machines', str(machines), '--display', str(self.tmp / 'none.json'),
+                                '--graphics', str(self.tmp / 'none.json'), '--timing', 'none'], self.bd)
+            self.assertEqual(rc, 0)
+        res = json.loads(out.getvalue())
+        self.assertTrue(res['changed'])
+        self.assertEqual(res['retroboot.startup_style'], 'macosx')
+        self.assertEqual(res['retroboot.progress'], 'off')
+        words = (self.tmp / 'cmdline.txt').read_text().split()
+        self.assertIn('retroboot.startup_style=macosx', words)
+        self.assertIn('retroboot.progress=off', words)
+        # Switching back to Classic removes retroboot.startup_style=macosx cleanly
+        (self.tmp / 'settings.json').write_text(json.dumps({'applied': {'machine.active': 'os9'}}))
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            self.assertEqual(self.mod.main(['--esp', str(self.tmp), '--settings', str(self.tmp / 'settings.json'),
+                                            '--machines', str(machines), '--display', str(self.tmp / 'none.json'),
+                                            '--graphics', str(self.tmp / 'none.json'), '--timing', 'none'], self.bd), 0)
+        self.assertNotIn('retroboot.startup_style=', (self.tmp / 'cmdline.txt').read_text())
+
+    def test_tryboot_cmdline_selection_and_zero2w_memory_headroom(self):
+        (self.tmp / 'tryboot.txt').write_text('[all]\nos_prefix=retroboot/slots/b/\n')
+        (self.tmp / 'config.txt').write_text('[all]\nos_prefix=retroboot/slots/a/\n')
+        self.assertEqual(self.mod.cmdline_path(str(self.tmp), tryboot=False),
+                         str(self.tmp / 'retroboot/slots/a/cmdline.txt'))
+        self.assertEqual(self.mod.cmdline_path(str(self.tmp), tryboot=True),
+                         str(self.tmp / 'retroboot/slots/b/cmdline.txt'))
+        dt = self.tmp / 'tryboot-dt'
+        dt.write_bytes((1).to_bytes(4, 'big'))
+        self.assertTrue(self.mod.tryboot_active(str(dt)))
+        dt.write_bytes((0).to_bytes(4, 'big'))
+        self.assertFalse(self.mod.tryboot_active(str(dt)))
+        self.assertIn('MemoryMax=128M', (RPI / 'scripts/customize-rpi.sh').read_text())

@@ -100,6 +100,24 @@ function navItem(name) {
   return h('li', null, h('a', { class: 'nav-item', href: `#/${name}`, dataset: { page: name } }, h('span', { class: 'nav-icon', html: pixelIcon(p.meta.icon, 16) }), h('span', null, p.meta.title)));
 }
 
+const MOBILE_NAV_LABELS = {
+  machine: 'Machine',
+  display: 'Display',
+  storage: 'Storage',
+  update: 'Updates',
+  devices: 'Devices',
+};
+
+function mobileNavPill(name) {
+  const p = PAGES[name];
+  return h(
+    'a',
+    { class: 'mobile-nav-pill', href: `#/${name}`, dataset: { page: name } },
+    h('span', { class: 'mobile-nav-icon', html: pixelIcon(p.meta.icon, 16) }),
+    h('span', null, MOBILE_NAV_LABELS[name] || p.meta.title),
+  );
+}
+
 function currentPage() {
   return location.hash.replace(/^#\/?/, '').split(/[/?]/)[0] || 'overview';
 }
@@ -178,13 +196,14 @@ function buildShell() {
     whoami,
   );
   const nav = h('nav', { id: 'nav', class: 'sidenav', 'aria-label': 'Sections' }, docWindow({ title: 'RetroBoot', icon: 'mac', className: 'nav-window' }, navList));
+  const mobileNav = h('nav', { class: 'mobile-nav', 'aria-label': 'Sections' }, ...NAV.flatMap((g) => g.items.map(mobileNavPill)));
   const main = h('main', { id: 'main', class: 'main', tabindex: '-1' });
   const toasts = h('div', { class: 'toasts' });
   const tray = h('section', { class: 'tray', hidden: true, 'aria-label': 'Activity' });
   const bar = h('section', { class: 'changes-bar', hidden: true, 'aria-label': 'Unsaved and pending settings' });
   const dock = h('div', { class: 'dock' }, toasts, tray, bar);
 
-  root.replaceChildren(h('a', { class: 'skip-link', href: '#main', onclick: (e) => (e.preventDefault(), main.focus()) }, 'Skip to content'), h('div', { class: 'top' }, header, offline, confirmEl), h('div', { class: 'layout' }, nav, main), dock);
+  root.replaceChildren(h('a', { class: 'skip-link', href: '#main', onclick: (e) => (e.preventDefault(), main.focus()) }, 'Skip to content'), h('div', { class: 'top' }, header, offline, confirmEl), h('div', { class: 'layout' }, mobileNav, nav, main), dock);
   mountToasts(toasts);
   mountTray(tray);
   const cleanups = [mountChangesBar(bar), mountConfirmBanner(confirmEl), () => header.destroy()];
@@ -232,7 +251,7 @@ function buildShell() {
     }
   };
   cleanups.push(() => clearInterval(offlineTimer));
-  shell = { main, nav, appTitle, setMenu, setOffline, destroy: () => cleanups.forEach((f) => f()) };
+  shell = { main, nav, mobileNav, appTitle, setMenu, setOffline, destroy: () => cleanups.forEach((f) => f()) };
 }
 
 /** Wrap a page view in its document window: the page's h1 becomes the window title. */
@@ -275,6 +294,14 @@ function route() {
     if (a.dataset.page === name) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   }
+  for (const p of shell.mobileNav.querySelectorAll('.mobile-nav-pill')) {
+    if (p.dataset.page === name) {
+      p.setAttribute('aria-current', 'page');
+      p.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } else {
+      p.removeAttribute('aria-current');
+    }
+  }
   document.title = `${page.meta.title} · RetroBoot`;
   if (!firstRoute) {
     window.scrollTo(0, 0);
@@ -284,6 +311,31 @@ function route() {
   firstRoute = false;
 }
 
+function printKey(s) {
+  const pdf = s && s.printed_pdf;
+  if (!pdf || !pdf.path) return null;
+  return pdf.seq != null ? `${pdf.seq}:${pdf.path}:${pdf.at || pdf.timestamp || ''}` : `${pdf.path}:${pdf.at || pdf.timestamp || ''}`;
+}
+
+function notifyPrintedPdf(pdf) {
+  if (!pdf || !pdf.path) return;
+  const name = pdf.name || pdf.path.split('/').pop() || 'document.pdf';
+  let closeToast = null;
+  const previewBtn = button('Preview', {
+    variant: 'default',
+    className: 'btn-small',
+    onClick: () => {
+      if (closeToast) closeToast();
+      const dir = pdf.path.includes('/') ? pdf.path.slice(0, pdf.path.lastIndexOf('/')) : '';
+      const q = [];
+      if (dir) q.push(`path=${encodeURIComponent(dir)}`);
+      q.push(`preview=${encodeURIComponent(pdf.path)}`);
+      location.hash = `#/files?${q.join('&')}`;
+    },
+  });
+  closeToast = toast(`Printed “${name}” to your shared folder.`, { level: 'ok', timeout: 10000, action: previewBtn });
+}
+
 async function startApp() {
   buildShell();
   if (!location.hash || location.hash === '#/pair') history.replaceState(null, '', '#/overview');
@@ -291,11 +343,17 @@ async function startApp() {
   await Promise.race([refreshStatus().catch(() => {}), new Promise((r) => setTimeout(r, 1500))]);
   if (!shell) return;   // signed out meanwhile
   let seenForm = formFactor();
+  let seenPrint = printKey(store.status);
   route();
-  const offForm = subscribe('status', () => {
+  const offForm = subscribe('status', (s) => {
     if (formFactor() !== seenForm) {
       seenForm = formFactor();
       rerender();
+    }
+    const pk = printKey(s);
+    if (pk && pk !== seenPrint) {
+      seenPrint = pk;
+      notifyPrintedPdf(s.printed_pdf);
     }
   });
   const destroy = shell.destroy;

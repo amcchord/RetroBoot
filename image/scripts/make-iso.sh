@@ -44,9 +44,10 @@ cmdline=$(tr -s ' \n' ' ' < "$IMAGE_SRC/config/cmdline" | sed 's/ $//')
 marker=.retroboot-installer-$(echo "$build_id" | tr -c 'A-Za-z0-9.-' '-' | sed 's/-*$//')
 tree=$(mktemp -d "$RB_WORK_ROOT/work/iso-tree.XXXXXX")
 stage=
+efi_stage=
 startup_style=classic
 first_style=classic
-trap 'rm -rf "$tree" ${stage:+"$stage"}' EXIT
+trap 'rm -rf "$tree" ${efi_stage:+"$efi_stage"} ${stage:+"$stage"}' EXIT
 mkdir -p "$tree/live" "$tree/boot/grub/fonts" "$tree/boot/grub/retroboot" "$tree/boot/grub/i386-pc" "$tree/EFI/BOOT"
 touch "$tree/$marker"
 
@@ -124,7 +125,7 @@ if [ -f "$menu_bdf" ]; then
 else
   log "startup options font: $menu_bdf missing; Shift at power-on shows nothing"
 fi
-cp "$boot/esp/grub/retroboot/checker-default.png" "$tree/boot/grub/retroboot/"
+cp "$boot/esp/grub/retroboot/checker-default"*.png "$tree/boot/grub/retroboot/"
 
 mods="part_gpt part_msdos fat iso9660 ext2 normal configfile linux search search_fs_file search_fs_uuid search_label regexp test echo loadenv gfxterm gfxterm_background png font video halt reboot keystatus"
 "$grub/pc/bin/grub-mkimage" -d "$grub/efi/lib/grub/x86_64-efi" -O x86_64-efi -p /boot/grub -c "$tree/embed.cfg" \
@@ -133,10 +134,34 @@ mods="part_gpt part_msdos fat iso9660 ext2 normal configfile linux search search
   -o "$tree/boot/grub/i386-pc/eltorito.img" $mods biosdisk vbe
 rm "$tree/embed.cfg"
 # EFI system partition image (El Torito EFI entry and appended GPT partition).
+# Include SETUP.txt and retroboot/network.conf.example so macOS/Windows users
+# mounting the flashed USB stick see the same Wi-Fi instructions as on Pi.
+efi_stage=$(mktemp -d "$RB_WORK_ROOT/work/iso-efi.XXXXXX")
+cat > "$efi_stage/network.conf.example" <<'EOF'
+# Rename this file to network.conf and enter your network name and password.
+# Plain KEY=VALUE lines; no shell commands. Optional quotes are accepted.
+WIFI_SSID=Your network name
+WIFI_PASSWORD=Your network password
+# WIFI_SECURITY=wpa-psk
+# WIFI_HIDDEN=no
+EOF
+cat > "$efi_stage/SETUP.txt" <<'EOF'
+RetroBoot PC installer
+
+Boot this USB drive or DVD on your PC or Intel Mac to install RetroBoot.
+Most home routers connected by Ethernet need no Wi-Fi setup.
+Control-Alt-Delete opens settings and troubleshooting during installation.
+
+Wi-Fi (optional): open the retroboot folder on this partition, rename
+network.conf.example to network.conf, and enter your network details.
+EOF
 truncate -s 4M "$tree/efi.img"
 mkfs.vfat -n RBINSTEFI "$tree/efi.img" >/dev/null
-mmd -i "$tree/efi.img" ::/EFI ::/EFI/BOOT
+mmd -i "$tree/efi.img" ::/EFI ::/EFI/BOOT ::/retroboot
 mcopy -i "$tree/efi.img" "$tree/EFI/BOOT/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
+mcopy -i "$tree/efi.img" "$efi_stage/network.conf.example" ::/retroboot/network.conf.example
+mcopy -i "$tree/efi.img" "$efi_stage/SETUP.txt" ::/SETUP.txt
+rm -rf "$efi_stage"; efi_stage=
 
 log "xorriso: hybrid ISO"
 rm -f "$out"

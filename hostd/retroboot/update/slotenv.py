@@ -28,6 +28,7 @@ from pathlib import Path
 ENV_SIZE = 1024
 ENV_SIG = b"# GRUB Environment Block\n"
 ENV_NAME = "grub/retroboot/slots.env"
+RPI_ENV_NAME = "retroboot/slots.env"
 SLOTS = ("a", "b")
 SLOT_PARTN = {"a": 3, "b": 4}
 SLOT_LABEL = {"a": "RBROOT_A", "b": "RBROOT_B"}
@@ -35,10 +36,22 @@ ESP_LABEL, ESP_PARTN = "RBEFI", 1
 DATA_LABEL = "RBDATA"
 DEFAULTS = {"rb_active": "a", "rb_next": "", "rb_tries": "0", "rb_other_ok": "0"}
 GRUB_CFG_MARKER = "# retroboot-slots: 1"
+RPI_CFG_MARKER = "# retroboot-slots: 1"
 # Kernel arguments that may appear in a slot file (GRUB script context: no quotes,
 # no $, no ; or newlines).
 CMDLINE_RE = re.compile(r"^[A-Za-z0-9 ._=,:/+@-]{1,1024}$")
 VALUE_RE = re.compile(r"^[A-Za-z0-9._:+-]{0,64}$")
+
+
+def is_rpi_esp(esp: Path) -> bool:
+    p = Path(esp)
+    return (p / "config.txt").is_file() and not (p / "grub" / "grub.cfg").is_file()
+
+
+def _env_name(esp: Path, env_name: str | None = None) -> str:
+    if env_name:
+        return env_name
+    return RPI_ENV_NAME if is_rpi_esp(Path(esp)) else ENV_NAME
 
 
 class SlotError(Exception):
@@ -99,9 +112,10 @@ def normalize(values: dict | None) -> dict:
     return v
 
 
-def read_env(esp: Path) -> tuple[dict, str]:
+def read_env(esp: Path, env_name: str | None = None) -> tuple[dict, str]:
     """(values, source): source is ``primary``, ``backup`` or ``none`` (defaults)."""
-    for path, source in ((Path(esp) / ENV_NAME, "primary"), (Path(esp) / (ENV_NAME + ".bak"), "backup")):
+    rel = _env_name(esp, env_name)
+    for path, source in ((Path(esp) / rel, "primary"), (Path(esp) / (rel + ".bak"), "backup")):
         try:
             data = path.read_bytes()
         except OSError:
@@ -130,20 +144,20 @@ def _write_in_place(path: Path, data: bytes) -> None:
         os.close(fd)
 
 
-def write_env(esp: Path, values: dict) -> dict:
+def write_env(esp: Path, values: dict, env_name: str | None = None) -> dict:
     values = normalize(values)
     data = format_env(values)
-    base = Path(esp) / ENV_NAME
+    base = Path(esp) / _env_name(esp, env_name)
     _write_in_place(base, data)
     _write_in_place(base.with_name(base.name + ".bak"), data)
     fsync_dir(base.parent)
     return values
 
 
-def update_env(esp: Path, **changes) -> dict:
-    values, _ = read_env(esp)
+def update_env(esp: Path, env_name: str | None = None, **changes) -> dict:
+    values, _ = read_env(esp, env_name=env_name)
     values.update({k: str(v) for k, v in changes.items()})
-    return write_env(esp, values)
+    return write_env(esp, values, env_name=env_name)
 
 
 def fsync_dir(path: Path) -> None:
@@ -198,6 +212,21 @@ def write_slot_cfg(esp: Path, slot: str, cmdline: str, version: str = "", build_
 
 
 def read_slot_cfg(esp: Path, slot: str) -> dict | None:
+    if is_rpi_esp(Path(esp)):
+        meta_p = Path(esp) / "retroboot" / f"slot-{slot}.json"
+        cmd_p = Path(esp) / "retroboot" / f"slot-{slot}" / "cmdline.txt"
+        try:
+            cmd = cmd_p.read_text(errors="replace").strip()
+        except OSError:
+            cmd = None
+        info = ""
+        try:
+            doc = json.loads(meta_p.read_text())
+            if isinstance(doc, dict):
+                info = str(doc.get("info") or "")
+        except (OSError, ValueError):
+            pass
+        return {"cmdline": cmd, "info": info} if (cmd or info) else None
     try:
         text = slot_cfg_path(esp, slot).read_text()
     except OSError:
@@ -205,6 +234,96 @@ def read_slot_cfg(esp: Path, slot: str) -> dict | None:
     m = re.search(rf'^set rb_cmdline_{slot}="([^"]*)"$', text, re.M)
     info = re.search(r"^# slot [ab]: (\S*)$", text, re.M)
     return {"cmdline": m.group(1) if m else None, "info": info.group(1) if info else ""}
+
+
+def rpi_slot_prefix(slot: str) -> str:
+    if slot not in SLOTS:
+        raise SlotError("unknown slot")
+    return f"retroboot/slot-{slot}/"
+
+
+def rpi_cfg_is_slotted(esp: Path) -> bool:
+    try:
+        text = (Path(esp) / "config.txt").read_text(errors="replace")
+    except OSError:
+        return False
+    return RPI_CFG_MARKER in text or "os_prefix=retroboot/slot-" in text
+
+
+def rpi_legacy_cmdline(esp: Path) -> str | None:
+    try:
+        text = (Path(esp) / "cmdline.txt").read_text(errors="replace").strip()
+        return " ".join(text.split()) or None
+    except OSError:
+        return None
+
+
+def render_rpi_config(base_text: str, prefix: str, cmdline_name: str = "cmdline.txt") -> str:
+    """Return config.txt content configured for ``os_prefix`` and ``cmdline`` under ``[all]``."""
+    lines = []
+    active = True
+    for raw in base_text.splitlines():
+        s = raw.strip()
+        if s == RPI_CFG_MARKER:
+            continue
+        if s.startswith("[") and s.endswith("]"):
+            active = s.lower() == "[all]"
+            lines.append(raw)
+            continue
+        k = s.split("=", 1)[0].strip().lower() if "=" in s and not s.startswith("#") else ""
+        if active and k in ("os_prefix", "cmdline"):
+            continue
+        lines.append(raw)
+    out = [RPI_CFG_MARKER]
+    placed = False
+    for raw in lines:
+        out.append(raw)
+        if not placed and raw.strip().lower() == "[all]":
+            if prefix:
+                out.append(f"os_prefix={prefix}")
+            if cmdline_name:
+                out.append(f"cmdline={cmdline_name}")
+            placed = True
+    if not placed:
+        ins = ["[all]"] + ([f"os_prefix={prefix}"] if prefix else []) + ([f"cmdline={cmdline_name}"] if cmdline_name else [])
+        out[1:1] = ins
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def render_rpi_cmdline(cmdline: str, slot: str, root_arg: str, *, trial: bool = False) -> str:
+    if slot not in SLOTS:
+        raise SlotError("unknown slot")
+    words = []
+    has_root = False
+    has_panic = False
+    for w in " ".join(str(cmdline).split()).split():
+        k, _, _v = w.partition("=")
+        if k in ("retroboot.slot", "retroboot.trial", "retroboot.fallback"):
+            continue
+        if k == "root":
+            words.append(f"root={root_arg}")
+            has_root = True
+        elif k == "panic" and trial:
+            words.append("panic=10")
+            has_panic = True
+        else:
+            words.append(w)
+    if not has_root:
+        words.append(f"root={root_arg}")
+    words.append(f"retroboot.slot={slot}")
+    if trial:
+        if not has_panic:
+            words.append("panic=10")
+        words.append("retroboot.trial=1")
+    return " ".join(words) + "\n"
+
+
+def write_rpi_slot_meta(esp: Path, slot: str, version: str = "", build_id: str = "") -> None:
+    if slot not in SLOTS:
+        raise SlotError("unknown slot")
+    info = re.sub(r"[^A-Za-z0-9._:+-]", "", f"{version} {build_id}".replace(" ", "_"))[:120]
+    p = Path(esp) / "retroboot" / f"slot-{slot}.json"
+    write_file_atomic(p, (json.dumps({"slot": slot, "info": info, "version": version, "build_id": build_id}) + "\n").encode())
 
 
 def grub_cfg_is_slotted(esp: Path) -> bool:
@@ -304,26 +423,31 @@ def booted_slot(cmdline: dict, lay: dict | None) -> str | None:
 
 # --- boot state ------------------------------------------------------------------------
 
-def boot_state(env: dict, cmdline: dict, booted: str | None, grub_slotted: bool) -> dict:
-    """What this boot is, from the environment GRUB used and the kernel command line.
+def boot_state(env: dict, cmdline: dict, booted: str | None, grub_slotted: bool, *, mode: str = "grub") -> dict:
+    """What this boot is, from the environment and kernel command line.
 
     kind:
-      ``normal``      the committed slot (or a pre-slot grub.cfg booting slot a)
+      ``normal``      the committed slot (or a pre-slot config booting slot a)
       ``trial``       a new slot on its one try, not confirmed yet
-      ``fell-back``   GRUB tried ``rb_next`` on the previous boot and it never confirmed
-      ``not-tried``   ``rb_next`` is armed but GRUB booted the active slot (it could not
-                      record the try; nothing was tried)
-      ``other``       booted a slot GRUB was not asked for (fallback entry, manual)"""
+      ``fell-back``   previous boot tried ``rb_next`` and came back on active slot
+      ``not-tried``   ``rb_next`` is armed on GRUB with ``rb_tries=1`` (GRUB could not write)
+      ``other``       booted a slot bootloader was not asked for (fallback entry, manual)"""
     trial = cmdline.get("retroboot.trial") == "1"
     nxt = env.get("rb_next") or ""
     active = env.get("rb_active", "a")
     if not grub_slotted:
-        return {"kind": "normal", "slot": booted, "active": "a", "legacy_grub": True}
+        if mode == "rpi" and nxt and trial and booted == nxt:
+            return {"kind": "trial", "slot": booted, "active": active}
+        if mode == "rpi" and nxt and booted == active:
+            return {"kind": "fell-back", "slot": booted, "active": active, "failed": nxt}
+        return {"kind": "normal", "slot": booted, "active": "a", "legacy_grub": mode == "grub"}
     if trial and booted and booted == nxt:
         return {"kind": "trial", "slot": booted, "active": active}
     if nxt and booted == active and env.get("rb_tries") == "0":
         return {"kind": "fell-back", "slot": booted, "active": active, "failed": nxt}
     if nxt and booted == active and env.get("rb_tries") == "1":
+        if mode == "rpi":
+            return {"kind": "fell-back", "slot": booted, "active": active, "failed": nxt}
         return {"kind": "not-tried", "slot": booted, "active": active, "pending": nxt}
     if booted and booted != active:
         return {"kind": "other", "slot": booted, "active": active,

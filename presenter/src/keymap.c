@@ -190,6 +190,23 @@ int rb_evdev_to_rbui_fallback(unsigned code, bool shift, char utf8[8])
     case KEY_SPACE:
         strcpy(utf8, " ");
         return RBUI_KEY_SPACE;
+    case KEY_KP0: strcpy(utf8, "0"); return RBUI_KEY_NONE;
+    case KEY_KP1: strcpy(utf8, "1"); return RBUI_KEY_NONE;
+    case KEY_KP2: strcpy(utf8, "2"); return RBUI_KEY_NONE;
+    case KEY_KP3: strcpy(utf8, "3"); return RBUI_KEY_NONE;
+    case KEY_KP4: strcpy(utf8, "4"); return RBUI_KEY_NONE;
+    case KEY_KP5: strcpy(utf8, "5"); return RBUI_KEY_NONE;
+    case KEY_KP6: strcpy(utf8, "6"); return RBUI_KEY_NONE;
+    case KEY_KP7: strcpy(utf8, "7"); return RBUI_KEY_NONE;
+    case KEY_KP8: strcpy(utf8, "8"); return RBUI_KEY_NONE;
+    case KEY_KP9: strcpy(utf8, "9"); return RBUI_KEY_NONE;
+    case KEY_KPDOT: strcpy(utf8, "."); return RBUI_KEY_NONE;
+    case KEY_KPPLUS: strcpy(utf8, "+"); return RBUI_KEY_NONE;
+    case KEY_KPMINUS: strcpy(utf8, "-"); return RBUI_KEY_NONE;
+    case KEY_KPASTERISK: strcpy(utf8, "*"); return RBUI_KEY_NONE;
+    case KEY_KPSLASH: strcpy(utf8, "/"); return RBUI_KEY_NONE;
+    case KEY_KPEQUAL: strcpy(utf8, "="); return RBUI_KEY_NONE;
+    case KEY_KPCOMMA: strcpy(utf8, ","); return RBUI_KEY_NONE;
     default: break;
     }
     if (code <= KEY_SLASH) {

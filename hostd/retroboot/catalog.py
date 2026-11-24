@@ -118,6 +118,12 @@ def validate_entry(e) -> dict:
             "archiveBytes", "installedBytes", "sha256", "diskCapacityBytes", "requiredStorageBytes",
             "machineFamily", "guestOS", "osBuild")
     out = {k: e[k] for k in keep if k in e}
+    if isinstance(e.get("tags"), list):
+        out["tags"] = [str(x) for x in e["tags"] if isinstance(x, str)][:16]
+    if isinstance(e.get("highlights"), list):
+        out["highlights"] = [str(x) for x in e["highlights"] if isinstance(x, str)][:16]
+    if isinstance(e.get("recommendedSettings"), dict):
+        out["recommendedSettings"] = dict(e["recommendedSettings"])
     thin = _thin_archive(e.get("thinArchive"))
     if thin is not None:
         out["thinArchive"] = thin
@@ -573,6 +579,13 @@ def sanitize_template_config(raw: bytes) -> dict:
         if profile != "macosx-10.4" or cfg["osxDisplaySetup"] != "firmware-desktop-1":
             raise ImportError_("The startup display settings aren't supported for this Mac.", "unsafe_archive")
         keep["osxDisplaySetup"] = cfg["osxDisplaySetup"]
+    rs = cfg.get("recommendedSettings")
+    if isinstance(rs, dict):
+        clean_rs = {rk: (rs[rk][:40] if isinstance(rs[rk], str) else rs[rk])
+                    for rk in ("ram_mb", "osx_ram_mb", "graphics", "guest_adapter", "cpu")
+                    if rk in rs and isinstance(rs[rk], (int, str)) and not isinstance(rs[rk], bool)}
+        if clean_rs:
+            keep["recommendedSettings"] = clean_rs
     return keep
 
 

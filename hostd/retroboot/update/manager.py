@@ -37,7 +37,8 @@ from ..jobs import Job, JobFailed
 from ..util import atomic_write_json, read_json, wall
 from . import slotenv
 from .bundle import Bundle, BundleError, compatibility, describe_version, trusted_keys, version_key
-from .writer import RealOps, SlotWriter, WriteError, release_info, sync_esp
+from .writer import (RealOps, SlotWriter, WriteError, _restore_or_clear_tryboot, activate_rpi_slot,
+                     arm_rpi_tryboot, commit_rpi_slot, release_info, sync_esp)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..hostd import Hostd
@@ -81,6 +82,7 @@ class UpdateManager:
         self.keys_dir = Path(self.cfg.update_keys_dir) if self.cfg.update_keys_dir else self.paths.lib / "update" / "keys"
         self.ops = RealOps(self.cfg.update_bwlimit_kbps)
         self.layout: dict | None = None
+        self.boot_mode: str = "grub"
         self.unavailable: str | None = "Software Update is starting."
         self.env: dict = dict(slotenv.DEFAULTS)
         self.boot: dict = {"kind": "normal"}
@@ -121,11 +123,11 @@ class UpdateManager:
             return
         plat = getattr(self.app, "platform", None)
         if plat is not None and not plat.has_grub and not self.cfg.update_layout:
-            # A Raspberry Pi boots kernel8.img from its FAT partition, a Gemini PDA's LK an
-            # Android boot image: no GRUB, no A/B slots yet (a later build may use the
-            # firmware's tryboot). Nothing is written.
-            self.unavailable = UNAVAILABLE_GEMINI if getattr(plat, "is_gemini", False) else UNAVAILABLE_PI
-            return
+            if getattr(plat, "is_raspberry_pi", False) and not getattr(plat, "is_zero2w", False):
+                pass
+            else:
+                self.unavailable = UNAVAILABLE_GEMINI if getattr(plat, "is_gemini", False) else UNAVAILABLE_PI
+                return
         if self.cfg.update_layout:
             self.layout = dict(self.cfg.update_layout)
         else:
@@ -139,10 +141,18 @@ class UpdateManager:
             os.listdir(self.esp)     # triggers the /boot/efi automount
         except OSError:
             pass
-        if not (self.esp / "grub" / "grub.cfg").is_file():
+        if (self.esp / "grub" / "grub.cfg").is_file() and not (
+                plat is not None and getattr(plat, "is_raspberry_pi", False)):
+            self.boot_mode = "grub"
+        elif (self.esp / "config.txt").is_file() and (
+                plat is None or getattr(plat, "is_raspberry_pi", False)
+                or getattr(self.cfg, "update_mode", None) == "rpi"):
+            self.boot_mode = "rpi"
+        else:
             self.unavailable = "RetroBoot's startup files couldn't be found."
             return
-        self.env, _src = slotenv.read_env(self.esp)
+        env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
+        self.env, _src = slotenv.read_env(self.esp, env_name=env_name)
         self.unavailable = None
 
     async def start(self) -> None:
@@ -154,8 +164,9 @@ class UpdateManager:
             return
         cmdline = slotenv.read_cmdline(self.cfg.cmdline_path)
         booted = slotenv.booted_slot(cmdline, self.layout)
-        slotted = slotenv.grub_cfg_is_slotted(self.esp)
-        self.boot = slotenv.boot_state(self.env, cmdline, booted, slotted)
+        slotted = (slotenv.rpi_cfg_is_slotted(self.esp) if self.boot_mode == "rpi"
+                   else slotenv.grub_cfg_is_slotted(self.esp))
+        self.boot = slotenv.boot_state(self.env, cmdline, booted, slotted, mode=self.boot_mode)
         armed = self.state.get("armed") or {}
         if self.boot["kind"] in ("not-tried", "fell-back") and armed.get("boot_id") == self.app.lifecycle.boot_id:
             self.boot = {"kind": "armed", "slot": booted, "active": self.env["rb_active"]}
@@ -180,7 +191,8 @@ class UpdateManager:
         elif kind == "fell-back":
             await self._fell_back()
         elif kind == "not-tried":
-            await asyncio.to_thread(slotenv.update_env, self.esp, rb_next="", rb_tries="0")
+            env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
+            await asyncio.to_thread(slotenv.update_env, self.esp, env_name=env_name, rb_next="", rb_tries="0")
             self.env["rb_next"] = ""
             self._history(kind="not-tried", result="failed", version=(self.state.get("staged") or {}).get("version"),
                           message="This computer's startup software couldn't record the trial start, so the "
@@ -229,7 +241,7 @@ class UpdateManager:
 
     def _writer(self) -> SlotWriter:
         return SlotWriter(self.esp, self.layout or {}, self.work, ops=self.ops, running_root=Path(self.cfg.root),
-                          data_dir=self.paths.data)
+                          data_dir=self.paths.data, mode=self.boot_mode)
 
     # -- trial boots -------------------------------------------------------------------
     async def _watch_trial(self) -> None:
@@ -262,11 +274,15 @@ class UpdateManager:
         self._committing = True
         slot = self.boot.get("slot")
 
+        env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
+
         def work():
-            env = slotenv.update_env(self.esp, rb_active=slot, rb_next="", rb_tries="0", rb_other_ok="1")
+            env = slotenv.update_env(self.esp, env_name=env_name, rb_active=slot, rb_next="", rb_tries="0",
+                                     rb_other_ok="1")
             changed = []
             try:
-                changed = sync_esp(self.esp, Path(self.cfg.root))
+                changed = (commit_rpi_slot(self.esp, slot) if self.boot_mode == "rpi"
+                           else sync_esp(self.esp, Path(self.cfg.root)))
             except Exception as exc:   # the slot is committed; the old ESP files still boot it
                 log.error("ESP update after commit failed: %s", exc)
             slotenv.mark_healthy(str(self.paths.run), {"slot": slot, "at": wall(), "signal": signal})
@@ -299,7 +315,10 @@ class UpdateManager:
 
     async def _fell_back(self) -> None:
         failed = self.boot.get("failed")
-        await asyncio.to_thread(slotenv.update_env, self.esp, rb_next="", rb_tries="0")
+        env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
+        await asyncio.to_thread(slotenv.update_env, self.esp, env_name=env_name, rb_next="", rb_tries="0")
+        if self.boot_mode == "rpi":
+            await asyncio.to_thread(_restore_or_clear_tryboot, self.esp)
         self.env["rb_next"] = ""
         staged = self.state.get("staged") or {}
         armed = self.state.pop("armed", None) or {}
@@ -493,7 +512,8 @@ class UpdateManager:
             self.save()
             self.app.lifecycle.event("update_install_failed", error=f"{type(exc).__name__}: {exc}")
             raise
-        self.env, _ = await asyncio.to_thread(slotenv.read_env, self.esp)
+        env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
+        self.env, _ = await asyncio.to_thread(slotenv.read_env, self.esp, env_name=env_name)
         self.state["staged"].update(status="ready", slot=res["slot"], written_s=round(time.monotonic() - t0, 1),
                                     converted_grub=res["converted_grub"])
         self.save()
@@ -532,11 +552,16 @@ class UpdateManager:
                                             "slot": (self.layout or {}).get("current")}}
             st["status"] = "restarting"
             self.save()
-            self.env = await asyncio.to_thread(slotenv.update_env, self.esp, rb_next=target, rb_tries="1")
+            env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
+            if self.boot_mode == "rpi":
+                await asyncio.to_thread(arm_rpi_tryboot, self.esp, target)
+            self.env = await asyncio.to_thread(slotenv.update_env, self.esp, env_name=env_name, rb_next=target,
+                                               rb_tries="1")
             self.app.lifecycle.event("update_armed", slot=target, version=st["version"], build=st["build_id"],
-                                     carried=len(carried), settings_snapshot=bool(snap), origin=origin)
+                                     carried=len(carried), settings_snapshot=bool(snap), origin=origin,
+                                     mode=self.boot_mode)
             job.update(0.95, "Restarting…")
-            await sup.reboot_host(f"update to {st['version']}")
+            await sup.reboot_host(f"update to {st['version']}", arg=("0 tryboot" if self.boot_mode == "rpi" else None))
             return {"slot": target, "version": st["version"]}
         return self.app.jobs.start("update.restart", body, resources=("guest", "host", "update"),
                                    preemptible=True)
@@ -558,8 +583,11 @@ class UpdateManager:
             carried = await asyncio.to_thread(writer.resync_state, target)
             await asyncio.to_thread(self.snapshot_settings)
             how = await asyncio.to_thread(self.prepare_settings_for, other.get("settings_schema"))
-            self.env = await asyncio.to_thread(slotenv.update_env, self.esp, rb_active=target, rb_next="",
-                                               rb_tries="0", rb_other_ok="1")
+            env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
+            if self.boot_mode == "rpi":
+                await asyncio.to_thread(activate_rpi_slot, self.esp, target)
+            self.env = await asyncio.to_thread(slotenv.update_env, self.esp, env_name=env_name, rb_active=target,
+                                               rb_next="", rb_tries="0", rb_other_ok="1")
             st = self.staged()
             if st:
                 self.state["staged"] = None

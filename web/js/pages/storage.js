@@ -233,9 +233,23 @@ export function render() {
     );
   }
 
+  function tagBadge(label) {
+    const b = badge(label, 'quiet');
+    if (/kids/i.test(label)) b.classList.add('badge-kids');
+    else if (/68k|classic|os\s*x|ppc|power\s*mac/i.test(label)) b.classList.add('badge-arch');
+    return b;
+  }
+
   function catalogItem(c, several) {
     const myJobId = importJobs.get(entryKey(c)) || c.job;
     const job = activeJobs('machines.import').find((j) => j.id === myJobId);
+    const rawTags = Array.isArray(c.tags) ? c.tags : [];
+    const seenTags = new Set(rawTags.map((t) => String(t).toLowerCase()));
+    const extraTags = [];
+    if (c.machine_family === 'quadra800' && !seenTags.has('68k')) extraTags.push('68k');
+    const paused = !job && !c.imported && c.partial_bytes > 0 && !c.partial_complete;
+    const pctPartial = paused && c.download_bytes ? Math.min(1, c.partial_bytes / c.download_bytes) : null;
+    const highlights = Array.isArray(c.highlights) ? c.highlights : [];
     return h(
       'li',
       { class: 'catalog-item' },
@@ -243,18 +257,43 @@ export function render() {
         'div',
         { class: 'machine-head' },
         h('strong', null, c.name),
-        several && c.catalog_label ? badge(c.catalog_label, 'quiet') : null,
-        c.older ? badge('Older version', 'quiet') : null,
-        c.imported ? badge('Imported', 'ok') : null,
+        h(
+          'span',
+          { class: 'tag-row' },
+          several && c.catalog_label ? badge(c.catalog_label, 'quiet') : null,
+          c.recommended ? badge('Recommended', 'ok') : null,
+          ...rawTags.map((t) => tagBadge(t)),
+          ...extraTags.map((t) => tagBadge(t)),
+          c.older ? badge('Older version', 'quiet') : null,
+          c.imported ? badge('Imported', 'ok') : null,
+        ),
       ),
       c.description || c.summary ? h('p', null, c.description || c.summary) : null,
+      highlights.length
+        ? h('div', { class: 'catalog-highlights' }, ...highlights.map((item) => badge(item, 'quiet')))
+        : null,
       h('p', { class: 'muted small' }, `Download ${formatBytes(c.download_bytes)}`, c.disk_bytes || c.installed_bytes ? ` · ${formatBytes(c.disk_bytes || c.installed_bytes)} disk` : '', c.machine_family === 'quadra800' ? ' · 68k Mac' : ''),
-      c.sha256 ? h('p', { class: 'hash' }, h('span', { class: 'muted small' }, 'SHA-256 '), h('code', { title: c.sha256 }, `${c.sha256.slice(0, 16)}…`), copyButton(c.sha256, 'Copy', { what: 'checksum', ariaLabel: `Copy SHA-256 for ${c.name}`, compact: true })) : null,
+      paused
+        ? h(
+            'div',
+            { class: 'catalog-paused', role: 'status' },
+            h('p', { class: 'muted small' }, `Paused · ${formatBytes(c.partial_bytes)}${c.download_bytes ? ` of ${formatBytes(c.download_bytes)}` : ''} downloaded`),
+            pctPartial != null ? progressBar(pctPartial, `Paused download of ${c.name}`) : null,
+          )
+        : null,
+      c.sha256
+        ? h(
+            'details',
+            { class: 'disclosure catalog-details' },
+            h('summary', null, h('span', { class: 'small muted' }, 'Verification details')),
+            h('p', { class: 'hash' }, h('span', { class: 'muted small' }, 'SHA-256 '), h('code', { title: c.sha256 }, c.sha256), copyButton(c.sha256, 'Copy', { what: 'checksum', ariaLabel: `Copy SHA-256 for ${c.name}`, compact: true })),
+          )
+        : null,
       job
         ? h('div', { class: 'inline-job', role: 'status' }, progressBar(typeof job.progress === 'number' ? job.progress : null, `Importing ${c.name}`), h('p', { class: 'muted small' }, job.message || 'Importing…'))
         : c.imported
           ? null
-          : h('div', { class: 'row-actions' }, button('Import', { icon: 'download', className: 'btn-small', focusKey: `import-${entryKey(c)}`, onClick: () => startImport(c) })),
+          : h('div', { class: 'row-actions' }, button(paused ? 'Resume' : 'Import', { icon: 'download', className: 'btn-small', focusKey: `import-${entryKey(c)}`, onClick: () => startImport(c) })),
     );
   }
 
@@ -290,7 +329,7 @@ export function render() {
         'p',
         { class: 'win-intro' },
         catalogs.some((k) => k.id === 'lab')
-          ? 'Download a ready-made Mac OS machine from RetroBoot downloads (with this computer’s stored sign-in) or the internet catalog. RetroBoot checks the file’s SHA-256 checksum before using it. Mac OS keeps running meanwhile.'
+          ? 'Download a ready-made Mac OS machine from RetroBoot downloads or the internet catalog. RetroBoot checks the file’s SHA-256 checksum before using it. Mac OS keeps running meanwhile.'
           : 'Download a ready-made Mac OS machine. RetroBoot checks the file’s SHA-256 checksum before using it. Imports need an internet connection; Mac OS keeps running meanwhile.',
       ),
       body,
@@ -365,11 +404,17 @@ export function render() {
   }
 
   async function startImport(c) {
+    const resuming = !c.imported && c.partial_bytes > 0 && !c.partial_complete;
+    const rem = resuming && c.download_bytes ? Math.max(0, c.download_bytes - c.partial_bytes) : c.download_bytes;
     const ok = await confirm({
-      title: `Import ${c.name}?`,
+      title: `${resuming ? 'Resume downloading' : 'Import'} ${c.name}?`,
       icon: 'note',
-      message: [`RetroBoot downloads ${formatBytes(c.download_bytes)}, verifies it, and adds it as a new machine. Your current machine isn't changed.`],
-      confirmLabel: 'Import',
+      message: [
+        resuming
+          ? `RetroBoot continues the paused download (${formatBytes(rem)} remaining), checks the SHA-256 checksum, and adds ${c.name}. Your current machine isn't changed.`
+          : `RetroBoot downloads ${formatBytes(c.download_bytes)}, verifies it, and adds it as a new machine. Your current machine isn't changed.`,
+      ],
+      confirmLabel: resuming ? 'Resume' : 'Import',
     });
     if (!ok) return;
     try {
@@ -420,18 +465,30 @@ export function render() {
             actions: running ? [button('Shut Down Mac OS…', { icon: 'power', focusKey: 'cp-shutdown', onClick: async () => { await lifecycle('shutdown'); refreshStatus().catch(() => {}); load(); } })] : null,
           })
         : null;
+      const isFresh = (cp) => cp.label === 'Fresh Install' || cp.kind === 'fresh';
       const list = (cps.checkpoints || []).length
         ? h(
             'ul',
             { class: 'cp-list' },
-            ...cps.checkpoints.map((cp) =>
-              h(
+            ...cps.checkpoints.map((cp) => {
+              const fresh = isFresh(cp);
+              return h(
                 'li',
                 { class: 'cp' },
-                h('div', null, h('strong', null, cp.label || 'Checkpoint'), h('p', { class: 'muted small' }, `${fmtDateTime(cp.created_at)} · ${relTime(cp.created_at)}${cp.size_bytes ? ` · ${formatBytes(cp.size_bytes)}` : ''}`)),
-                button('Restore…', { className: 'btn-small', focusKey: `restore-${cp.id}`, disabled: !!blocked || cps.can_restore === false, onClick: () => restore(m, cp) }),
-              ),
-            ),
+                h(
+                  'div',
+                  null,
+                  h('div', { class: 'machine-head' }, h('strong', null, cp.label || 'Checkpoint'), fresh ? badge('Automatic', 'quiet') : null),
+                  h('p', { class: 'muted small' }, `${fmtDateTime(cp.created_at)} · ${relTime(cp.created_at)}${cp.size_bytes ? ` · ${formatBytes(cp.size_bytes)}` : ''}`),
+                ),
+                button(fresh ? 'Reset to Fresh Install…' : 'Restore…', {
+                  className: 'btn-small',
+                  focusKey: `restore-${cp.id}`,
+                  disabled: !!blocked || cps.can_restore === false,
+                  onClick: () => (fresh ? resetFresh(m, cp) : restore(m, cp)),
+                }),
+              );
+            }),
           )
         : emptyState(`${m.name} has no checkpoints yet.`, 'storage');
       body = h(
@@ -633,6 +690,33 @@ export function render() {
       if (job) {
         const final = await track(job);
         if (final.state === 'succeeded') toast(doneMessage(final, 'Checkpoint created.'), { level: 'ok', timeout: 8000 });
+      }
+    } catch (err) {
+      toast(friendlyMessage(err), { level: 'error', timeout: 8000 });
+    }
+    load();
+  }
+
+  async function resetFresh(m, cp) {
+    const ok = await confirm({
+      title: `Reset “${m.name}” to Fresh Install?`,
+      icon: 'stop',
+      danger: true,
+      message: [
+        `${m.name}’s ${m.guest_os?.startsWith('macosx-') ? 'disk and startup memory go' : 'disk goes'} back to how it was right after it was installed.`,
+        'Everything saved on that disk since then is lost, including documents, installed applications and settings made in Mac OS. Files in the shared volume are not affected.',
+      ],
+      acknowledge: 'I understand that changes since Fresh Install will be lost.',
+      confirmLabel: 'Reset to Fresh Install',
+    });
+    if (!ok) return;
+    try {
+      const res = await post(`/api/v1/machines/${encodeURIComponent(m.id)}/reset-fresh`, {})
+        .catch((err) => (err.status === 404 && cp ? post(`/api/v1/machines/${encodeURIComponent(m.id)}/checkpoints/${encodeURIComponent(cp.id)}/restore`, {}) : Promise.reject(err)));
+      const job = asJob(res);
+      if (job) {
+        const final = await track(job, { label: `Resetting ${m.name} to Fresh Install` });
+        if (final.state === 'succeeded') toast(doneMessage(final, `${m.name} reset to Fresh Install.`), { level: 'ok', timeout: 9000 });
       }
     } catch (err) {
       toast(friendlyMessage(err), { level: 'error', timeout: 8000 });

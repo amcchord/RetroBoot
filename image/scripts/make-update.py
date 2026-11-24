@@ -113,6 +113,16 @@ def audit(root):
         sys.exit("make-update: refusing root filesystem:\n  " + "\n  ".join(problems[:30]))
 
 
+def target_arch(arch, root, boot):
+    if arch and arch != "auto":
+        return arch
+    if boot.get("arch") in ("x86_64", "arm64"):
+        return boot["arch"]
+    if boot.get("board") == "rpi" or os.path.isfile(os.path.join(root, "usr/lib/retroboot/rpi-profile.json")):
+        return "arm64"
+    return "x86_64"
+
+
 def build(a):
     root, out = a.root, a.out
     os.makedirs(out, exist_ok=True)
@@ -163,9 +173,11 @@ def build(a):
         print(f"device nodes: {len(devnodes)} from the base's records", file=sys.stderr)
     print(f"file list: {stats['files']} entries, {stats['bytes']} bytes ({time.time() - t0:.0f} s)", file=sys.stderr)
     t0 = time.time()
+    arch = target_arch(getattr(a, "arch", "auto"), root, boot)
+    bcj = ["-Xbcj", "x86"] if a.compression == "xz" and arch == "x86_64" else []
     subprocess.run(["mksquashfs", root, os.path.join(out, "root.sqfs"), "-comp", a.compression, "-b", "1M",
                     "-noappend", "-xattrs", "-quiet", "-no-progress"]
-                   + (["-Xbcj", "x86"] if a.compression == "xz" else
+                   + (bcj if a.compression == "xz" else
                       ["-Xcompression-level", "19"] if a.compression == "zstd" else []) + pseudo, check=True)
     print(f"root.sqfs: {os.path.getsize(os.path.join(out, 'root.sqfs'))} bytes ({time.time() - t0:.0f} s)",
           file=sys.stderr)
@@ -174,6 +186,8 @@ def build(a):
     manifest = {
         "format": "retroboot-update/1",
         "product": "RetroBoot",
+        "arch": arch,
+        "board": boot.get("board", "pc"),
         "version": a.version,
         "build_id": a.build_id,
         "flavor": a.flavor,
@@ -183,7 +197,8 @@ def build(a):
         "settings_schema": schema,
         "settings_schema_min": min(schema, a.settings_schema_min),
         "kernel": {"version": kernels[-1] if kernels else None, "cmdline": boot["kernel_cmdline"]},
-        "boot": {"files_sha256": boot.get("files_sha256"), "grub": boot.get("grub")},
+        "boot": {"files_sha256": boot.get("files_sha256"), "grub": boot.get("grub"),
+                 **({"bootfs_files_sha256": boot["bootfs_files_sha256"]} if boot.get("bootfs_files_sha256") else {})},
         "root": {"member": "root.sqfs", "format": "squashfs", "compression": a.compression,
                  "bytes": os.path.getsize(os.path.join(out, "root.sqfs")),
                  "sha256": sha256(os.path.join(out, "root.sqfs")),
@@ -253,7 +268,7 @@ def derive(a):
     ns = argparse.Namespace(root=tmp, boot_json=boot_json, out=a.out, build_id=build_id, flavor=src["flavor"],
                             version=src["version"], min_version=src["min_version"],
                             settings_schema_min=src["settings_schema_min"], source_revision=src["source_revision"],
-                            compression=src["root"]["compression"],
+                            compression=src["root"]["compression"], arch=src.get("arch", "auto"),
                             notes=f"LAB TEST build derived from {src['build_id']} (break: {a.break_}).")
     build(ns)
     shutil.rmtree(tmp)
@@ -272,6 +287,7 @@ def main():
     b.add_argument("--min-version", default="0.2.0")
     b.add_argument("--settings-schema-min", type=int, default=1)
     b.add_argument("--source-revision", default="unknown")
+    b.add_argument("--arch", default="auto", choices=("auto", "x86_64", "arm64"))
     b.add_argument("--compression", default="xz", choices=("xz", "zstd"))
     b.add_argument("--notes", default="")
     s = sub.add_parser("assemble")

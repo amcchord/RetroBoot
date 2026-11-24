@@ -144,3 +144,48 @@ int rb_content_inspect(rb_content *c, const uint32_t *px, int w, int h, int stri
     }
     return RB_CONTENT_NONE;
 }
+
+bool rb_content_is_osx_desktop(const uint32_t *px, int w, int h, int stride_px)
+{
+    if (!px || w <= 0 || h <= 0)
+        return false;
+    int gx = w < RB_CONTENT_GRID_X ? w : RB_CONTENT_GRID_X;
+    int gy = h < RB_CONTENT_GRID_Y ? h : RB_CONTENT_GRID_Y;
+    int total = 0, nonblack = 0, boot_gray = 0;
+    for (int j = 0; j < gy; j++)
+        for (int i = 0; i < gx; i++) {
+            int x, y;
+            sample_point(i, j, w, h, gx, gy, &x, &y);
+            uint32_t m = block_mean(px, w, h, stride_px, x, y);
+            int r = (m >> 16) & 0xff, g = (m >> 8) & 0xff, b = m & 0xff;
+            int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+            total++;
+            if (mx <= RB_CONTENT_NONBLACK_MAX)
+                continue;
+            nonblack++;
+            if (mn >= 172 && mx <= 212 && mx - mn <= 16)
+                boot_gray++;
+        }
+    if (!total || nonblack * 100 < total * RB_CONTENT_NONBLACK_PCT)
+        return false;
+    if (boot_gray * 100 < total * 85)
+        return true;
+    /* Even with a neutral gray wallpaper, OS X Finder/LoginWindow draws the bright
+     * 22-pixel Aqua menu bar at the top instead of BootX's uniform #bfbfbf top rows. */
+    int menubar_rows = h < 20 ? h : 20, step = w > 160 ? w / 80 : 1;
+    int bar_total = 0, bar_bright = 0, bar_boot_gray = 0;
+    for (int y = 4; y < menubar_rows; y += 4)
+        for (int x = 0; x < w; x += step) {
+            uint32_t p = px[(size_t)y * stride_px + x] & 0x00ffffffu;
+            int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+            int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+            bar_total++;
+            if (mn >= 216)
+                bar_bright++;
+            if (mn >= 172 && mx <= 212 && mx - mn <= 16)
+                bar_boot_gray++;
+        }
+    return bar_total > 0 && bar_bright * 100 >= bar_total * 40 && bar_boot_gray * 100 < bar_total * 60;
+}

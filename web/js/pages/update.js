@@ -273,7 +273,7 @@ export function render() {
     });
     patch('server', serverEl, JSON.stringify([info.url, info.check, busy]), () => {
       const found = info.check && info.check.found;
-      if (!info.url) return h('p', { class: 'muted' }, 'Enter the address of an update server below to check it for updates. RetroBoot never installs anything by itself.');
+      if (!info.url) return h('p', { class: 'muted' }, 'Enter the address of an update server below to check it for updates (or leave it empty for RetroBoot’s update list). RetroBoot never installs anything by itself.');
       return [
         found ? h('p', null, h('strong', null, `RetroBoot ${found.label} is available`), ` (${formatBytes(found.bytes)}).`) : h('p', null, info.check ? `RetroBoot is up to date (checked ${fmtDateTime(info.check.at)}).` : 'Not checked yet.'),
         found && found.notes ? h('p', { class: 'muted' }, found.notes) : null,

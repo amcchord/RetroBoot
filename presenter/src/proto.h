@@ -36,6 +36,8 @@ struct rb_display_req {
     bool primary_external; /* "primary": "internal" (default) | "external" */
     bool has_rotation;
     int rotation; /* user rotation of the primary: 0, 90, 180, 270 (rotation.h) */
+    bool has_crt_bezel;
+    bool crt_bezel; /* subtle 1px frame around centered 1x guest rectangle */
 };
 
 /* display_power: {"output": "internal"|"external"|"all"|<connector>, "on": bool} */
@@ -68,10 +70,24 @@ struct rb_input_req {
     int keyboard_layout; /* gemkbd.h: the Gemini PDA's keycaps, "us" | "uk" */
     bool has_touch_transform;
     int touch_transform; /* touch.h RB_TOUCH_* flags */
+    bool has_gamepad_mode;
+    int gamepad_mode; /* gamepad.h enum rb_gamepad_mode */
+    bool has_natural_scroll;
+    bool natural_scroll;
+};
+
+struct rb_set_config_req {
+    bool has_gamepad_mode;
+    int gamepad_mode;
+    bool has_natural_scroll;
+    bool natural_scroll;
+    bool has_crt_bezel;
+    bool crt_bezel;
 };
 
 int rb_parse_set_scene(const cJSON *req, struct rb_scene_req *out, char *err, size_t errlen);
 int rb_parse_display_config(const cJSON *req, struct rb_display_req *out, char *err, size_t errlen);
 int rb_parse_input_config(const cJSON *req, struct rb_input_req *out, char *err, size_t errlen);
+int rb_parse_set_config(const cJSON *req, struct rb_set_config_req *out, char *err, size_t errlen);
 int rb_parse_display_power(const cJSON *req, struct rb_power_req *out, char *err, size_t errlen);
 int rb_parse_osd(const cJSON *req, struct rb_osd_req *out, char *err, size_t errlen);

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -38,7 +39,8 @@ from .jobs import Job, JobFailed, JobManager
 from .laptop import Laptop
 from .lifecycle import LifecycleLog
 from .machines import (FAMILIES, FAMILY_CHOICES, POWERMAC, QUADRA800, QUADRA_BLANK_DEFAULT_GB,
-                       QUADRA_BLANK_NOTE, MachineError, MachineRegistry, PackageCache, blank_sizes_gb)
+                       QUADRA_BLANK_NOTE, MachineError, MachineRegistry, PackageCache, blank_sizes_gb,
+                       default_machine_settings, validate_machine_settings)
 from . import quadra
 from .media import MediaError, MediaLibrary
 from .network import AudioMixer, NetworkAdapter, NetworkError
@@ -227,11 +229,26 @@ class Hostd:
         self._boot_network_task: asyncio.Task | None = None
         self.wifi_watch_s = (2.0, 90.0)          # period, how long to look for a late Wi-Fi driver
         self.guest_isolation: dict = {"loaded": None, "detail": "not checked yet"}
+        self.corrupt_disk_recovery: dict | None = None
+        self.last_printed_pdf: dict | None = None
+        self._printed_pdf_seq = 0
+        self._chime_seq = 0
+        from .printer import PrintServer
+        from .usbshare import UsbShare
+        self.printer = PrintServer(
+            self.paths.share,
+            enabled=lambda: bool(self.settings.applied.get("printer.enabled", True)),
+            on_printed=self._on_printed_pdf)
+        self.usbshare = UsbShare(
+            self.paths.share,
+            enabled=lambda: bool(self.settings.applied.get("usb_share.enabled", True)),
+            poll_s=5.0 if self.cfg.allow_network_tools else 0.0)
         self.diagnostics.guest_shot = self.supervisor.guest_screenshot
         self.diagnostics.composed_shot = self.composed_screenshot
         self.diagnostics.status_provider = self.status
         self.diagnostics.guest_stuck = lambda: self.supervisor.qmp_ok is False
         self.diagnostics.last_guest_frame = lambda: self.supervisor.last_frame_png
+        self._hook_chime_lifecycle()
 
     async def _watch_health(self, period_s: float = 15.0) -> None:
         """Raspberry Pi: sample the under-voltage alarm every period_s so a dip between
@@ -349,7 +366,31 @@ class Hostd:
         self.lifecycle.event("scene", scene=scene, **kw)
         await self.presenter.try_request("set_scene", scene=scene, **kw)
 
+    def is_pairing_visible(self) -> bool:
+        """True when the local panel or installer is currently showing a pairing screen."""
+        for attr in ("panel", "installer_panel"):
+            p = getattr(self, attr, None)
+            if p is None:
+                continue
+            fn = getattr(p, "is_pairing_visible", None)
+            if callable(fn) and fn():
+                return True
+            if getattr(p, "visible", False) and getattr(getattr(p, "screen", None), "doc_id", None) in {
+                    "network-web", "installer-network"}:
+                return True
+        return False
+
+    def pairing_masked_png(self) -> bytes:
+        from .remote.encode import pairing_masked_png
+        mode = self.display_mode() or (800, 600)
+        return pairing_masked_png(max(480, min(mode[0], 1280)), max(360, min(mode[1], 800)))
+
     async def composed_screenshot(self, dest: str) -> bool:
+        if self.is_pairing_visible():
+            out = Path(dest)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(self.pairing_masked_png())
+            return True
         r = await self.presenter.try_request("screenshot", path=dest, what="composed", timeout=10)
         return r is not None and Path(dest).exists()
 
@@ -466,7 +507,31 @@ class Hostd:
         await self.wait_for_sound()
         return await asyncio.to_thread(self.choose_audio_output)
 
-    def choose_audio_output(self) -> dict | None:
+    def _hook_chime_lifecycle(self) -> None:
+        orig_event = self.lifecycle.event
+
+        def hooked(_event: str, /, **fields):
+            rec = orig_event(_event, **fields)
+            if _event == "guest_start" and self.mode == "normal":
+                if not getattr(self.supervisor, "chime_played", False):
+                    mid = fields.get("machine")
+                    m = self.machines.get(mid) if mid else self.supervisor.active_machine()
+                    loop = self.loop
+                    if loop is not None and not loop.is_closed():
+                        loop.create_task(self.play_startup_chime(m))
+            elif _event == "corrupt_disk_recovery":
+                self.on_corrupt_disk_recovery(dict(fields))
+            return rec
+
+        self.lifecycle.event = hooked
+
+    def _on_printed_pdf(self, info: dict) -> None:
+        self._printed_pdf_seq += 1
+        rec = {**info, "seq": self._printed_pdf_seq, "timestamp": wall()}
+        self.last_printed_pdf = rec
+        self.lifecycle.event("printed_pdf", **rec)
+
+    def choose_audio_output(self, output_override: str | None = None) -> dict | None:
         """The host playback device for the guest (audio.py); None: ALSA default."""
         if not self.cfg.allow_network_tools:
             return None
@@ -475,26 +540,29 @@ class Hostd:
                 return audio.configured(self.cfg.audio_device)      # the device's own choice (hostd.json)
             except ValueError:
                 log.warning("audio_device in the hostd configuration is not a usable ALSA name; ignored")
+        selected = output_override if output_override is not None else self.settings.applied.get("audio.output", "auto")
         # A laptop showing Mac OS on its built-in screen plays through its own
         # speakers; HDMI audio wins only on desktops or with an external main display.
         display = self.presenter.display or {}
         outputs = display.get("outputs") or []
         laptop_main = (any(o.get("internal") for o in outputs)
                        and self.settings.applied.get("display.primary", "internal") == "internal")
+        supports_out = "output" in inspect.signature(audio.choose).parameters
+        extra = {"output": selected} if supports_out else {}
         try:
             if self.platform.is_gemini:
                 # A USB sound card when one is plugged in, else the codec (speakers and jack;
                 # the image routes it and switches the speaker amplifiers).
-                return audio.choose(prefer="gemini")
+                return audio.choose(prefer="gemini", **extra)
             if self.platform.is_raspberry_pi:
                 # The HDMI port Mac OS is shown on (primary first), then USB, then the Pi 4's jack.
                 driving = [o["connector"] for o in sorted(outputs, key=lambda o: o.get("role") != "primary")
                            if o.get("connector")] if outputs else None
-                out = audio.choose(prefer="pi", driving=driving)
+                out = audio.choose(prefer="pi", driving=driving, **extra)
                 if out and out.get("vc4"):
                     out = dict(out, softvol=audio.vc4_softvol(out))   # the volume control, before the probe
                 return out
-            out = audio.choose(prefer="analog" if laptop_main else "hdmi")
+            out = audio.choose(prefer="analog" if laptop_main else "hdmi", **extra)
             if out and out.get("asoc"):
                 ucm = audio.ucm_prepare(out)        # ASoC routing (once per card), before QEMU opens it
                 if ucm:
@@ -507,6 +575,74 @@ class Hostd:
         except Exception as exc:  # never block a launch on sound
             log.warning("audio output selection failed: %s", exc)
             return None
+
+    def list_audio_outputs(self) -> list[dict]:
+        active = self.settings.applied.get("audio.output", "auto")
+        fn = getattr(audio, "list_outputs", None)
+        if callable(fn):
+            display = self.presenter.display or {}
+            outputs = display.get("outputs") or []
+            driving = [o["connector"] for o in outputs if o.get("connector")] if outputs else None
+            try:
+                return list(fn(driving=driving, active_output=active))
+            except TypeError:
+                return list(fn())
+            except Exception as exc:
+                log.debug("list_outputs failed: %s", exc)
+        return [{"id": "auto", "kind": "auto", "label": "Automatic", "card_id": None,
+                 "device": None, "alsa": None, "available": True, "active": active == "auto"}]
+
+    async def sync_audio_output(self, output: str | None = None) -> bool:
+        out = await asyncio.to_thread(self.choose_audio_output, output)
+        await self.mixer.probe(out["card_id"] if out else None, (out or {}).get("mixer"), detect_switch=True)
+        if self.mixer.available:
+            await self.apply_engine.push_volume()
+            return True
+        return bool(out)
+
+    def _is_audio_muted(self) -> bool:
+        vol = self.settings.applied.get("audio.volume", 70)
+        return bool(getattr(self.laptop, "muted", False) or getattr(self.mixer, "muted", False) or int(vol if vol is not None else 70) <= 0)
+
+    async def play_startup_chime(self, machine=None) -> bool:
+        chime = self.settings.applied.get("audio.startup_chime", "auto")
+        muted = self._is_audio_muted()
+        if chime == "off" or muted:
+            return False
+        m = machine or self.supervisor.active_machine()
+        sup_fn = getattr(self.supervisor, "play_startup_chime", None)
+        if callable(sup_fn):
+            res = sup_fn(m)
+            return bool(await res if inspect.isawaitable(res) else res)
+        fn = getattr(audio, "play_startup_chime", None)
+        if not callable(fn):
+            return False
+        family = getattr(m, "family", POWERMAC) if m is not None else POWERMAC
+        out = await asyncio.to_thread(self.choose_audio_output)
+        return bool(await asyncio.to_thread(
+            fn, family=family, chime_setting=chime, output=self.settings.applied.get("audio.output", "auto"),
+            audio_out=out, volume=self.settings.applied.get("audio.volume", 70), muted=muted))
+
+    async def test_sound(self, output: str | None = None) -> dict:
+        target = output if output is not None else self.settings.desired.get("audio.output", "auto")
+        muted = self._is_audio_muted()
+        sup_fn = getattr(self.supervisor, "test_sound", None)
+        if callable(sup_fn):
+            res = sup_fn(target)
+            out = await res if inspect.isawaitable(res) else res
+        elif callable(getattr(audio, "test_sound", None)):
+            chosen = await asyncio.to_thread(self.choose_audio_output, target)
+            m = self.supervisor.active_machine()
+            out = await asyncio.to_thread(
+                audio.test_sound, target, audio_out=chosen,
+                chime_setting=self.settings.applied.get("audio.startup_chime", "auto"),
+                family=getattr(m, "family", POWERMAC) if m is not None else POWERMAC,
+                volume=self.settings.applied.get("audio.volume", 70), muted=muted)
+        else:
+            out = {"ok": False, "output": target, "device": None, "player": None,
+                   "error": "Audio test is not available."}
+        self.lifecycle.event("audio_test", output=target, ok=bool(out.get("ok")), error=out.get("error"))
+        return dict(out)
 
     def audio_capable(self) -> bool:
         snd = Path("/dev/snd")
@@ -556,7 +692,8 @@ class Hostd:
                                         media_cds=self.media.cd_choices(),
                                         display_mode=self.display_mode(),
                                         values=dict(self.settings.desired),
-                                        graphics=self.graphics.ui_context())
+                                        graphics=self.graphics.ui_context(),
+                                        audio_outputs={o["id"]: o["label"] for o in self.list_audio_outputs()})
 
     BOOT_LABELS = {"guest_start": "Mac OS launched", "qmp_connected": "Emulator ready",
                    "guest_content": "Mac OS startup screen", "guest_revealed": "Shown on the display",
@@ -595,6 +732,12 @@ class Hostd:
                 msg = "The emulator is not responding. Use Force Restart if Mac OS stays frozen."
             out.append({"id": "guest-unresponsive", "level": "warning", "message": msg,
                         "evidence": sup.unresponsive_evidence})
+        rec = getattr(self.supervisor, "corrupt_disk_recovery", None) or self.corrupt_disk_recovery
+        if rec:
+            out.append({"id": "corrupt-disk-recovery", "level": "error",
+                        "message": "Mac OS's disk could not be repaired automatically. Restore a checkpoint "
+                                   "or reset to Fresh Install before starting.",
+                        "recovery": rec})
         out += self.graphics.notices()
         out += self.updates.notices()
         return out
@@ -631,15 +774,16 @@ class Hostd:
         urls = [f"https://{mdns}/"] + [self.web.url_for(r["address"]) for r in records if r["family"] == "ipv4"]
         guest = sup.public()
         m = sup.machine or sup.active_machine()
+        applied = self.settings.applied
         guest.update(machine=guest.get("machine") or (m.id if m else None), machine_name=m.name if m else None,
                      system=m.meta.get("os_version") if m else None, content=sup.content_seen,
-                     family=m.family if m else None)
+                     family=m.family if m else None,
+                     cpu=m.cpu_label(applied.get("machine.cpu")) if m else None)
         timeline = sup.timeline()
         boot = {"started_at": sup.started_wall,
                 "events": [{"id": e["event"].replace("_", "-"), "label": self.BOOT_LABELS.get(e["event"], e["event"]),
                             "t_ms": int(e["t"] * 1000)} for e in timeline if e["t"] >= 0]}
         disp = dict(self.presenter.display or {})
-        applied = self.settings.applied
         disp["pixel_scale"] = applied["display.pixel_scale"]
         if disp.get("mode"):
             w, h = int(disp["mode"][0]), int(disp["mode"][1])
@@ -711,6 +855,8 @@ class Hostd:
             "remote": self.remote.public(),
             "update": self.updates.public(),
             "rotation": self.rotation.public(),
+            "printed_pdf": self.last_printed_pdf,
+            "corrupt_disk_recovery": getattr(self.supervisor, "corrupt_disk_recovery", None) or self.corrupt_disk_recovery,
             **({"pi_display": self.rpi_display.public()} if self.rpi_display.enabled else {}),
             "input": {k: v for k, v in (self.presenter.input or {}).items()
                       if k in ("touchscreens", "pens", "touch_devices", "touch_gestures")},
@@ -961,10 +1107,57 @@ class Hostd:
                     if rom:
                         self.lifecycle.event("rom_" + rom, machine=mid)
                 res = await self.supervisor.run_prep(m, "import")
+                rec_settings = (
+                    (entry.get("recommendedSettings") if spec["source"] == "catalog" and isinstance(entry, dict) else None)
+                    or ((m.meta.get("template") or {}).get("recommendedSettings")
+                        if isinstance(m.meta.get("template"), dict) else None)
+                )
+                try:
+                    ui_gfx = self.graphics.ui_context() or {}
+                    gl_avail = bool((ui_gfx.get("by_machine") or {}).get(m.id, ui_gfx).get("available"))
+                except Exception:
+                    gl_avail = bool(self.graphics.capable())
+                seeded = default_machine_settings(
+                    m, recommended_settings=rec_settings, host_ram_mb=self.platform.ram_mb,
+                    gl_available=gl_avail,
+                    quadra_max_mb=128 if self.platform.is_zero2w else None)
+                if seeded or rec_settings:
+                    m.update_meta(
+                        **({"settings": seeded} if seeded else {}),
+                        **({"recommended_settings": dict(rec_settings)} if rec_settings else {}))
+                if m.osx and not os.path.lexists(m.nvram):
+                    try:
+                        from . import osx as osx_mod
+                        await asyncio.to_thread(osx_mod.prepare, m, self.paths.qemu_osx_package)
+                    except Exception as exc:
+                        log.debug("deferring OS X NVRAM seed before Fresh Install checkpoint: %s", exc)
+                if m.state().get("clean", True):
+                    try:
+                        pkg_sum = self.package_for(m).summary().get("files")
+                    except Exception:
+                        pkg_sum = None
+                    try:
+                        cp = await self.checkpoints.create(
+                            m, "Fresh Install", dict(self.settings.applied), self.settings.revision,
+                            pkg_sum, kind="fresh-install")
+                        self.lifecycle.event("checkpoint_created", machine=mid, checkpoint=cp["id"],
+                                             label=cp["label"], method=cp["method"], kind="fresh-install",
+                                             origin=origin, automatic=True)
+                    except Exception as exc:
+                        log.warning("automatic Fresh Install checkpoint failed for %s: %s", mid, exc)
                 if not self.settings.applied.get("machine.active") or \
                         self.machines.get(self.settings.applied.get("machine.active")) is None:
-                    self.settings.set_desired_and_applied({"machine.active": mid}, self.validation_context())
-                    await self.apply_engine.apply_restart_keys(["machine.active"])
+                    first_patch: dict = {"machine.active": mid}
+                    if seeded.get("osx_ram_mb") is not None:
+                        first_patch["machine.osx_ram_mb"] = seeded["osx_ram_mb"]
+                    elif seeded.get("ram_mb") is not None:
+                        first_patch["machine.quadra_ram_mb" if m.quadra else "machine.ram_mb"] = seeded["ram_mb"]
+                    if seeded.get("graphics") == "ati-radeon" and gl_avail:
+                        first_patch["display.graphics"] = "ati-radeon"
+                    elif seeded.get("graphics") in ("vga", "standard"):
+                        first_patch["display.graphics"] = "standard"
+                    self.settings.set_desired_and_applied(first_patch, self.validation_context())
+                    await self.apply_engine.apply_restart_keys(list(first_patch))
                 self.lifecycle.event("machine_imported", machine=mid, kind=source.get("type"), origin=origin)
                 job.update(1.0, f"{m.name} is installed.")
                 result = {"machine": mid, "prep": res.get("result")}
@@ -1166,6 +1359,98 @@ class Hostd:
             return result
         return self.jobs.start("media.install", body, resources=("guest",), params={"media": name})
 
+    def machine_settings(self, machine_id: str) -> dict:
+        m = self.machines.get(machine_id)
+        if m is None:
+            raise MachineError("That machine is not installed.")
+        base = default_machine_settings(
+            m, host_ram_mb=self.platform.ram_mb, gl_available=self.graphics.capable(),
+            quadra_max_mb=128 if self.platform.is_zero2w else None)
+        merged = {**base, **m.settings()}
+        if self.settings.desired.get("machine.active") == m.id and not m.settings():
+            a = self.settings.desired
+            if m.osx and isinstance(a.get("machine.osx_ram_mb"), int):
+                merged["osx_ram_mb"] = a["machine.osx_ram_mb"]
+            elif not m.osx:
+                k = "machine.quadra_ram_mb" if m.quadra else "machine.ram_mb"
+                if isinstance(a.get(k), int):
+                    merged["ram_mb"] = a[k]
+            if a.get("display.graphics") in ("vga", "ati-radeon"):
+                merged["graphics"] = a["display.graphics"]
+        return merged
+
+    async def update_machine_settings(self, machine_id: str, changes: dict, *, origin: str = "web") -> dict:
+        m = self.machines.get(machine_id)
+        if m is None:
+            raise MachineError("That machine is not installed.")
+        updated = validate_machine_settings(
+            m, changes, host_ram_mb=self.platform.ram_mb,
+            quadra_max_mb=128 if self.platform.is_zero2w else None,
+            gl_available=self.graphics.capable())
+        m.update_meta(settings=updated)
+        self.lifecycle.event("machine_settings_updated", machine=machine_id, settings=updated, origin=origin)
+        if self.settings.desired.get("machine.active") == m.id:
+            sync: dict = {}
+            if "osx_ram_mb" in changes or (m.osx and "ram_mb" in changes):
+                sync["machine.osx_ram_mb"] = updated["osx_ram_mb"]
+            elif "ram_mb" in changes:
+                sync["machine.quadra_ram_mb" if m.quadra else "machine.ram_mb"] = updated["ram_mb"]
+            if "graphics" in changes:
+                sync["display.graphics"] = "standard" if updated["graphics"] == "vga" else updated["graphics"]
+            if "guest_adapter" in changes and not m.osx and not m.quadra:
+                sync["network.guest_adapter"] = updated["guest_adapter"]
+            if "cpu" in changes and not m.osx and not m.quadra:
+                sync["machine.cpu"] = updated["cpu"]
+            if sync:
+                ctx = self.validation_context()
+                if not self.supervisor.active:
+                    self.settings.set_desired_and_applied(sync, ctx)
+                    await self.apply_engine.apply_restart_keys(list(sync))
+                else:
+                    rev = self.settings.patch(self.settings.revision, sync, ctx)
+                    await self.apply_engine.apply(rev, False, None, origin)
+        return self.machine_settings(machine_id)
+
+    def latest_clean_checkpoint(self, machine_id: str) -> dict | None:
+        cps = self.checkpoints.list(machine_id)
+        for c in cps:
+            if c.get("kind") != "pre-fsck" and not str(c.get("label") or "").lower().startswith("pre-repair"):
+                return c
+        return cps[0] if cps else None
+
+    def fresh_install_checkpoint(self, machine_id: str) -> dict | None:
+        cps = self.checkpoints.list(machine_id)
+        for c in cps:
+            if c.get("kind") == "fresh-install" or c.get("label") == "Fresh Install":
+                return c
+        return None
+
+    def on_corrupt_disk_recovery(self, info: dict) -> None:
+        self.corrupt_disk_recovery = dict(info or {})
+        fn = getattr(self.panel, "show_corrupt_disk_recovery", None)
+        if callable(fn) and self.loop is not None and not self.loop.is_closed():
+            self.loop.create_task(self._deliver_corrupt_recovery(fn, dict(self.corrupt_disk_recovery)))
+
+    async def _deliver_corrupt_recovery(self, fn, info: dict) -> None:
+        try:
+            res = fn(info)
+            if inspect.isawaitable(res):
+                await res
+        except Exception:
+            log.exception("panel corrupt_disk_recovery presentation failed")
+
+    def restore_last_clean_checkpoint_job(self, machine_id: str, origin: str = "panel") -> Job:
+        cp = self.latest_clean_checkpoint(machine_id)
+        if cp is None:
+            raise CheckpointError("No clean checkpoint is available for this Mac.", "not_found")
+        return self.restore_job(machine_id, cp["id"], origin=origin)
+
+    def reset_to_fresh_install_job(self, machine_id: str, origin: str = "panel") -> Job:
+        cp = self.fresh_install_checkpoint(machine_id)
+        if cp is None:
+            raise CheckpointError("No Fresh Install checkpoint is available for this Mac.", "not_found")
+        return self.restore_job(machine_id, cp["id"], origin=origin)
+
     def restore_job(self, machine_id: str, cp_id: str, origin: str = "web") -> Job:
         async def body(job: Job):
             m = self.machines.get(machine_id)
@@ -1181,6 +1466,15 @@ class Hostd:
                 info = await self.checkpoints.restore(m, cp_id)
             except CheckpointError as e:
                 raise JobFailed(e.message, None, e.code)
+            rec = self.corrupt_disk_recovery
+            if rec and machine_id in (rec.get("machine"), rec.get("machine_id")):
+                self.corrupt_disk_recovery = None
+            sup_rec = getattr(sup, "corrupt_disk_recovery", None)
+            if sup_rec and machine_id in (sup_rec.get("machine"), sup_rec.get("machine_id")):
+                try:
+                    sup.corrupt_disk_recovery = None
+                except Exception:
+                    pass
             self.lifecycle.event("checkpoint_restored", machine=machine_id, checkpoint=cp_id, method=info["method"],
                                  origin=origin)
             if uses or (not sup.active and self.settings.applied.get("machine.active") == machine_id
@@ -1336,7 +1630,7 @@ class Hostd:
         self._bluetooth_task = self.loop.create_task(self.bluetooth.start(), name="bluetooth-start")
         out = await audio_out
         await self.mixer.probe(out["card_id"] if out else None, (out or {}).get("mixer"),
-                               detect_switch=self.platform.is_raspberry_pi or self.platform.is_gemini)
+                               detect_switch=True)
         if self.mixer.available:
             await self.apply_engine.push_volume()
         self._launch_ready.set()
@@ -1388,6 +1682,9 @@ class Hostd:
             await self.web.start()
             if self.cfg.allow_network_tools:
                 await self.mdns.start()
+            if self.mode == "normal" and self.cfg.allow_network_tools:
+                await self.printer.start()
+                await self.usbshare.start()
             self.lifecycle.event("hostd_services_started")
         except asyncio.CancelledError:
             raise
@@ -1459,6 +1756,8 @@ class Hostd:
         await self.lidsleep.stop()
         self.cpuplace.guest_stopped(restore=self.supervisor.handle is None)
         await self.rotation.stop()
+        await self.printer.stop()
+        await self.usbshare.stop()
         await self.mdns.stop()
         await self.remote.close()
         await self.presenter.stop()

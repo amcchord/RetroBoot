@@ -214,5 +214,19 @@ int main(void)
         tiny[i] = 0x00a0a0a0;
     CHECK_EQ(rb_content_inspect(&c, tiny, 16, 8, 16, 1000), RB_CONTENT_NONE);
     CHECK_EQ(rb_content_inspect(&c, tiny, 16, 8, 16, 1060), RB_CONTENT_GRAY);
+
+    /* OS X BootX (#bfbfbf + Apple logo) vs Aqua desktop / menu bar transition (#20). */
+    solid(0);
+    CHECK(!rb_content_is_osx_desktop(frame, W, H, W));
+    solid(0x00bfbfbfu);
+    rect(296, 210, 48, 60, 0x00666666u);
+    CHECK(!rb_content_is_osx_desktop(frame, W, H, W));
+    /* Aqua blue desktop: detected at once. */
+    solid(0x00336699u);
+    CHECK(rb_content_is_osx_desktop(frame, W, H, W));
+    /* Gray wallpaper + white 22-px Aqua menu bar: detected via menu bar contrast. */
+    solid(0x00c0c0c0u);
+    rect(0, 0, W, 22, 0x00f4f4f4u);
+    CHECK(rb_content_is_osx_desktop(frame, W, H, W));
     TEST_DONE();
 }

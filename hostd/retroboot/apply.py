@@ -32,7 +32,8 @@ DISPLAY_KEYS = ("display.pixel_scale", "display.guest_size", "display.scaling", 
 # What GRUB's background (rb-bootdisplay) depends on: the grid, the orientation and the startup indicator.
 BOOT_DISPLAY_KEYS = ("display.pixel_scale", "display.guest_size", "display.rotation", "startup.progress_indicator")
 INPUT_KEYS = ("input.swap_command_option", "input.recovery_chord", "input.pointer_speed",
-              "input.mouse_dpi", "input.touch_gestures")
+              "input.mouse_dpi", "input.touch_gestures", "input.gamepad_mode", "input.natural_scroll")
+SET_CONFIG_KEYS = ("input.gamepad_mode", "input.natural_scroll")
 
 
 class ApplyEngine:
@@ -81,15 +82,32 @@ class ApplyEngine:
     async def push_input(self) -> bool:
         return await self.app.presenter.try_request("input_config", **self.input_config()) is not None
 
+    def set_config_payload(self) -> dict:
+        a = self.settings.applied
+        return {
+            "gamepad_mode": a.get("input.gamepad_mode", "arrows"),
+            "natural_scroll": bool(a.get("input.natural_scroll", False)),
+        }
+
+    async def push_set_config(self) -> bool:
+        return await self.app.presenter.try_request("set_config", **self.set_config_payload()) is not None
+
     async def push_presenter(self) -> None:
         # The startup indicator's config first: a display change below re-enters
         # the checkerboard, which is when the presenter takes it.
         await self.app.startup.push_config()
         await self.push_display()
         await self.push_input()
+        await self.push_set_config()
 
     async def push_volume(self) -> bool:
         return await self.app.mixer.set_volume(self.settings.applied["audio.volume"])
+
+    async def sync_audio_output(self, output: str | None = None) -> bool:
+        fn = getattr(self.app, "sync_audio_output", None)
+        if fn is None:
+            return False
+        return bool(await fn(output))
 
     async def apply_live_keys(self, keys: list[str]) -> dict:
         results = {}
@@ -105,8 +123,16 @@ class ApplyEngine:
                                                                               if k in BOOT_DISPLAY_KEYS))
         if any(k in INPUT_KEYS for k in keys):
             results["input"] = await self.push_input()
+            if any(k in SET_CONFIG_KEYS for k in keys):
+                results["set_config"] = await self.push_set_config()
         if "audio.volume" in keys:
             results["volume"] = await self.push_volume()
+        if "audio.startup_chime" in keys:
+            results["startup_chime"] = self.settings.applied.get("audio.startup_chime", "auto")
+        if "printer.enabled" in keys and getattr(self.app, "printer", None) is not None:
+            results["printer"] = await self.app.printer.sync()
+        if "usb_share.enabled" in keys and getattr(self.app, "usbshare", None) is not None:
+            results["usb_share"] = await self.app.usbshare.sync()
         if "management.web" in keys:
             await self.app.web.sync_listeners()
             results["web"] = self.settings.applied["management.web"]
@@ -181,6 +207,8 @@ class ApplyEngine:
             # follow the card now (a restart re-syncs in the launch hook instead, so a
             # running Mac OS is never resized on its way down).
             await self.app.graphics.sync_startup()
+        if "audio.output" in keys:
+            await self.sync_audio_output()
 
     async def apply_pending_restart(self, reason: str) -> list[str]:
         """Restart-class changes waiting for Mac OS to restart (the startup Mac chosen
@@ -241,6 +269,8 @@ class ApplyEngine:
                 # the next cold boot belongs to the selected Mac. Persist its
                 # preboot style now so a host restart cannot flash the old one.
                 await self.update_boot_display(why="startup Mac choice")
+            if "audio.output" in restart_keys and sup.active and not restart:
+                await self.sync_audio_output(self.settings.desired.get("audio.output", "auto"))
             if not sup.active:
                 self.settings.mark_applied(restart_keys)
                 result["applied"] += restart_keys

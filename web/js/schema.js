@@ -14,6 +14,8 @@ export const GROUPS = {
   audio: { page: 'sound', label: 'Sound' },
   catalog: { page: 'storage', label: 'Image Servers' },
   share: { page: 'storage', label: 'Shared Volume' },
+  printer: { page: 'storage', label: 'Shared Volume' },
+  usb_share: { page: 'storage', label: 'Shared Volume' },
   media: { page: 'storage', label: 'CD-ROM' },
   bluetooth: { page: 'network', label: 'Bluetooth' },
   network: { page: 'network', label: 'Mac OS Networking' },

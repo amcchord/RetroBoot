@@ -229,6 +229,9 @@ def load(path: str | os.PathLike | None) -> LabAuth | None:
             log.warning("lab_http_auth_file %s must be mode 0600; lab HTTP auth is off", p)
             return None
         text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        log.debug("lab_http_auth_file %s is absent; lab HTTP auth is off", p)
+        return None
     except OSError as e:
         log.warning("lab_http_auth_file %s can't be read (%s); lab HTTP auth is off", p, e.strerror or type(e).__name__)
         return None

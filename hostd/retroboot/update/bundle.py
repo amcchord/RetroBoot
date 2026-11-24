@@ -275,6 +275,10 @@ def compatibility(manifest: dict, installed: dict, settings_schema: int, *, allo
     if manifest["flavor"] != installed.get("flavor") and not allow_flavor:
         raise BundleError("This update is for a different kind of RetroBoot "
                           f"({manifest['flavor']}, this one is {installed.get('flavor')}).", "wrong-flavor")
+    if manifest.get("arch") and installed.get("arch") and manifest["arch"] != installed["arch"]:
+        raise BundleError("This update is for a different kind of computer.", "wrong-arch")
+    if manifest.get("board") and installed.get("board") and manifest["board"] != installed["board"]:
+        raise BundleError("This update is for a different kind of computer.", "wrong-board")
     new, cur = version_key(manifest["version"], manifest["build_id"]), version_key(cur_v, cur_b)
     if manifest["build_id"] == cur_b and not allow_same:
         raise BundleError(f"RetroBoot {describe_version(cur_v, cur_b)} is already installed.", "same-version")

@@ -49,8 +49,8 @@ core_dep = declare_dependency(link_with : core_lib, include_directories : src_in
   dependencies : [libdrm, libudev, libm])
 
 app_lib = static_library('rbapp',
-  'src/content.c', 'src/switchhold.c', 'src/keymap.c', 'src/gemkbd.c', 'src/guest.c', 'src/ctl.c', 'src/input.c',
-  'src/proto.c', 'src/pointer.c', 'src/sample.c',
+  'src/content.c', 'src/switchhold.c', 'src/keymap.c', 'src/gemkbd.c', 'src/gamepad.c', 'src/guest.c',
+  'src/ctl.c', 'src/input.c', 'src/proto.c', 'src/pointer.c', 'src/sample.c',
   'src/png.c', 'src/remote.c', 'src/badge.c', 'src/osd.c', 'src/touch.c', 'src/presenter.c',
   dependencies : [core_dep, ui_dep, libinput, xkbcommon, libm])
 app_dep = declare_dependency(link_with : app_lib,
@@ -97,7 +97,7 @@ install_data('packaging/initramfs/scripts/init-bottom/retroboot-bootdiag',
 
 foreach t : ['test_scale', 'test_content', 'test_keymap', 'test_proto', 'test_bootfb', 'test_xform', 'test_startup', 'test_remote', 'test_osd', 'test_anchor',
            'test_touch', 'test_splash_policy', 'test_framelog', 'test_switchhold', 'test_drm_select', 'test_damage', 'test_gemkbd',
-           'test_isplash', 'test_diagview', 'test_pointer', 'test_sample']
+           'test_isplash', 'test_diagview', 'test_pointer', 'test_sample', 'test_gamepad']
   test(t, executable(t, 'tests/' + t + '.c', dependencies : app_dep, include_directories : src_inc),
        suite : 'presenter')
 endforeach

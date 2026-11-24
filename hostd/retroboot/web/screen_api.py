@@ -114,4 +114,5 @@ def register(server: "WebServer", r: web.UrlDispatcher) -> None:
         return ws
 
     r.add_get("/api/v1/screen/stream", stream)
+    r.add_get("/api/v1/screen/ws", stream)
     r.add_get("/api/v1/screen/viewers", viewers)

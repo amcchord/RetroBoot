@@ -258,10 +258,16 @@ slider_parts slider_geom(const rbui *ui, const rb_node *n)
     int x = n->r.x, y = n->r.y;
     s.label_x = x;
     int lw = n->text && n->text[0] ? tx_width(ui->f_sys, 1, n->text, strlen(n->text)) : 0;
+    int tw = n->width_hint > 0 ? n->width_hint : SLIDER_TRACK_W;
+    if (n->r.w > 0 && lw > 0) {
+        int rest = (n->icon >= 0 ? 16 + 6 : 0) + tw + (n->icon2 >= 0 ? 7 + 16 : 0);
+        int maxlw = n->r.w - rest - 9;
+        if (maxlw < 0) maxlw = 0;
+        if (lw > maxlw) lw = maxlw;
+    }
     int at = lw ? x + lw + 9 : x;
     s.lo_x = n->icon >= 0 ? at : -1;
     if (n->icon >= 0) at += 16 + 6;
-    int tw = n->width_hint > 0 ? n->width_hint : SLIDER_TRACK_W;
     s.track = rr(at, y + 4, tw, 7);
     s.hi_x = n->icon2 >= 0 ? at + tw + 7 : -1;
     double f = (n->val - n->vmin) / (n->vmax - n->vmin);
@@ -380,24 +386,87 @@ static int lay_stack(rbui *ui, rb_node **kids, int nkids, int x, int y, int w)
 
 static int lay_buttons(rbui *ui, rb_node *n, int x, int y, int w)
 {
-    int right = x + w, left = x;
-    /* Left-aligned buttons from the left edge, the rest right-aligned. */
+    int left_w = 0, right_w = 0, nleft = 0, nright = 0;
     for (int i = 0; i < n->nkids; ++i) {
-        rb_node *b = n->kids[i];
-        if (b->align != AL_LEFT) continue;
-        int bw = button_width(ui, b);
-        b->r = b->ctl = rr(left, y, bw, RB_BUTTON_H);
-        left += bw + BUTTON_GAP;
+        int bw = button_width(ui, n->kids[i]);
+        if (n->kids[i]->align == AL_LEFT) {
+            left_w += (nleft ? BUTTON_GAP : 0) + bw;
+            nleft++;
+        } else {
+            right_w += (nright ? BUTTON_GAP : 0) + bw;
+            nright++;
+        }
     }
-    for (int i = n->nkids - 1; i >= 0; --i) {
-        rb_node *b = n->kids[i];
-        if (b->align == AL_LEFT) continue;
-        int bw = button_width(ui, b);
-        right -= bw;
-        b->r = b->ctl = rr(right, y, bw, RB_BUTTON_H);
-        right -= BUTTON_GAP;
+    int need = left_w + (nleft && nright ? BUTTON_GAP : 0) + right_w;
+    if (need <= w) {
+        int right = x + w, left = x;
+        /* Left-aligned buttons from the left edge, the rest right-aligned. */
+        for (int i = 0; i < n->nkids; ++i) {
+            rb_node *b = n->kids[i];
+            if (b->align != AL_LEFT) continue;
+            int bw = button_width(ui, b);
+            b->r = b->ctl = rr(left, y, bw, RB_BUTTON_H);
+            left += bw + BUTTON_GAP;
+        }
+        for (int i = n->nkids - 1; i >= 0; --i) {
+            rb_node *b = n->kids[i];
+            if (b->align == AL_LEFT) continue;
+            int bw = button_width(ui, b);
+            right -= bw;
+            b->r = b->ctl = rr(right, y, bw, RB_BUTTON_H);
+            right -= BUTTON_GAP;
+        }
+        return RB_BUTTON_H;
     }
-    return RB_BUTTON_H;
+    /* Narrow screen fallback: wrap left and right button groups cleanly across rows. */
+    int cy = y, row_gap = 8;
+    if (nleft > 0) {
+        int cx = x, row_cnt = 0;
+        for (int i = 0; i < n->nkids; ++i) {
+            rb_node *b = n->kids[i];
+            if (b->align != AL_LEFT) continue;
+            int bw = button_width(ui, b);
+            if (row_cnt > 0 && cx + bw > x + w) {
+                cy += RB_BUTTON_H + row_gap;
+                cx = x;
+                row_cnt = 0;
+            }
+            b->r = b->ctl = rr(cx, cy, bw, RB_BUTTON_H);
+            cx += bw + BUTTON_GAP;
+            row_cnt++;
+        }
+        if (nright > 0) cy += RB_BUTTON_H + row_gap;
+    }
+    if (nright > 0) {
+        int i = 0;
+        while (i < n->nkids) {
+            while (i < n->nkids && n->kids[i]->align == AL_LEFT) i++;
+            if (i >= n->nkids) break;
+            int row_end = i, rw = 0, cnt = 0;
+            for (int j = i; j < n->nkids; ++j) {
+                if (n->kids[j]->align == AL_LEFT) continue;
+                int bw = button_width(ui, n->kids[j]);
+                int add = (cnt ? BUTTON_GAP : 0) + bw;
+                if (cnt > 0 && rw + add > w) break;
+                rw += add;
+                row_end = j + 1;
+                cnt++;
+            }
+            int cx = rw < w ? x + w - rw : x;
+            for (int j = i; j < row_end; ++j) {
+                if (n->kids[j]->align == AL_LEFT) continue;
+                int bw = button_width(ui, n->kids[j]);
+                n->kids[j]->r = n->kids[j]->ctl = rr(cx, cy, bw, RB_BUTTON_H);
+                cx += bw + BUTTON_GAP;
+            }
+            i = row_end;
+            int more = 0;
+            for (int j = i; j < n->nkids; ++j)
+                if (n->kids[j]->align != AL_LEFT) { more = 1; break; }
+            if (more) cy += RB_BUTTON_H + row_gap;
+        }
+    }
+    return cy + RB_BUTTON_H - y;
 }
 
 static int lay_columns(rbui *ui, rb_node *n, int x, int y, int w)
@@ -613,7 +682,8 @@ void layout_doc(rbui *ui)
         tx = RB_MARGIN + 2 + 32 + ALERT_ICON_GAP;
         tw = cw - tx - RB_MARGIN;
     }
-    int pinned_h = ui->pinned ? 16 + RB_BUTTON_H : 0;
+    int buttons_h = ui->pinned ? lay_buttons(ui, ui->pinned, 0, 0, cw - 2 * RB_MARGIN) : 0;
+    int pinned_h = ui->pinned ? 16 + buttons_h : 0;
     int band_h = ui->pinned_band ? ui->pinned_band->height_hint + (ui->pinned ? 0 : RB_MARGIN) : 0;
 
     /* First pass at full width to measure. */
@@ -637,7 +707,8 @@ void layout_doc(rbui *ui)
     ui->content = pt_window_content(ui->frame, titled);
     rb_rect c = ui->content;
 
-    int view_bottom = c.y + c.h - (ui->pinned ? RB_MARGIN + RB_BUTTON_H + (ui->scrollable ? 12 : 16) : 0) - band_h;
+    int gap_above_buttons = (ui->scrollable && !ui->pinned_band) ? 12 : 16;
+    int view_bottom = c.y + c.h - (ui->pinned ? RB_MARGIN + buttons_h + gap_above_buttons : 0) - band_h;
     ui->view = rr(c.x, c.y, c.w, view_bottom - c.y);
     if (!ui->scrollable) ui->view = c;
 
@@ -657,14 +728,14 @@ void layout_doc(rbui *ui)
     node_walk(root, mark_fn, &in);
     root->scrolled = 0;
     if (ui->pinned) {
-        int by = c.y + c.h - RB_MARGIN - RB_BUTTON_H;
+        int by = c.y + c.h - RB_MARGIN - buttons_h;
         int bx = c.x + RB_MARGIN, bw = c.w - 2 * RB_MARGIN;
         lay(ui, ui->pinned, bx, by, bw);
         node_walk(ui->pinned, mark_fn, &out);
     }
     if (ui->pinned_band) {
         /* Sound's Main Volume: across the window's bottom, just above the buttons (or its edge). */
-        int by = ui->pinned ? c.y + c.h - RB_MARGIN - RB_BUTTON_H - 16 - ui->pinned_band->height_hint
+        int by = ui->pinned ? c.y + c.h - RB_MARGIN - buttons_h - 16 - ui->pinned_band->height_hint
                             : c.y + c.h - ui->pinned_band->height_hint;
         lay(ui, ui->pinned_band, c.x + RB_MARGIN, by, c.w - 2 * RB_MARGIN);
         node_walk(ui->pinned_band, mark_fn, &out);

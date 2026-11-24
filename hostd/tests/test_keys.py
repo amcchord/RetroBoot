@@ -205,7 +205,7 @@ def test_mac_os_up_without_a_recognized_finder(tmp_path):
     assert presses(app) != []
 
 
-def test_click_only_while_mac_os_is_not_running(tmp_path, monkeypatch):
+def test_click_while_stopped_or_panel_open(tmp_path, monkeypatch):
     spawned = []
     monkeypatch.setattr(K.subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
     app, k = make(tmp_path, running=False)
@@ -213,8 +213,14 @@ def test_click_only_while_mac_os_is_not_running(tmp_path, monkeypatch):
     assert spawned and spawned[0][:4] == ["aplay", "-q", "-D", "plughw:CARD=PCH,DEV=0"]
     assert Path(spawned[0][-1]).read_bytes()[:4] == b"RIFF"
     spawned.clear()
-    app2, k2 = make(tmp_path / "b", panel=True)       # the panel over a running Mac OS: QEMU has the device
+    # Local panel open over running Mac OS: key-click audio feedback is enabled (#41).
+    app2, k2 = make(tmp_path / "b", panel=True)
     run(k2.on_host_key("volume_down"))
+    assert spawned and spawned[0][:4] == ["aplay", "-q", "-D", "plughw:CARD=PCH,DEV=0"]
+    spawned.clear()
+    # Running Mac OS without panel (e.g. QMP error / starting): no host click.
+    app3, k3 = make(tmp_path / "c", finder=False)
+    run(k3.on_host_key("volume_down"))
     assert spawned == []
 
 

@@ -20,7 +20,7 @@ The device lists images its installed emulator can start. Add your own HTTPS cat
 
 - **Standard** provides the base OS with the drivers and tools selected for that RetroBoot release.
 - **Deluxe** adds applications, games and utilities. The available titles depend on the OS version.
-- **SuperDeluxe** and **Mega Deluxe** are larger Mac OS 9.2.2 collections. Mega Deluxe v4 includes 111 games and creative activities in Launcher and ACTION GoMac.
+- **SuperDeluxe** and **Mega Deluxe** are larger Mac OS 9.2.2 collections. Mega Deluxe v4 includes Kid Pix Studio Deluxe, Logical Journey of the Zoombinis, Oregon Trail, SimCity, and 111 classic games and creative activities in Launcher and ACTION GoMac, now packaged in both `.thin.tar.gz` (`retroboot-thin-1`) and `.classic.tar.gz` formats.
 - **Period Edition** adds period software to Jaguar, Panther or Tiger. Tiger Deluxe includes Quake III Arena and iLife ’06. Set **Mac OS X memory** to 2048 MB and select **ATI Radeon** for the Tiger Deluxe setup. Allow 21.2 GB of free space to download and install it.
 
 Downloading another edition creates a new Mac. Choose **Not Now** to keep the current Mac running, or **Restart** to start the new Mac now. You can also select it later in **Startup Disk**.

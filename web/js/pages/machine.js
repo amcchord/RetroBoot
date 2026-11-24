@@ -22,10 +22,12 @@ function summary() {
   const osxRam = m.applied['machine.osx_ram_mb'];
   const ram = osx && osxRam != null && osxRam !== 'auto' ? osxRam : m.applied['machine.ram_mb'];
   const memory = ['Memory', `${ram} MB`];
+  const cpuLabel = g.cpu || g.cpu_label || appliedMachine?.cpu_label;
   const rows = fam === 'quadra800'
-    ? [['Computer', FAMILY_TEXT.quadra800.machine], ['Processor', FAMILY_TEXT.quadra800.cpu], row('machine.quadra_ram_mb')]
-    : osx ? [memory, ['Processor', 'PowerPC G4 (7400)']]
-      : [memory, row('machine.cpu'), row('machine.boot_speed')];
+    ? [['Computer', FAMILY_TEXT.quadra800.machine], ['Processor', cpuLabel || FAMILY_TEXT.quadra800.cpu], row('machine.quadra_ram_mb')]
+    : osx
+      ? [memory, cpuLabel ? ['Processor', cpuLabel] : row('machine.cpu')].filter(Boolean)
+      : [memory, cpuLabel ? ['Processor', cpuLabel] : row('machine.cpu'), row('machine.boot_speed')].filter(Boolean);
   return [
     kv([
       ['Running now', g.machine_name || g.system || formatValue(m.defs.get('machine.active'), m.applied['machine.active'])],

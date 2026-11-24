@@ -405,7 +405,15 @@ class Laptop:
                 except Exception:
                     log.exception("volume setting update failed")
                     return None
-                await self.app.apply_engine.push_volume()
+                if not self.muted:
+                    await self.app.apply_engine.push_volume()
+                else:
+                    mixer = getattr(self.app, "mixer", None)
+                    if mixer is not None:
+                        mixer.last_percent = new
+                        if getattr(mixer, "available", False) and getattr(mixer, "control", None) and \
+                                getattr(mixer, "has_switch", True) and hasattr(mixer, "set_volume"):
+                            await mixer.set_volume(new, unmute=False)
             if not repeat:
                 self.app.lifecycle.event("volume", key=key, percent=new)
             return {"kind": "volume", "level": new / 100.0, "muted": self.muted}

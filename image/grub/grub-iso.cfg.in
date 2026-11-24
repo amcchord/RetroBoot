@@ -16,6 +16,11 @@ terminal_output gfxterm
 if [ "$rb_startup_style" = macosx ]; then
 	background_color "#c0c0c0"
 else
+	if [ "$rb_checker" = "/boot/grub/retroboot/checker-default.png" ]; then
+		if regexp '^(640|720|800|1024|1152|1280|1360|1366)x' "$gfxmode"; then
+			set rb_checker=/boot/grub/retroboot/checker-default-s1.png
+		fi
+	fi
 	background_image -m normal "$rb_checker"
 fi
 echo -n " "

@@ -108,6 +108,13 @@ struct rb_startup_geom {
  * (0 = auto; it limits the guest factor exactly as the guest layout does) and
  * the guest target (0,0 = the 4.5 auto size). The indicator is the Happy Mac
  * at the guest's scale: a DPI-scaled checkerboard does not change it. */
+/* Indicator scale for the Happy Mac during startup: doubles crisp 1x icons on
+ * large >= 1280 displays (and shrinks cleanly at landing) so it stays visible. */
+static inline int rb_startup_boot_q(int W, int H, int k)
+{
+    return (k == 1 && (W >= 1280 || H >= 1280) && W >= 720 && H >= 720) ? 2 : k;
+}
+/* Compute g->k, landing (where Mac OS draws) and the indicator's own rect. */
 void rb_startup_geometry(struct rb_startup_geom *g, int W, int H, int s, int pixel_req, int guest_w, int guest_h);
 /* The checkerboard's anchor for this layout (checker.h): black at Mac OS's
  * pixel (0, 0), so on a built-in LCD the pattern is Mac OS's own startup

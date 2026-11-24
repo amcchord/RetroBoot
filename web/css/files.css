@@ -11,12 +11,7 @@
 
 .page-files {
   position: relative;
-  --fl-cols: minmax(0, 1fr) 168px 56px 132px 15px;
-}
-
-@container page (max-width: 620px) {
-  .page-files { --fl-cols: minmax(0, 1fr) 0 56px 0 15px; }
-  .page-files .fl-modified, .page-files .fl-kind { visibility: hidden; overflow: hidden; padding: 0 !important; }
+  min-width: 0;
 }
 
 /* ---- Toolbar ------------------------------------------------------------------------- */
@@ -27,17 +22,25 @@
   gap: 6px 10px;
   align-items: center;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .files-path {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
   min-width: 0;
+  max-width: 100%;
+}
+
+.files-path .select-wrap {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .files-path select {
-  max-width: 220px;
+  max-width: min(220px, 100%);
 }
 
 .files-buttons {
@@ -45,6 +48,8 @@
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .files-sep {
@@ -77,10 +82,26 @@
 
 .files-list-wrap {
   position: relative;
+  min-width: 0;
   min-height: 120px;
+  --fl-cols: minmax(0, 1fr) 168px 56px 132px 15px;
+}
+
+@container page (max-width: 620px) {
+  .files-list-wrap { --fl-cols: minmax(0, 1fr) 56px 15px; }
+  .files-list-wrap .fl-modified,
+  .files-list-wrap .fl-kind { display: none; }
+}
+
+@media (max-width: 619px) {
+  .files-list-wrap { --fl-cols: minmax(0, 1fr) 56px 15px; }
+  .files-list-wrap .fl-modified,
+  .files-list-wrap .fl-kind { display: none; }
 }
 
 .finder-list {
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid #000;
   background: #eee;
   font: 10px/13px var(--small);
@@ -365,3 +386,115 @@
 .copy-cancel { grid-area: cancel; }
 .copy-item.is-failed .copy-status { color: #a00; }
 .copy-item.is-done .copy-status { color: #000; }
+
+/* ---- USB Drives & Preview Lightbox & Move Targets ------------------------------------- */
+
+.files-usb:empty {
+  display: none;
+}
+
+.usb-drives {
+  display: grid;
+  gap: 6px;
+}
+
+.usb-drive {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding: 6px 8px;
+  background: var(--pane);
+  border: 1px solid #000;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #999;
+}
+
+.usb-drive-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.usb-drive-meta {
+  min-width: 0;
+}
+
+.usb-drive-meta strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usb-drive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.fl-row.is-move-target,
+.files-path .btn.is-move-target {
+  outline: 2px solid var(--pt-ramp-4);
+  outline-offset: -2px;
+  background: var(--pt-highlight);
+}
+
+.preview-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.preview-meta {
+  font: 10px/13px var(--small);
+  color: var(--ink-2);
+}
+
+.preview-frame {
+  display: grid;
+  place-items: center;
+  max-height: min(65vh, 520px);
+  overflow: auto;
+  padding: 8px;
+  background: #fff;
+  border-style: solid;
+  border-width: 2px;
+  border-color: #888 #fff #fff #888;
+  border-image: var(--pt-field) 2;
+}
+
+.preview-img {
+  display: block;
+  max-width: 100%;
+  max-height: min(60vh, 490px);
+  width: auto;
+  height: auto;
+  image-rendering: auto;
+}
+
+.preview-pdf {
+  display: block;
+  width: min(720px, 78vw);
+  max-width: 100%;
+  height: min(62vh, 500px);
+  border: 0;
+  background: #fff;
+}
+
+.preview-text {
+  width: 100%;
+  max-width: min(680px, 78vw);
+  max-height: min(60vh, 480px);
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #fff;
+  font: 11px/15px var(--mono);
+  font-palette: --rb-on-white;
+}

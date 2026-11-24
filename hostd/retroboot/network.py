@@ -429,61 +429,93 @@ def is_ip(host: str) -> bool:
         return False
 
 
+_SCONTROL_RE = re.compile(r"^Simple mixer control '([^']+)',(\d+)\s*$", re.M)
+_CAPABILITIES_RE = re.compile(r"^\s*Capabilities:\s*(.*)$", re.M)
+
+
 class AudioMixer:
     """amixer adapter for the live audio.volume setting."""
 
-    def __init__(self, enabled: bool = True, runner: Runner | None = None):
+    def __init__(self, enabled: bool = True, runner: Runner | None = None, detect_switch: bool = True):
         self.enabled = enabled
         self.run = runner or run_cmd
+        self.detect_switch = detect_switch
         self.control: str | None = None
         self.card: str | None = None     # ALSA card id of the chosen output (audio.choose); None: default
         self.available = False
+        self.mapped = False
+        self.has_switch = True
+        self.muted = False
+        self.last_percent: int | None = None
 
     def _card_args(self) -> list[str]:
         return ["-c", self.card] if self.card else []
 
-    async def probe(self, card: str | None = None, control: str | None = None, detect_switch: bool = False) -> bool:
+    @staticmethod
+    def _parse_has_switch(info: str, *, explicit: bool) -> bool | None:
+        caps = _CAPABILITIES_RE.findall(info or "")
+        if caps:
+            tokens = {tok for line in caps for tok in line.split()}
+            return "pswitch" in tokens
+        return False if explicit and "pswitch" not in (info or "") else None
+
+    async def probe(self, card: str | None = None, control: str | None = None,
+                    detect_switch: bool | None = None) -> bool:
         """Pick the volume control. ``control`` (an ASoC card's UCM playback master,
         e.g. the ES8336's "DAC") wins when it exists; it is set on the mapped
-        (perceptual) scale, since its raw steps span 96 dB.  ``detect_switch`` (a
-        Raspberry Pi) asks whether the chosen control has a mute switch: alsa-lib's
-        softvol control on vc4 HDMI has none, so mute is 0 % and back there."""
+        (perceptual) scale, since its raw steps span 96 dB.  ``detect_switch`` asks
+        whether the chosen control has a mute switch: vc4 softvol and USB DACs
+        without pswitch fall back to 0 % cleanly."""
         self.available = False
         self.card = card
         self.mapped = False
         self.has_switch = True
+        self.muted = False
         self.last_percent: int | None = None
         if not self.enabled:
             return False
+        explicit_detect = bool(detect_switch) if detect_switch is not None else False
+        should_detect = self.detect_switch if detect_switch is None else bool(detect_switch)
         if control:
             rc, out, _ = await self.run(["amixer", *self._card_args(), "sget", control], timeout=5)
             if rc == 0 and "pvolume" in out:
                 self.control, self.mapped = control, True
-                self.has_switch = "pswitch" in out
+                parsed = self._parse_has_switch(out, explicit=True)
+                self.has_switch = bool(parsed) if parsed is not None else ("pswitch" in out)
                 self.available = True
                 return True
         rc, out, _ = await self.run(["amixer", *self._card_args(), "scontrols"], timeout=5)
         if rc != 0:
             return False
+        controls = {m.group(1) for m in _SCONTROL_RE.finditer(out or "")}
         for name in ("Master", "PCM", "Speaker", "Headphone"):
-            if f"'{name}'" in out:
+            if name in controls:
                 self.control = name
                 self.available = True
-                if detect_switch:
+                if should_detect:
                     rc, info, _ = await self.run(["amixer", *self._card_args(), "sget", name], timeout=5)
-                    self.has_switch = rc != 0 or "pswitch" in info
+                    if rc == 0:
+                        parsed = self._parse_has_switch(info, explicit=explicit_detect)
+                        if parsed is not None:
+                            self.has_switch = parsed
+                    elif explicit_detect:
+                        self.has_switch = False
                 return True
         return False
 
     def _sset(self, *values: str) -> list[str]:
         return ["amixer", *self._card_args(), *(["-M"] if self.mapped else []), "-q", "sset", self.control, *values]
 
-    async def set_volume(self, percent: int) -> bool:
+    async def set_volume(self, percent: int, unmute: bool = True) -> bool:
         if not self.available or self.control is None:
             return False
         self.last_percent = int(percent)
-        values = [f"{int(percent)}%"] + (["unmute"] if self.has_switch else [])
+        if not unmute and not self.has_switch:
+            return True
+        values = [f"{int(percent)}%"] + (["unmute"] if (self.has_switch and unmute) else [])
         rc, _, _ = await self.run(self._sset(*values), timeout=5)
+        if rc == 0 and unmute:
+            self.muted = False
         return rc == 0
 
     async def set_mute(self, mute: bool) -> bool:
@@ -495,4 +527,6 @@ class AudioMixer:
         else:
             values = ["0%" if mute else f"{self.last_percent if self.last_percent is not None else 70}%"]
         rc, _, _ = await self.run(self._sset(*values), timeout=5)
+        if rc == 0:
+            self.muted = bool(mute)
         return rc == 0

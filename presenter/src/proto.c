@@ -4,10 +4,40 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gamepad.h"
 #include "gemkbd.h"
 #include "keymap.h"
 #include "pointer.h"
 #include "touch.h"
+
+static int parse_opt_bool(const cJSON *req, const char *key, bool *has, bool *val, char *err, size_t errlen)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(req, key);
+    if (!v)
+        return 0;
+    if (!cJSON_IsBool(v)) {
+        snprintf(err, errlen, "%s must be a boolean", key);
+        return -1;
+    }
+    *has = true;
+    *val = cJSON_IsTrue(v);
+    return 0;
+}
+
+static int parse_opt_gamepad_mode(const cJSON *req, bool *has, int *val, char *err, size_t errlen)
+{
+    const cJSON *gm = cJSON_GetObjectItemCaseSensitive(req, "gamepad_mode");
+    if (!gm)
+        return 0;
+    int m = cJSON_IsString(gm) ? rb_gamepad_mode_parse(gm->valuestring) : -1;
+    if (m < 0) {
+        snprintf(err, errlen, "gamepad_mode must be arrows, wasd or off");
+        return -1;
+    }
+    *has = true;
+    *val = m;
+    return 0;
+}
 
 const char *rb_scene_name(enum rb_scene s)
 {
@@ -197,6 +227,8 @@ int rb_parse_display_config(const cJSON *req, struct rb_display_req *out, char *
         out->has_rotation = true;
         out->rotation = r;
     }
+    if (parse_opt_bool(req, "crt_bezel", &out->has_crt_bezel, &out->crt_bezel, err, errlen) < 0)
+        return -1;
     return 0;
 }
 
@@ -330,5 +362,21 @@ int rb_parse_input_config(const cJSON *req, struct rb_input_req *out, char *err,
         out->has_touch_transform = true;
         out->touch_transform = f;
     }
+    if (parse_opt_gamepad_mode(req, &out->has_gamepad_mode, &out->gamepad_mode, err, errlen) < 0)
+        return -1;
+    if (parse_opt_bool(req, "natural_scroll", &out->has_natural_scroll, &out->natural_scroll, err, errlen) < 0)
+        return -1;
+    return 0;
+}
+
+int rb_parse_set_config(const cJSON *req, struct rb_set_config_req *out, char *err, size_t errlen)
+{
+    memset(out, 0, sizeof *out);
+    if (parse_opt_gamepad_mode(req, &out->has_gamepad_mode, &out->gamepad_mode, err, errlen) < 0)
+        return -1;
+    if (parse_opt_bool(req, "natural_scroll", &out->has_natural_scroll, &out->natural_scroll, err, errlen) < 0)
+        return -1;
+    if (parse_opt_bool(req, "crt_bezel", &out->has_crt_bezel, &out->crt_bezel, err, errlen) < 0)
+        return -1;
     return 0;
 }

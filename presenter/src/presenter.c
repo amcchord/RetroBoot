@@ -29,6 +29,7 @@
 #include "diagview.h"
 #include "drm.h"
 #include "framelog.h"
+#include "gamepad.h"
 #include "guest.h"
 #include "input.h"
 #include "installer_splash.h"
@@ -233,7 +234,13 @@ struct presenter {
     unsigned guest_buttons;
     double px, py;
     unsigned panel_buttons;
-    double wheel_acc;
+    double wheel_acc, wheel_h_acc;
+    bool natural_scroll;
+    int gamepad_mode;
+    bool crt_bezel;
+    bool osx_desktop, osx_fading;
+    uint64_t osx_fade_start;
+    struct rb_timer *osx_fade_timer;
     /* touchscreens and pens (touch.h, 4.8): one recognizer for every
      * touchscreen (seat slots are unique), bound to an output (conn id) when
      * the first finger goes down */
@@ -531,6 +538,8 @@ static void display_fill(struct presenter *p, cJSON *d)
     cJSON_AddItemToObject(d, "physical_mm", int_array(2, mm));
     cJSON_AddNumberToObject(d, "suggested_scale", rb_suggested_scale(p->W, p->H));
     cJSON_AddNumberToObject(d, "scale", p->s);
+    cJSON_AddNumberToObject(d, "guest_scale", (p->guest.px && p->layout_ok) ? p->layout.k : 0);
+    cJSON_AddBoolToObject(d, "crt_bezel", p->crt_bezel);
     if (p->pixel_req)
         cJSON_AddNumberToObject(d, "pixel_scale", p->pixel_req);
     else
@@ -574,6 +583,8 @@ static void guest_fill(struct presenter *p, cJSON *g)
     if (conn && p->guest.px) {
         int sz[2] = {p->guest.width, p->guest.height};
         cJSON_AddItemToObject(g, "surface", int_array(2, sz));
+        if (p->layout_ok)
+            cJSON_AddNumberToObject(g, "scale", p->layout.k);
     } else {
         cJSON_AddNullToObject(g, "surface");
     }
@@ -801,20 +812,23 @@ static void update_borders(struct presenter *p)
 {
     bool checker = p->view == VIEW_CHECKER || p->view == VIEW_NONE ||
                    (p->view == VIEW_PANEL && p->panel_bg == RB_PANEL_BG_CHECKERBOARD);
+    bool osx_gray = p->startup_style == RB_STARTUP_OSX &&
+                    (checker || ((p->view == VIEW_GUEST || p->view == VIEW_HOLD) && (!p->osx_desktop || p->osx_fading)));
     for (int i = 0; i < p->nheads; i++)
-        rb_output_set_border(&p->heads[i], p->startup_style == RB_STARTUP_OSX &&
-            (p->view == VIEW_GUEST || p->view == VIEW_HOLD) ? RB_BORDER_OSX_GRAY : checker ?
-            (p->startup_style == RB_STARTUP_OSX ? RB_BORDER_OSX_GRAY : RB_BORDER_CHECKER) :
-            RB_BORDER_BLACK, p->cs, rb_checker_anchor);
+        rb_output_set_border(&p->heads[i], osx_gray ? RB_BORDER_OSX_GRAY : (checker ? RB_BORDER_CHECKER : RB_BORDER_BLACK),
+                             p->cs, rb_checker_anchor);
 }
 
 static void osd_hide(struct presenter *p, bool restore);
+static void sync_gamepad_active(struct presenter *p);
 
 static void update_view(struct presenter *p)
 {
     enum view v = compute_view(p);
-    if (v == p->view)
+    if (v == p->view) {
+        sync_gamepad_active(p);
         return;
+    }
     enum view old = p->view;
     osd_hide(p, v == VIEW_HOLD);
     p->view = v;
@@ -830,6 +844,7 @@ static void update_view(struct presenter *p)
         p->panel_force = true;
     if (v == VIEW_GUEST)
         p->hold = false;
+    sync_gamepad_active(p);
     update_borders(p);
     uint64_t since = rb_guest_connected(&p->guest) ? rb_mono_ms() - p->guest.connect_mono_ms : 0;
     tl_add(p, "view", "%s -> %s (scene %s)", view_name(old), view_name(v), rb_scene_name(p->scene));
@@ -843,15 +858,101 @@ static void update_view(struct presenter *p)
     ind_tick(p);
 }
 
-static void fill_black(struct presenter *p, rb_rect r)
+static void fill_solid(struct presenter *p, rb_rect r, uint32_t px)
 {
-    for (int y = r.y; y < r.y + r.h; y++)
-        memset(p->shadow + (size_t)y * p->W + r.x, 0, (size_t)r.w * 4);
+    for (int y = r.y; y < r.y + r.h; y++) {
+        uint32_t *row = p->shadow + (size_t)y * p->W + r.x;
+        if (px == 0)
+            memset(row, 0, (size_t)r.w * 4);
+        else
+            for (int x = 0; x < r.w; x++)
+                row[x] = px;
+    }
+}
+
+static void fill_black(struct presenter *p, rb_rect r) { fill_solid(p, r, 0); }
+
+static uint32_t osx_letterbox_color(const struct presenter *p, uint64_t now)
+{
+    if (p->startup_style != RB_STARTUP_OSX || (p->osx_desktop && !p->osx_fading))
+        return 0;
+    if (!p->osx_desktop)
+        return RB_OSX_BOOT_GRAY;
+    uint64_t t = now >= p->osx_fade_start ? now - p->osx_fade_start : 0;
+    if (t >= 250)
+        return 0;
+    double x = (double)t / 250.0;
+    uint32_t w = (uint32_t)lround(x * x * (3.0 - 2.0 * x) * 256.0);
+    if (w >= 256)
+        return 0;
+    uint32_t ch = (0xbfu * (256u - w) + 128u) >> 8;
+    return ch | (ch << 8) | (ch << 16);
+}
+
+static void osx_fade_timer_fn(void *data)
+{
+    struct presenter *p = data;
+    if (!p->osx_fading)
+        return;
+    uint64_t t = rb_mono_ms() - p->osx_fade_start;
+    rb_rect d = p->layout.dst;
+    rb_rect bands[4] = {
+        {0, 0, p->W, d.y},
+        {0, d.y + d.h, p->W, p->H - (d.y + d.h)},
+        {0, d.y, d.x, d.h},
+        {d.x + d.w, d.y, p->W - (d.x + d.w), d.h},
+    };
+    if (p->view == VIEW_GUEST || p->view == VIEW_HOLD) {
+        for (int i = 0; i < 4; i++)
+            if (bands[i].w > 0 && bands[i].h > 0)
+                mark_dirty(p, bands[i]);
+    }
+    if (t >= 250) {
+        p->osx_fading = false;
+        rb_timer_arm(p->osx_fade_timer, 0);
+        update_borders(p);
+        return;
+    }
+    rb_timer_arm(p->osx_fade_timer, 16);
+}
+
+static void compose_crt_bezel(struct presenter *p, rb_rect r, rb_rect d)
+{
+    if (!p->crt_bezel || p->layout.mode != RB_SCALING_INTEGER || p->layout.k != 1)
+        return;
+    if (p->startup_style == RB_STARTUP_OSX && (!p->osx_desktop || p->osx_fading))
+        return;
+    if (d.x <= 0 && d.y <= 0 && d.x + d.w >= p->W && d.y + d.h >= p->H)
+        return;
+    const uint32_t col = 0x00404040u;
+    int x0 = d.x - 1, x1 = d.x + d.w;
+    int y0 = d.y - 1, y1 = d.y + d.h;
+    int rx1 = r.x + r.w, ry1 = r.y + r.h;
+    int cx0 = x0 < 0 ? 0 : x0, cx1 = x1 >= p->W ? p->W - 1 : x1;
+    if (y0 >= r.y && y0 < ry1 && y0 >= 0) {
+        int a = cx0 > r.x ? cx0 : r.x, b = cx1 + 1 < rx1 ? cx1 + 1 : rx1;
+        for (int x = a; x < b; x++)
+            p->shadow[(size_t)y0 * p->W + x] = col;
+    }
+    if (y1 >= r.y && y1 < ry1 && y1 < p->H) {
+        int a = cx0 > r.x ? cx0 : r.x, b = cx1 + 1 < rx1 ? cx1 + 1 : rx1;
+        for (int x = a; x < b; x++)
+            p->shadow[(size_t)y1 * p->W + x] = col;
+    }
+    int ya = d.y > r.y ? d.y : r.y;
+    int yb = (d.y + d.h) < ry1 ? (d.y + d.h) : ry1;
+    if (x0 >= r.x && x0 < rx1 && x0 >= 0)
+        for (int y = ya; y < yb; y++)
+            p->shadow[(size_t)y * p->W + x0] = col;
+    if (x1 >= r.x && x1 < rx1 && x1 < p->W)
+        for (int y = ya; y < yb; y++)
+            p->shadow[(size_t)y * p->W + x1] = col;
 }
 
 static void compose_guest(struct presenter *p, rb_rect r)
 {
     rb_rect d = p->layout.dst;
+    uint32_t band_px = osx_letterbox_color(p, rb_mono_ms());
     /* letterbox: up to four bands of r outside dst */
     rb_rect bands[4] = {
         {r.x, r.y, r.w, d.y - r.y},                                 /* above */
@@ -862,14 +963,15 @@ static void compose_guest(struct presenter *p, rb_rect r)
     for (int i = 0; i < 4; i++) {
         rb_rect b;
         if (rb_rect_intersect(bands[i], r, &b)) {
-            if (p->startup_style == RB_STARTUP_OSX)
+            if (p->startup_style == RB_STARTUP_OSX && !p->osx_desktop)
                 rb_startup_scene_style(p->shadow, p->W, p->W, p->H, b, p->cs, &p->ind_cur,
                                        &p->art, false, 0, false, RB_STARTUP_OSX);
             else
-                fill_black(p, b);
+                fill_solid(p, b, band_px);
         }
     }
     rb_layout_render(&p->layout, p->shadow, p->W, p->guest.px, p->guest.stride_px, r);
+    compose_crt_bezel(p, r, d);
 }
 
 /* The cut-over fade: inside the icon's screen, the completed bar over Mac
@@ -1560,7 +1662,9 @@ static bool update_target(struct presenter *p, const char *why)
         return false;
     int w, h;
     guest_target_size(p, &w, &h);
-    if (w == p->target_w && h == p->target_h)
+    bool same_target = (w == p->target_w && h == p->target_h);
+    bool guest_differs = p->guest.px && (p->guest.width != w || p->guest.height != h);
+    if (same_target && !guest_differs)
         return false;
     p->target_w = w;
     p->target_h = h;
@@ -1597,10 +1701,9 @@ static void render_dimmed_bg(struct presenter *p)
     }
     rb_layout l;
     memset(&l, 0, sizeof l);
-    /* Exactly where the guest view shows it when its blocks are whole logical
-     * pixels (always for a numeric pixel scale); else fitted to the panel. */
-    if (rb_layout_logical(&p->layout, p->s, &l) < 0 &&
-        rb_layout_compute(&l, p->lw, p->lh, p->guest.width, p->guest.height, p->scaling) < 0)
+    /* Use the exact active VIEW_GUEST rectangle mapped onto the logical panel
+     * grid (#21), including centered 800x600 / 1x modes and fit scaling. */
+    if (rb_layout_panel(&p->layout, p->s, &l) < 0)
         return;
     memset(p->panel_bg_img, 0, (size_t)p->lw * p->lh * 4);
     rb_layout_render(&l, p->panel_bg_img, p->lw, p->guest.px, p->guest.stride_px, (rb_rect){0, 0, p->lw, p->lh});
@@ -1836,8 +1939,11 @@ static void set_pixel_scale(struct presenter *p, int req)
         if (p->view == VIEW_GUEST)
             mark_all(p);
     }
-    if (p->scene == RB_SCENE_PANEL && p->panel_bg == RB_PANEL_BG_GUEST_DIMMED && p->s != old_s)
+    if (p->scene == RB_SCENE_PANEL && p->panel_bg == RB_PANEL_BG_GUEST_DIMMED && layout_changes && !resized) {
         render_dimmed_bg(p);
+        p->panel_force = true;
+        mark_all(p);
+    }
     update_view(p);
     tl_add(p, "display_config", "pixel_scale %s%d: scale %d -> %d logical %dx%d target %dx%d%s",
            req ? "" : "auto=", req ? req : rb_suggested_scale(p->W, p->H), old_s, p->s, p->lw, p->lh, p->target_w,
@@ -2675,6 +2781,24 @@ static void cap_tick(struct presenter *p)
 
 static void cap_timer_fn(void *data) { cap_tick(data); }
 
+static void check_osx_desktop(struct presenter *p)
+{
+    if (p->startup_style != RB_STARTUP_OSX || p->osx_desktop || p->switch_hold || !p->guest.px)
+        return;
+    if (!rb_content_is_osx_desktop(p->guest.px, p->guest.width, p->guest.height, p->guest.stride_px))
+        return;
+    p->osx_desktop = true;
+    if (p->view == VIEW_GUEST) {
+        p->osx_fading = true;
+        p->osx_fade_start = rb_mono_ms();
+        rb_timer_arm(p->osx_fade_timer, FADE_POLL_MS);
+    } else {
+        p->osx_fading = false;
+        update_borders(p);
+    }
+    tl_add(p, "osx_desktop", "desktop rendered; transitioning letterbox to black");
+}
+
 static void content_found(struct presenter *p, int rule)
 {
     p->content_mono_ms = rb_mono_ms();
@@ -2703,6 +2827,7 @@ static void content_found(struct presenter *p, int rule)
         rb_timer_arm(p->cap_timer, LAND_POLL_MS);
     }
     update_view(p);
+    check_osx_desktop(p);
     schedule_resize_check(p);
 }
 
@@ -2743,6 +2868,9 @@ static void guest_connected(void *data)
     p->mouse_remainder = (struct rb_pointer_delta){0};
     p->surface_seen = false;
     p->retarget_pending = false;
+    p->osx_desktop = false;
+    p->osx_fading = false;
+    rb_timer_arm(p->osx_fade_timer, 0);
     /* Mac OS starts with its cursor at (16,16) (observed with the virtio
      * tablet before any input); relative motion and pointer nudges start
      * from there instead of wherever the previous session left it. */
@@ -2777,7 +2905,11 @@ static void guest_disconnected(void *data, const char *reason)
     overlay_end(p, "guest disconnected", false);
     fade_end(p, "guest disconnected");
     rb_timer_arm(p->cap_timer, 0);
+    p->osx_desktop = false;
+    p->osx_fading = false;
+    rb_timer_arm(p->osx_fade_timer, 0);
     clear_forwarded(p);
+    sync_gamepad_active(p);
     /* Keep Mac OS's last frame (its shutdown/restart screen) until hostd
      * picks the next scene: black before poweroff, splash for a relaunch. */
     if (p->view == VIEW_GUEST || p->view == VIEW_HOLD)
@@ -2875,6 +3007,17 @@ static void guest_surface(void *data)
         p->gx = p->guest.width - 1;
     if (p->gy >= p->guest.height)
         p->gy = p->guest.height - 1;
+    if (p->layout_ok && p->layout.dst.w > 0 && p->layout.dst.h > 0 && p->scene != RB_SCENE_PANEL) {
+        rb_rect d = p->layout.dst;
+        if (p->px < d.x)
+            p->px = d.x;
+        if (p->px >= d.x + d.w)
+            p->px = d.x + d.w - 1;
+        if (p->py < d.y)
+            p->py = d.y;
+        if (p->py >= d.y + d.h)
+            p->py = d.y + d.h - 1;
+    }
     tl_add(p, "guest_surface", "%dx%d scaling %s k=%d dst %d,%d %dx%d", p->guest.width, p->guest.height,
            rb_scaling_name(p->layout.mode), p->layout.k, p->layout.dst.x, p->layout.dst.y, p->layout.dst.w,
            p->layout.dst.h);
@@ -2883,6 +3026,12 @@ static void guest_surface(void *data)
     cJSON_AddItemToObject(ev, "size", int_array(2, sz));
     emit(p, ev);
     inspect_content(p);
+    check_osx_desktop(p);
+    if (p->scene == RB_SCENE_PANEL && p->panel_bg == RB_PANEL_BG_GUEST_DIMMED && !p->switch_hold) {
+        render_dimmed_bg(p);
+        p->panel_force = true;
+        mark_all(p);
+    }
     if (p->rot_deferred && !p->switch_hold) {
         rotation_now(p, "rotated guest surface");
         return;
@@ -2911,6 +3060,7 @@ static void guest_damage(void *data, const rb_rect *rects, int n)
             }
     if (!p->content.detected)
         inspect_content(p);
+    check_osx_desktop(p);
     if (p->view != VIEW_GUEST)
         return;
     if (p->switch_hold) {
@@ -2957,6 +3107,10 @@ static void panel_tick(struct presenter *p);
 static void set_scene(struct presenter *p, enum rb_scene scene, enum rb_reveal reveal, enum rb_panel_bg bg)
 {
     enum rb_scene old = p->scene;
+    if (old != scene) {
+        p->wheel_acc = 0;
+        p->wheel_h_acc = 0;
+    }
     if (old == RB_SCENE_GUEST && scene != RB_SCENE_GUEST)
         release_guest_input(p, "scene change");
     /* Any scene choice ends a held last frame (VIEW_HOLD) and a landing. */
@@ -3196,6 +3350,7 @@ static void diag_show(struct presenter *p, bool on, const char *how)
         osd_hide(p, false);
     }
     tl_add(p, "startup_details", "%s (%s)", on ? "shown" : "hidden", how);
+    sync_gamepad_active(p);
     if (!on && p->view == VIEW_PANEL)
         p->panel_force = true;
     mark_all(p);
@@ -3247,6 +3402,7 @@ static void diag_ready(void *data, int fd, uint32_t events)
     if ((chg & RB_DIAG_CHG_VISIBLE) && p->diag.visible != was) {
         if (p->diag.visible)
             release_guest_input(p, "startup details");
+        sync_gamepad_active(p);
         tl_add(p, "startup_details", "%s (rb-bootdiag)", p->diag.visible ? "shown" : "hidden");
         if (!p->diag.visible && p->view == VIEW_PANEL)
             p->panel_force = true;
@@ -3317,6 +3473,26 @@ static void diag_publish(struct presenter *p)
 static bool guest_routing(struct presenter *p)
 {
     return p->scene == RB_SCENE_GUEST && p->guest_input && rb_guest_connected(&p->guest);
+}
+
+static void sync_gamepad_active(struct presenter *p)
+{
+    if (p && p->input)
+        rb_input_set_gamepad_active(p->input, guest_routing(p) && p->view == VIEW_GUEST && !p->diag.visible);
+}
+
+static void on_gamepad_key(void *data, int qcode, bool down)
+{
+    struct presenter *p = data;
+    if (!down) {
+        if (qcode > 0 && qcode < RB_Q_COUNT && p->qhold[qcode] > 0 && rb_guest_connected(&p->guest))
+            guest_key(p, qcode, false);
+        return;
+    }
+    if (!p->have_out || p->diag.visible || p->view != VIEW_GUEST || !guest_routing(p))
+        return;
+    touch_input(p);
+    guest_key(p, qcode, true);
 }
 
 static void panel_key(struct presenter *p, int rbkey, const char *utf8, bool down, unsigned mods)
@@ -3411,14 +3587,16 @@ static void on_key(void *data, uint32_t code, bool down, uint32_t keysym, const 
             (code == KEY_BACKSPACE || code == KEY_DELETE))
             chord_key = true;
     }
-    if (p->diag.visible) { /* Startup Details: only Escape (it hides the view) */
-        diag_key(p, code, down, false);
-        return;
-    }
     if (down && chord_key && ctrl && alt) {
         bit_set(p->suppress, code, true);
+        if (p->diag.visible)
+            diag_show(p, false, "recovery chord");
         release_guest_input(p, "recovery chord");
         on_chord(p);
+        return;
+    }
+    if (p->diag.visible) { /* Startup Details: Escape hides it; recovery chord was checked above */
+        diag_key(p, code, down, false);
         return;
     }
     if (!down && bit_get(p->suppress, code)) {
@@ -3661,6 +3839,38 @@ static void on_scroll(void *data, double v120)
     }
 }
 
+static void on_scroll_h(void *data, double h120)
+{
+    struct presenter *p = data;
+    touch_input(p);
+    if (p->diag.visible || p->scene == RB_SCENE_PANEL || !guest_routing(p) || !p->guest.px) {
+        p->wheel_h_acc = 0;
+        return;
+    }
+    p->wheel_h_acc += h120;
+    send_pointer(p);
+    while (p->wheel_h_acc >= 120.0 || p->wheel_h_acc <= -120.0) {
+        uint32_t b = p->wheel_h_acc > 0 ? 4 : 3; /* Shift + wheel translates to horizontal scroll in Classic/OS X */
+        guest_key(p, RB_Q_SHIFT, true);
+        rb_guest_send_button(&p->guest, b, true);
+        rb_guest_send_button(&p->guest, b, false);
+        guest_key(p, RB_Q_SHIFT, false);
+        p->wheel_h_acc += p->wheel_h_acc > 0 ? -120.0 : 120.0;
+    }
+}
+
+static void on_pointer_scroll(void *data, double v120)
+{
+    struct presenter *p = data;
+    on_scroll(p, p->natural_scroll ? -v120 : v120);
+}
+
+static void on_pointer_scroll_h(void *data, double h120)
+{
+    struct presenter *p = data;
+    on_scroll_h(p, p->natural_scroll ? -h120 : h120);
+}
+
 static void on_lid(void *data, bool open)
 {
     struct presenter *p = data;
@@ -3817,14 +4027,16 @@ static void g_button(void *data, int b, bool down)
  * RB_TOUCH_NOTCH_PX Mac pixels (panel: logical pixels). */
 static void g_pan(void *data, double dx, double dy)
 {
-    (void)dx;
     struct presenter *p = data;
     double k = 1;
     if (p->scene == RB_SCENE_PANEL)
         k = p->s;
     else if (p->layout_ok)
         k = rb_layout_ratio(&p->layout);
-    on_scroll(p, rb_touch_pan_v120(dy, k));
+    if (dy != 0)
+        on_scroll(p, rb_touch_pan_v120(dy, k));
+    if (dx != 0)
+        on_scroll_h(p, rb_touch_pan_v120(dx, k));
 }
 
 static void on_touch(void *data, const struct rb_input_dev *d, enum rb_touch_kind kind, int slot, double nx,
@@ -3894,6 +4106,7 @@ static void on_tablet(void *data, const struct rb_input_dev *d, bool prox, doubl
     }
     if (d->direct) {
         double x, y;
+        rb_touch_transform_apply(p->touch_transform, &nx, &ny);
         touch_frame_point(touch_output_for(p, d), nx, ny, &x, &y);
         g_point(p, x, y);
     } else {
@@ -3943,6 +4156,8 @@ static cJSON *input_json(struct presenter *p)
         cJSON_AddStringToObject(in, "keyboard", gk);
     cJSON_AddStringToObject(in, "gesture", rb_gesture_state_name(p->gesture.st));
     cJSON_AddNumberToObject(in, "touch_events", (double)p->touch_events);
+    cJSON_AddStringToObject(in, "gamepad_mode", rb_gamepad_mode_name((enum rb_gamepad_mode)p->gamepad_mode));
+    cJSON_AddBoolToObject(in, "natural_scroll", p->natural_scroll);
     return in;
 }
 
@@ -4609,6 +4824,28 @@ static cJSON *status_json(struct presenter *p, const cJSON *id)
     return r;
 }
 
+static void apply_common_config(struct presenter *p, bool has_gm, int gm, bool has_ns, bool ns, bool has_bezel,
+                                bool bezel)
+{
+    if (has_gm && gm != p->gamepad_mode) {
+        p->gamepad_mode = gm;
+        rb_input_set_gamepad_mode(p->input, gm);
+        tl_add(p, "config", "gamepad_mode %s", rb_gamepad_mode_name((enum rb_gamepad_mode)gm));
+    }
+    if (has_ns && ns != p->natural_scroll) {
+        p->natural_scroll = ns;
+        p->wheel_acc = 0;
+        p->wheel_h_acc = 0;
+        tl_add(p, "config", "natural_scroll %s", ns ? "on" : "off");
+    }
+    if (has_bezel && bezel != p->crt_bezel) {
+        p->crt_bezel = bezel;
+        if (p->view == VIEW_GUEST)
+            mark_all(p);
+        tl_add(p, "config", "crt_bezel %s", bezel ? "on" : "off");
+    }
+}
+
 static void apply_display_config(struct presenter *p, const cJSON *id, const struct rb_display_req *d)
 {
     const drmModeModeInfo *target = NULL;
@@ -4637,8 +4874,15 @@ static void apply_display_config(struct presenter *p, const cJSON *id, const str
         relayout(p);
         if (p->view == VIEW_GUEST)
             mark_all(p);
+        if (p->scene == RB_SCENE_PANEL && p->panel_bg == RB_PANEL_BG_GUEST_DIMMED) {
+            render_dimmed_bg(p);
+            p->panel_force = true;
+            mark_all(p);
+        }
         tl_add(p, "display_config", "scaling %s", rb_scaling_name(p->scaling));
     }
+    if (d->has_crt_bezel)
+        apply_common_config(p, false, 0, false, false, true, d->crt_bezel);
     if (d->has_enforce && d->enforce != p->enforce_size) {
         p->enforce_size = d->enforce;
         tl_add(p, "display_config", "enforce_guest_size %s", p->enforce_size ? "on" : "off");
@@ -4820,9 +5064,23 @@ static void on_request(void *data, const cJSON *req)
             p->touch_gestures = in.touch_gestures;
             rb_gesture_cancel(&p->gesture);
         }
+        apply_common_config(p, in.has_gamepad_mode, in.gamepad_mode, in.has_natural_scroll, in.natural_scroll, false,
+                            false);
         tl_add(p, "input_config", "swap %d chord %s speed %.2f touch gestures %s", p->swap, rb_chord_name(p->chord_key),
                p->speed, p->touch_gestures ? "on" : "off");
         reply_ok(p, reply_new(id, true));
+    } else if (!strcmp(cmd, "set_config")) {
+        struct rb_set_config_req cfg;
+        if (rb_parse_set_config(req, &cfg, err, sizeof err) < 0) {
+            reply_error(p, id, err);
+            return;
+        }
+        apply_common_config(p, cfg.has_gamepad_mode, cfg.gamepad_mode, cfg.has_natural_scroll, cfg.natural_scroll,
+                            cfg.has_crt_bezel, cfg.crt_bezel);
+        cJSON *r = reply_new(id, true);
+        cJSON_AddItemToObject(r, "input", input_json(p));
+        cJSON_AddItemToObject(r, "display", display_json(p));
+        reply_ok(p, r);
     } else if (!strcmp(cmd, "guest_input")) {
         const cJSON *en = cJSON_GetObjectItemCaseSensitive(req, "enabled");
         if (!cJSON_IsBool(en)) {
@@ -4833,6 +5091,7 @@ static void on_request(void *data, const cJSON *req)
         if (!on && p->guest_input)
             release_guest_input(p, "guest input disabled");
         p->guest_input = on;
+        sync_gamepad_active(p);
         reply_ok(p, reply_new(id, true));
     } else if (!strcmp(cmd, "screenshot")) {
         const cJSON *path = cJSON_GetObjectItemCaseSensitive(req, "path");
@@ -4910,6 +5169,9 @@ static void on_request(void *data, const cJSON *req)
             int next = !strcmp(style->valuestring, "macosx") ? RB_STARTUP_OSX : RB_STARTUP_CLASSIC;
             if (next != p->startup_style) {
                 p->startup_style = next;
+                p->osx_desktop = false;
+                p->osx_fading = false;
+                rb_timer_arm(p->osx_fade_timer, 0);
                 rb_startup_panel_background(p->panel_chk, p->lw, p->lw, p->lh, p->cm, p->s, next);
                 if (p->panel_bg == RB_PANEL_BG_GUEST_DIMMED)
                     render_dimmed_bg(p);
@@ -5167,6 +5429,7 @@ int rb_presenter_main(const struct rb_opts *opts)
     p->ind_timer = rb_timer_new(p->loop, ind_timer_fn, p);
     p->land_timer = rb_timer_new(p->loop, land_timer_fn, p);
     p->fade_timer = rb_timer_new(p->loop, fade_timer_fn, p);
+    p->osx_fade_timer = rb_timer_new(p->loop, osx_fade_timer_fn, p);
     p->overlay_timer = rb_timer_new(p->loop, overlay_timer_fn, p);
     p->cap_timer = rb_timer_new(p->loop, cap_timer_fn, p);
     p->badge_timer = rb_timer_new(p->loop, badge_timer_fn, p);
@@ -5298,10 +5561,13 @@ int rb_presenter_main(const struct rb_opts *opts)
     /* 4. Input. */
     if (!opts->no_input) {
         struct rb_input_cb icb = {.key = on_key, .motion = on_motion, .motion_abs = on_motion_abs,
-                                  .button = on_button, .scroll = on_scroll, .lid = on_lid, .abs_norm = on_abs_norm,
-                                  .touch = on_touch, .tablet = on_tablet, .devices_changed = on_devices_changed};
+                                  .button = on_button, .scroll = on_pointer_scroll, .scroll_h = on_pointer_scroll_h,
+                                  .lid = on_lid, .abs_norm = on_abs_norm, .touch = on_touch, .tablet = on_tablet,
+                                  .devices_changed = on_devices_changed, .gamepad_key = on_gamepad_key};
         p->input = rb_input_new(p->loop, &icb, p);
         rb_input_set_screen(p->input, p->W, p->H);
+        rb_input_set_gamepad_mode(p->input, p->gamepad_mode);
+        sync_gamepad_active(p);
         on_devices_changed(p); /* the touchscreens and pens found at start */
     }
     sd_notify_ready();

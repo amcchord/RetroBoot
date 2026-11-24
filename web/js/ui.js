@@ -256,11 +256,28 @@ export function dialog({ title, icon = 'note', message, content, buttons, acknow
       if (validate && value !== 'cancel' && validate(value, d) === false) e.preventDefault();
     });
     // Mac OS deactivates the windows behind a modal dialog: plain frames, gray titles.
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const triggerKey = trigger?.dataset?.focusKey || null;
     const behind = [...document.querySelectorAll('.doc:not(.is-inactive)')];
     d.addEventListener('close', () => {
       if (!document.querySelector('dialog.dlg[open]')) for (const w of behind) w.classList.remove('is-inactive');
-      resolve(d.returnValue || '');
+      const rv = d.returnValue || '';
       d.remove();
+      if (!document.querySelector('dialog.dlg[open]')) {
+        const target = trigger && trigger.isConnected
+          ? trigger
+          : triggerKey
+            ? document.querySelector(`[data-focus-key="${CSS.escape(triggerKey)}"]`)
+            : null;
+        if (target && typeof target.focus === 'function' && !target.disabled) {
+          try {
+            target.focus({ preventScroll: true });
+          } catch {
+            target.focus();
+          }
+        }
+      }
+      resolve(rv);
     });
     for (const w of behind) w.classList.add('is-inactive');
     document.body.append(d);

@@ -30,7 +30,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/scripts/rpi-lib.sh"
 require_root
 
-flavor=debug; machine_dir=; guest=; private_default=0; do_xz=1; root_only=0; host_only=0
+flavor=debug; machine_dir=; guest=; private_default=0; do_xz=1; root_only=0; host_only=0; do_update=1
 export RB_RPI_MODEL=${RB_RPI_MODEL:-pi4-5}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,7 +43,8 @@ while [ $# -gt 0 ]; do
     --no-xz) do_xz=0; shift ;;
     --root-only) root_only=1; shift ;;
     --host-only) host_only=1; shift ;;
-    --no-iso|--no-update|--no-img) shift ;;   # accepted for symmetry with image/build.sh
+    --no-update) do_update=0; shift ;;
+    --no-iso|--no-img) shift ;;   # accepted for symmetry with image/build.sh
     *) die "unknown option $1" ;;
   esac
 done
@@ -151,6 +152,13 @@ if [ "$do_xz" = 1 ]; then
   xz -T4 -6 -k -f "$img"
   (cd "$out" && sha256sum "$(basename "$img").xz" > "$(basename "$img").xz.sha256")
   artifacts+=(--artifact "$img.xz")
+fi
+if [ "$do_update" = 1 ] && [ "$RB_RPI_MODEL" != zero2w ] && [ -f "$work/rootfs/usr/lib/retroboot/hostd/retroboot/update/tree.py" ] && \
+   [ -n "$(find "$work/rootfs/usr/lib/retroboot/update/keys" -name '*.pub' -print -quit 2>/dev/null)" ]; then
+  log "Pi update bundle payload (unsigned, arm64)"
+  python3 "$IMAGE_SRC/scripts/make-update.py" build "$work/rootfs" "$work/boot/boot.json" "$out/update-$suffix" \
+    --arch arm64 --build-id "$build_id" --flavor "$flavor" --version "$version" \
+    --min-version "$(rcfg update_min_version)" --source-revision "$src_rev" --notes "${RB_UPDATE_NOTES:-}"
 fi
 python3 "$IMAGE_SRC/scripts/make-manifest.py" --out "$out/retroboot-$version-$suffix.manifest.json" \
   --build-id "$build_id" --flavor "$flavor" --private "$([ -n "$machine_dir" ] && echo 1 || echo 0)" \

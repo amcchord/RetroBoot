@@ -82,6 +82,8 @@ def top_disk(devs, node):
 
 ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 MSR_TYPE = 'e3c9e316-0b5c-4db8-817d-f92df00215ae'
+BASIC_DATA_TYPE = 'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7'
+WIN_RE_TYPE = 'de94bba4-06d1-4d40-a16a-bfd50179d6ac'
 
 
 def contents(dev):
@@ -91,14 +93,31 @@ def contents(dev):
     fstypes = {(c.get('fstype') or '').lower() for c in parts}
     partlabels = {c.get('partlabel') or '' for c in parts}
     labels = [c['label'] for c in parts if c.get('label')]
+    has_bitlocker = any('bitlocker' in fs for fs in fstypes)
+    has_win_layout = (
+        ESP_TYPE in types
+        and BASIC_DATA_TYPE in types
+        and (
+            MSR_TYPE in types
+            or WIN_RE_TYPE in types
+            or any(pl.lower().startswith('basic data') for pl in partlabels)
+        )
+        and not (fstypes & {'ext4', 'xfs', 'btrfs', 'ext3', 'crypto_luks', 'hfs', 'hfsplus', 'apfs'})
+    )
+    has_untyped_basic = any(
+        (c.get('parttype') or '').lower() == BASIC_DATA_TYPE and not (c.get('fstype') or '').strip()
+        for c in parts
+    )
     os_name = None
     if 'RBROOT_A' in partlabels:
         os_name = 'RetroBoot'
+    elif has_bitlocker or (has_win_layout and has_untyped_basic):
+        os_name = 'Windows (encrypted)'
     elif ESP_TYPE in types and 'ntfs' in fstypes:
         os_name = 'Windows'
     elif fstypes & {'hfs', 'hfsplus', 'apfs'}:
         os_name = 'Mac OS'
-    elif ESP_TYPE in types and fstypes & {'ext4', 'xfs', 'btrfs', 'ext3'}:
+    elif ESP_TYPE in types and fstypes & {'ext4', 'xfs', 'btrfs', 'ext3', 'crypto_luks'}:
         os_name = 'Linux'
     if not parts and not dev.get('fstype'):
         summary = 'Empty'

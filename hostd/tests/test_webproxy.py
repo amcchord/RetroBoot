@@ -1,7 +1,9 @@
 """Modern Web Helper in hostd: settings, the on/off switch, config, systemd control, API."""
 import asyncio
+import importlib.util
 import json
 import socket
+import sys
 import unittest
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from retroboot.hostd import Hostd
 from test_lifecycle import Base
 
 REPO_WEBPROXY = Path(__file__).resolve().parents[2] / "webproxy"
+HAVE_WEBPROXY_DEPS = importlib.util.find_spec("lxml") is not None
 
 
 def free_port() -> int:
@@ -128,6 +131,7 @@ class SystemdControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app.webproxy.public()["intercepting"], False)
 
 
+@unittest.skipUnless(HAVE_WEBPROXY_DEPS, "rbwebproxy dependencies (lxml) not installed")
 class ChildProcessTests(unittest.IsolatedAsyncioTestCase):
     """The real helper as a child (development runner), driven by settings."""
 
@@ -161,11 +165,17 @@ class ChildProcessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"Location: http://system7today.com/", reply)
         reply = await self.ask("127.0.0.1")
         self.assertIn(b" 403 ", reply.split(b"\r\n", 1)[0])
-        # Turning the old home pages off reloads the helper; the redirect stops.
+        # Redirect rule changes reload the helper via SIGHUP without hitting the external internet.
+        await self.app.apply_engine.change_and_apply(
+            {"network.web_proxy_redirects": [{"host": "offline-test.invalid", "path": "", "to": "search"}]},
+            origin="web")
+        reply = await self.ask("offline-test.invalid")
+        self.assertIn(b"302", reply.split(b"\r\n", 1)[0])
+        self.assertIn(b"frogfind", reply)
+        # Turning home pages off reloads via SIGHUP and disables the redirect.
         await self.app.apply_engine.change_and_apply({"network.web_proxy_homepages": False}, origin="web")
-        await asyncio.sleep(0.5)
-        reply = await self.ask("livepage.apple.com")
-        self.assertNotIn(b"Location: http://system7today.com/", reply)
+        reply = await self.ask("offline-test.invalid")
+        self.assertNotIn(b"frogfind", reply)
         await self.app.apply_engine.change_and_apply({"network.web_proxy": "off"}, origin="web")
         await helpers.wait_for(lambda: not self._listening(), 10, 0.1, "helper stopped")
         self.assertEqual(wp.state, "off")
@@ -179,6 +189,45 @@ class ChildProcessTests(unittest.IsolatedAsyncioTestCase):
             return False
         finally:
             s.close()
+
+
+class SubprocessSyncTests(unittest.IsolatedAsyncioTestCase):
+    """Stdlib-only subprocess lifecycle test for WebHelper start, SIGHUP reload, and stop."""
+
+    async def test_subprocess_start_sighup_and_stop(self):
+        td, root = helpers.scratch()
+        self.addCleanup(td.cleanup)
+        helpers.make_package(root)
+        fake_lib = root / "fake_webproxy"
+        pkg = fake_lib / "rbwebproxy"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        (pkg / "__main__.py").write_text(
+            "import argparse, json, pathlib, signal, time\n"
+            "ap = argparse.ArgumentParser(); ap.add_argument('--config')\n"
+            "a = ap.parse_args(); cfg = json.loads(pathlib.Path(a.config).read_text())\n"
+            "st = pathlib.Path(cfg['status_path']); st.parent.mkdir(parents=True, exist_ok=True)\n"
+            "events = st.parent / 'sighup.log'; running = True\n"
+            "def on_hup(*_): events.write_text((events.read_text() if events.exists() else '') + 'hup\\n')\n"
+            "def on_term(*_): global running; running = False\n"
+            "signal.signal(signal.SIGHUP, on_hup); signal.signal(signal.SIGTERM, on_term)\n"
+            "st.write_text(json.dumps({'counts': {}, 'started': 1, 'version': 'test'}))\n"
+            "while running: time.sleep(0.05)\n"
+        )
+        cfg = helpers.make_config(root, webproxy_runner="subprocess", webproxy_path=str(fake_lib),
+                                  webproxy_port=free_port(), webproxy_dns_port=free_port())
+        app = Hostd(cfg)
+        app.loop = asyncio.get_running_loop()
+        app.settings.store.load()
+        self.addAsyncCleanup(app.webproxy.stop)
+        await app.webproxy.sync("start")
+        self.assertEqual(app.webproxy.state, "running")
+        self.assertEqual(app.webproxy.stats.get("version"), "test")
+        await app.apply_engine.change_and_apply({"network.web_proxy_view": "simplified"}, origin="web")
+        hup_log = app.paths.run / "sighup.log"
+        await helpers.wait_for(lambda: hup_log.exists() and "hup" in hup_log.read_text(), 5, 0.05, "SIGHUP delivered")
+        await app.apply_engine.change_and_apply({"network.web_proxy": "off"}, origin="web")
+        self.assertEqual(app.webproxy.state, "off")
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):

@@ -40,7 +40,17 @@ import tempfile
 
 BOOTDISPLAY = '/usr/lib/retroboot/image/rb-bootdisplay'
 KEYS = ('retroboot.progress', 'retroboot.guest_size', 'retroboot.checker_scale', 'retroboot.startup_ms',
-        'retroboot.rotation', 'retroboot.pixel_scale')
+        'retroboot.rotation', 'retroboot.pixel_scale', 'retroboot.startup_style')
+
+
+def tryboot_active(dt_path='/proc/device-tree/chosen/bootloader/tryboot'):
+    """True when the Raspberry Pi firmware booted tryboot.txt on this boot."""
+    try:
+        with open(dt_path, 'rb') as f:
+            raw = f.read(4)
+        return len(raw) == 4 and int.from_bytes(raw, 'big') != 0
+    except OSError:
+        return False
 
 
 def load_bootdisplay(path=BOOTDISPLAY):
@@ -51,12 +61,16 @@ def load_bootdisplay(path=BOOTDISPLAY):
     return mod
 
 
-def cmdline_path(esp):
-    """The kernel command line file config.txt names (os_prefix + cmdline, [all] sections
-    only; a leading / is relative to the boot partition and bypasses the prefix)."""
+def cmdline_path(esp, tryboot=None):
+    """The kernel command line file config.txt (or tryboot.txt during a trial boot)
+    names (os_prefix + cmdline, [all] sections only; a leading / is relative to the
+    boot partition and bypasses the prefix)."""
     prefix, name, active = '', 'cmdline.txt', True
+    if tryboot is None:
+        tryboot = tryboot_active()
+    cfg = 'tryboot.txt' if tryboot and os.path.isfile(os.path.join(esp, 'tryboot.txt')) else 'config.txt'
     try:
-        with open(os.path.join(esp, 'config.txt'), errors='replace') as f:
+        with open(os.path.join(esp, cfg), errors='replace') as f:
             lines = f.read().splitlines()
     except OSError:
         lines = []
@@ -150,6 +164,9 @@ def main(argv, bd=None):
     words, old = parse(current)
     pixel_scale = bd.configured_pixel_scale(settings)
     progress, guest_size = bd.configured_startup(settings)
+    style = bd.configured_style(settings, opt(argv, '--machines', bd.MACHINES))
+    if style == 'macosx':
+        progress = False
     guest_size = bd.startup_card_size(opt(argv, '--graphics', bd.GRAPHICS), settings) or guest_size
     try:
         recorded = int(old.get('retroboot.startup_ms') or 0)
@@ -160,7 +177,8 @@ def main(argv, bd=None):
               'retroboot.pixel_scale': pixel_scale,
               'retroboot.startup_ms': str(startup_ms) if startup_ms else None,
               'retroboot.rotation': old.get('retroboot.rotation'),
-              'retroboot.checker_scale': old.get('retroboot.checker_scale')}
+              'retroboot.checker_scale': old.get('retroboot.checker_scale'),
+              'retroboot.startup_style': 'macosx' if style == 'macosx' else None}
     display = opt(argv, '--display', bd.DISPLAY)
     fb = scanout(display)
     if fb:
@@ -169,7 +187,9 @@ def main(argv, bd=None):
         lw, lh = (fb['height'], fb['width']) if rot in (90, 270) else (fb['width'], fb['height'])
         scale = bd.effective_scale(lw, lh, pixel_scale)
         extra = ['--pixel-scale', pixel_scale, '--checker', 'auto', '--rotation', str(rot),
-                 '--progress', 'off', '--guest-size', guest_size] + (['--mm', f'{mm[0]}x{mm[1]}'] if mm else [])
+                 '--progress', 'on' if progress else 'off', '--guest-size', guest_size] + \
+                (['--style', style] if style != 'classic' else []) + \
+                (['--mm', f'{mm[0]}x{mm[1]}'] if mm else [])
         cs = checker_scale(bd, fb, scale, extra)
         if cs:
             values['retroboot.checker_scale'] = str(cs)

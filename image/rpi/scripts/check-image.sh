@@ -61,7 +61,7 @@ mount -o ro "${loop}p1" "$mnt"
 for f in config.txt cmdline.txt start4.elf fixup4.dat kernel8.img initramfs8 \
          bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2711-rpi-cm4.dtb bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb \
          bcm2712-rpi-500.dtb overlays/overlay_map.dtb overlays/vc4-kms-v3d.dtbo overlays/vc4-kms-v3d-pi4.dtbo \
-         overlays/vc4-kms-v3d-pi5.dtbo grub/retroboot/slots.env; do
+         overlays/vc4-kms-v3d-pi5.dtbo retroboot/slots.env; do
   [ -s "$mnt/$f" ] || fail "boot partition lacks $f"
 done
 ok "boot partition: $(ls "$mnt" | wc -l) entries, $(ls "$mnt/overlays" | wc -l) overlays, $(du -sh "$mnt" | cut -f1)"

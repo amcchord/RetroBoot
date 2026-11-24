@@ -549,11 +549,16 @@ void input_key(rbui *ui, int key, const char *utf8, unsigned mods)
         return;
     }
     if (key == RBUI_KEY_RETURN || key == RBUI_KEY_KP_ENTER) {
-        activate_button(ui, find_button(ui, NULL, 1), 1);
+        rb_node *btn = find_button(ui, NULL, 1);
+        if (!btn && ui->focus && ui->focus->type == N_BUTTON) btn = ui->focus;
+        activate_button(ui, btn, 1);
         return;
     }
     if (key == RBUI_KEY_ESCAPE || (cmd && utf8 && utf8[0] == '.' && !utf8[1])) {
-        activate_button(ui, find_button(ui, "cancel", 0), 1);
+        rb_node *btn = find_button(ui, "cancel", 0);
+        if (!btn) btn = find_button(ui, "back", 0);
+        if (!btn) btn = find_button(ui, "done", 0);
+        activate_button(ui, btn, 1);
         return;
     }
     rb_node *f = ui->focus;
@@ -753,6 +758,24 @@ static void press(rbui *ui, int x, int y)
         if (r_has(ui->menu_r, x, y)) {
             ui->track = TR_MENU;
             ui->menu_moved = 1;
+            ui->repeat_at = ui->now + RB_REPEAT_FIRST_MS;
+            if (ui->menu_arrows) {
+                rb_rect m = ui->menu_r;
+                int rows = ui->menu_rows - 2;
+                int scrolled = 0;
+                if (y < m.y + 3 + RB_MENU_ITEM_H) {
+                    if (ui->menu_first > 0) { ui->menu_first--; scrolled = 1; }
+                    ui->menu_sticky = 1;
+                } else if (y >= m.y + 3 + (rows + 1) * RB_MENU_ITEM_H) {
+                    if (ui->menu_first + rows < ui->menu->nopts) { ui->menu_first++; scrolled = 1; }
+                    ui->menu_sticky = 1;
+                }
+                if (scrolled) {
+                    ui->menu_hi = -1;
+                    ui_damage(ui, r_out(ui->menu_r, 3));
+                    return;
+                }
+            }
             menu_hover(ui, x, y);
         } else {
             menu_close(ui);
@@ -926,6 +949,8 @@ static void drag(rbui *ui, int x, int y)
             if (first != n->scroll) {
                 n->scroll = first;
                 ui_damage_node(ui, n);
+            } else {
+                ui_damage(ui, bar);
             }
         } else {
             int part = bar_part(bar, n->nopts, vis, n->scroll, y);
@@ -947,6 +972,7 @@ static void drag(rbui *ui, int x, int y)
                 long long top = y - ui->track_grab - track_y;
                 view_scroll_to(ui, (int)((top * max + span / 2) / span));
             }
+            ui_damage(ui, ui->vbar);
         } else {
             int part = bar_part(ui->vbar, ui->content_h, ui->view.h, ui->scroll, y);
             int in = r_has(ui->vbar, x, y) && (part == ui->track_part ||

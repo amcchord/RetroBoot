@@ -14,7 +14,7 @@ int rb_suggested_scale(int w, int h)
     int lng = w > h ? w : h, sht = w > h ? h : w;
     int s = 1;
     for (int c = 2; c <= 16; c++)
-        if (lng >= 720 * c && sht >= 540 * c)
+        if (lng >= 640 * c && sht >= 480 * c)
             s = c;
     return s;
 }
@@ -187,6 +187,54 @@ int rb_layout_logical(const rb_layout *phys, int s, rb_layout *out)
     out->requested = out->mode = RB_SCALING_INTEGER;
     out->k = phys->k / s;
     out->dst = (rb_rect){phys->dst.x / s, phys->dst.y / s, phys->src_w * out->k, phys->src_h * out->k};
+    return 0;
+}
+
+int rb_layout_panel(const rb_layout *phys, int s, rb_layout *out)
+{
+    if (rb_layout_logical(phys, s, out) == 0)
+        return 0;
+    if (!phys || s < 1 || phys->screen_w <= 0 || phys->screen_h <= 0 || phys->src_w <= 0 || phys->src_h <= 0 ||
+        phys->dst.w <= 0 || phys->dst.h <= 0)
+        return -1;
+    out->screen_w = (phys->screen_w + s - 1) / s;
+    out->screen_h = (phys->screen_h + s - 1) / s;
+    out->src_w = phys->src_w;
+    out->src_h = phys->src_h;
+    out->requested = phys->requested;
+    int dx = phys->dst.x / s, dy = phys->dst.y / s;
+    int dw = (phys->dst.w + s / 2) / s, dh = (phys->dst.h + s / 2) / s;
+    if (dx < 0)
+        dx = 0;
+    if (dy < 0)
+        dy = 0;
+    if (dw < 1)
+        dw = 1;
+    if (dh < 1)
+        dh = 1;
+    if (dx >= out->screen_w)
+        dx = out->screen_w - 1;
+    if (dy >= out->screen_h)
+        dy = out->screen_h - 1;
+    if (dx + dw > out->screen_w)
+        dw = out->screen_w - dx;
+    if (dy + dh > out->screen_h)
+        dh = out->screen_h - dy;
+    out->mode = RB_SCALING_FIT;
+    out->k = 1;
+    out->dst = (rb_rect){dx, dy, dw, dh};
+    out->x0 = malloc(sizeof(int) * dw);
+    out->x1 = malloc(sizeof(int) * dw);
+    out->xw = malloc(dw);
+    out->y0 = malloc(sizeof(int) * dh);
+    out->y1 = malloc(sizeof(int) * dh);
+    out->yw = malloc(dh);
+    if (!out->x0 || !out->x1 || !out->xw || !out->y0 || !out->y1 || !out->yw) {
+        rb_layout_free(out);
+        return -1;
+    }
+    build_axis(phys->src_w, 1, dw, out->x0, out->x1, out->xw);
+    build_axis(phys->src_h, 1, dh, out->y0, out->y1, out->yw);
     return 0;
 }
 

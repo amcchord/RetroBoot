@@ -45,6 +45,11 @@ set gfxpayload=keep
 # firmware image stays until the checkerboard is painted.
 set gfxterm_preserve_screen=1
 terminal_output gfxterm
+if [ "$rb_checker" = "/grub/retroboot/checker-default.png" ]; then
+	if regexp '^(640|720|800|1024|1152|1280|1360|1366)x' "$gfxmode"; then
+		set rb_checker=/grub/retroboot/checker-default-s1.png
+	fi
+fi
 background_image -m normal "$rb_checker"
 # gfxterm repaints only when some cell is dirty: one (invisible) space makes the
 # first swap to the screen carry the checkerboard instead of a black back buffer.

@@ -9,7 +9,7 @@
 #   INIT_NAME          Mac file name (default "RetroBoot Idle")
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-tc=${RETRO68_TOOLCHAIN:-/opt/retro68/toolchain}
+tc=${RETRO68_TOOLCHAIN:-/Users/austinmcchord/Development/ClassicMac/vendor/Retro68-build/toolchain}
 build=${BUILD:-$here/build}
 out=${OUT:-$build/tree}
 name=${INIT_NAME:-RetroBoot Idle}

@@ -23,6 +23,8 @@ import asyncio
 import collections
 import logging
 import secrets
+import shutil
+import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
@@ -104,6 +106,7 @@ class Viewer:
         self.closed = False
         self.ending = False            # told why and being closed: no more input
         self.private_sent: bool | None = None
+        self.audio_on = False
 
     @property
     def holder(self) -> str:
@@ -173,6 +176,8 @@ class RemoteScreen:
         self.key_burst = float(getattr(cfg, "remote_key_burst", 96.0) or 96.0)
         self._key_tokens = self.key_burst
         self._key_t = mono()
+        self._audio_task: asyncio.Task | None = None
+        self.audio_provider = None
         self.trace_keys = bool(getattr(cfg, "remote_trace_keys", False))   # lab: log every key to the presenter
         self.viewers: dict[str, Viewer] = {}
         self.tap = TapClient(str(app.paths.remote_sock), self._on_surface, self._on_tap_close)
@@ -236,6 +241,7 @@ class RemoteScreen:
                 v.post({"t": "mode", "mode": new})
         self._push_viewers()
         await self._broadcast_viewers()
+        self._sync_audio_loop()
 
     def set_source(self, src: str) -> bool:
         """The picture every browser gets: what the display shows, or Mac OS alone."""
@@ -272,6 +278,7 @@ class RemoteScreen:
             self._mark_full(v)
         self._push_viewers()
         await self._broadcast_viewers()
+        self._sync_audio_loop()
         self._joined.set()
         if self._closing:
             return
@@ -295,6 +302,7 @@ class RemoteScreen:
                                  inputs=v.inputs, dropped_input=v.dropped)
         self._push_viewers()
         await self._broadcast_viewers()
+        self._sync_audio_loop()
 
     def _push_viewers(self) -> None:
         if self.tap.connected:
@@ -340,6 +348,9 @@ class RemoteScreen:
             v.buttons.clear()
 
     def _private_doc(self) -> bool:
+        fn = getattr(self.app, "is_pairing_visible", None)
+        if callable(fn):
+            return bool(fn())
         panel = getattr(self.app, "panel", None)
         return (panel is not None and getattr(panel, "visible", False)
                 and getattr(getattr(panel, "screen", None), "doc_id", None) in PRIVATE_DOCS)
@@ -595,6 +606,11 @@ class RemoteScreen:
         if t == "panel-back":
             await self._panel_back(v)
             return
+        if t == "audio":
+            v.audio_on = bool(msg.get("on"))
+            self._sync_audio_loop()
+            await v.send_json({"t": "audio", "on": v.audio_on, "available": self._audio_available()})
+            return
         if t not in ("move", "button", "wheel", "key", "caps", "combo", "type", "cancel"):
             return
         if v.mode != "control" or self.setting() != "control":
@@ -659,9 +675,19 @@ class RemoteScreen:
             if name == "CapsLock":
                 return    # the lock state travels as "caps"
             if down:
-                # The Command/Option choice follows the setting at the moment of the press;
-                # the release always goes to the key that was pressed.
+                # The Command/Option choice follows the setting at the moment of the press
+                # consistently in both PANEL and GUEST modes; the release always goes to
+                # the key that was pressed. When swapped on PC, preserve Ctrl+Alt+<chord>
+                # so the recovery shortcut still reaches the presenter cleanly.
                 v.swap = keymap.swap_for(v.platform, self.swap_setting(), v.swap_override)
+                chord_keys = keymap.combo_keys(
+                    "recovery", self.app.settings.applied.get("input.recovery_chord", "ctrl+alt+delete"))
+                if (v.swap and chord_keys and len(chord_keys) == 3
+                        and keymap.to_evdev(name, False) == chord_keys[-1]
+                        and any(k in v.keys for k in (keymap.EVDEV["LEFTCTRL"], keymap.EVDEV["RIGHTCTRL"]))
+                        and any(h in v.held for h in ("AltLeft", "AltRight"))):
+                    asyncio.get_running_loop().create_task(self._combo(v, chord_keys))
+                    return
                 code = keymap.to_evdev(name, v.swap)
                 if code is None or name in v.held:
                     return
@@ -792,17 +818,88 @@ class RemoteScreen:
 
     async def _panel_back(self, v: Viewer) -> None:
         """Leave a panel screen that shows a pairing code (the page cannot show it)."""
+        if v.mode != "control" or not self._private_doc():
+            return
         panel = getattr(self.app, "panel", None)
         screen = getattr(panel, "screen", None)
-        if v.mode != "control" or not getattr(panel, "visible", False) or \
-                getattr(screen, "doc_id", None) not in PRIVATE_DOCS:
-            return
         if hasattr(screen, "action"):
             self.app.lifecycle.event("remote_screen_panel_back", viewer=v.id, doc=getattr(screen, "doc_id", None))
             await screen.action("cancel", {})
 
+    def _audio_available(self) -> bool:
+        return bool(self.audio_provider is not None or shutil.which("pw-record") or shutil.which("parec"))
+
+    def _sync_audio_loop(self) -> None:
+        want = not self._closing and any(v.audio_on and not v.closed for v in self.viewers.values())
+        if want and (self._audio_task is None or self._audio_task.done()):
+            self._audio_task = asyncio.get_running_loop().create_task(self._run_audio(), name="remote-audio")
+        elif not want and self._audio_task is not None and not self._audio_task.done():
+            self._audio_task.cancel()
+
+    def _broadcast_audio(self, rate: int, channels: int, pcm: bytes) -> None:
+        if not pcm or self._private():
+            return
+        pkt = struct.pack(">cIB", b"A", rate, channels) + pcm
+        for v in list(self.viewers.values()):
+            if v.audio_on and not v.closed and not getattr(v, "_audio_sending", False):
+                v._audio_sending = True
+                fut = v.post(pkt)
+                fut.add_done_callback(lambda _f, viewer=v: setattr(viewer, "_audio_sending", False))
+
+    async def _run_audio(self) -> None:
+        proc = None
+        try:
+            if self.audio_provider is not None:
+                async for rate, ch, pcm in self.audio_provider():
+                    if not any(v.audio_on and not v.closed for v in self.viewers.values()):
+                        break
+                    self._broadcast_audio(int(rate), int(ch), bytes(pcm))
+                return
+            rate, ch = 44100, 2
+            cmd: list[str] | None = None
+            if shutil.which("pw-record"):
+                cmd = ["pw-record", "--format=s16", f"--rate={rate}", f"--channels={ch}", "--raw", "-"]
+            elif shutil.which("parec"):
+                cmd = ["parec", "--format=s16le", f"--rate={rate}", f"--channels={ch}", "--latency-msec=40"]
+                if shutil.which("pactl"):
+                    try:
+                        p = await asyncio.create_subprocess_exec(
+                            "pactl", "get-default-sink",
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                        out, _ = await asyncio.wait_for(p.communicate(), timeout=2)
+                        sink = out.decode().strip()
+                        if sink:
+                            cmd += ["--device", f"{sink}.monitor"]
+                    except Exception:
+                        pass
+            if cmd is None:
+                return
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            assert proc.stdout is not None
+            chunk_bytes = 3528  # ~20 ms stereo 44.1 kHz s16le
+            while any(v.audio_on and not v.closed for v in self.viewers.values()):
+                pcm = await proc.stdout.read(chunk_bytes)
+                if not pcm:
+                    break
+                self._broadcast_audio(rate, ch, pcm)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.debug("remote audio stream stopped", exc_info=True)
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except (asyncio.TimeoutError, OSError):
+                    proc.kill()
+
     async def close(self) -> None:
         self._closing = True
+        if self._audio_task and not self._audio_task.done():
+            self._audio_task.cancel()
         if self._task:
             self._task.cancel()
         for v in list(self.viewers.values()):

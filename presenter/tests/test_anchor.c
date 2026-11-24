@@ -43,7 +43,8 @@ static const struct layout layouts[] = {
     {"1920x1080 at 2x (15.6-inch laptop)", 1920, 1080, 0, 2, 344, 194, 0, 0, 2, 2, 2},
     {"1920x1080 at 2x, 640x480 guest", 1920, 1080, 0, 2, 531, 299, 640, 480, 2, 2, 2},
     {"1920x1080 at 1x, 800x600 guest", 1920, 1080, 0, 1, 531, 299, 800, 600, 1, 1, 1},
-    {"2160x1440 at 2x (N5105)", 2160, 1440, 0, 0, 296, 197, 0, 0, 2, 2, 2},
+    {"2160x1440 at 2x (N5105)", 2160, 1440, 0, 2, 296, 197, 0, 0, 2, 2, 2},
+    {"2160x1440 at auto (3x)", 2160, 1440, 0, 0, 296, 197, 0, 0, 3, 3, 3},
     {"1366x768 (size unknown)", 1366, 768, 0, 0, 0, 0, 0, 0, 1, 1, 1},
     {"1366x768 (11.6-inch, 2-pixel pattern)", 1366, 768, 0, 0, 256, 144, 0, 0, 1, 2, 1},
     {"GPD MicroPC 720x1280 Right Side Up (3-pixel pattern)", 720, 1280, 90, 0, 75, 133, 0, 0, 1, 3, 1},
@@ -236,7 +237,7 @@ int main(void)
 {
     for (size_t i = 0; i < sizeof layouts / sizeof layouts[0]; i++)
         check_layout(&layouts[i]);
-    CHECK_EQ(matched_layouts, 10);
+    CHECK_EQ(matched_layouts, 11);
     test_units();
     TEST_DONE();
 }

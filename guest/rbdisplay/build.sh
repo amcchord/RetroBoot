@@ -15,7 +15,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-tc=${RETRO68_TOOLCHAIN:-/opt/retro68/toolchain}
+tc=${RETRO68_TOOLCHAIN:-/Users/austinmcchord/Development/ClassicMac/vendor/Retro68-build/toolchain}
 out=${OUT:-$here/build/tree}
 cmake -S "$here" -B "$here/build/cmake" \
     -DCMAKE_TOOLCHAIN_FILE="$tc/powerpc-apple-macos/cmake/retroppc.toolchain.cmake" \

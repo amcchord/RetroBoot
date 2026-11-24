@@ -145,6 +145,43 @@ def prepare(machine, package: Path) -> bool:
     return True
 
 
+def effective_ram_mb(machine, settings: dict, options=None, graphics_card: str | None = None) -> int:
+    """Resolve OS X RAM honoring per-machine settings, template, and smart Tiger host-RAM defaults (#44)."""
+    from . import hostinfo
+    floor = 256 if machine.guest_os == "macosx-10.4" else 128
+    meta = getattr(machine, "meta", None) or {}
+    ms = meta.get("settings") if isinstance(meta.get("settings"), dict) else {}
+    tpl = meta.get("template") if isinstance(meta.get("template"), dict) else {}
+
+    per_osx = ms.get("osx_ram_mb")
+    per_ram = ms.get("ram_mb")
+    if per_osx not in (None, "auto"):
+        ram = per_osx
+    elif settings.get("machine.osx_ram_mb", "auto") != "auto":
+        ram = settings["machine.osx_ram_mb"]
+    elif per_ram not in (None, "auto"):
+        ram = per_ram
+    elif isinstance(tpl.get("ramMB"), int) and not isinstance(tpl.get("ramMB"), bool) \
+            and settings.get("machine.ram_mb") in (None, 512):
+        ram = tpl["ramMB"]
+    else:
+        ram = settings["machine.ram_mb"]
+        if (ram == 512 and machine.guest_os == "macosx-10.4"
+                and settings.get("machine.osx_ram_mb", "auto") == "auto"):
+            host_mb = getattr(options, "host_ram_mb", None) if options is not None else None
+            if host_mb is None:
+                mem = hostinfo.memory_bytes()
+                host_mb = (mem // (1024 * 1024)) if mem else None
+            if host_mb is not None and host_mb >= 3500:
+                is_deluxe = "deluxe" in f"{getattr(machine, 'id', '')} {getattr(machine, 'name', '')}".lower()
+                want = 2048 if (graphics_card == "ati-radeon" or is_deluxe or host_mb >= 5500) else 1024
+                ram = max(floor, min(2048, want))
+
+    if type(ram) is not int or not floor <= ram <= 2048:
+        raise MachineError(f"This Mac OS X version needs {floor} MB to 2048 MB of memory.")
+    return ram
+
+
 def build_argv(machine, settings: dict, paths, display: dict | None, options) -> list[str]:
     """Conservative G4/PMU profile; native OS X drivers own USB and Ethernet.
 
@@ -154,25 +191,27 @@ def build_argv(machine, settings: dict, paths, display: dict | None, options) ->
     """
     if not package_capable(paths.qemu_osx_package):
         raise MachineUnavailable(NO_PACKAGE)
-    ram = settings.get("machine.osx_ram_mb", "auto")
-    if ram == "auto":
-        ram = settings["machine.ram_mb"]
-    floor = 256 if machine.guest_os == "macosx-10.4" else 128
-    if type(ram) is not int or not floor <= ram <= 2048:
-        raise MachineError(f"This Mac OS X version needs {floor} MB to 2048 MB of memory.")
+    from . import graphics
+    package = Path(safe_path(paths.qemu_osx_package, "OS X emulator package", "dir"))
+    eff_settings = graphics.machine_settings(settings, machine, package)
+    gfx_card = graphics.STANDARD if options.boot_cd else graphics.effective(eff_settings, machine, package)
+    ram = effective_ram_mb(machine, eff_settings, options, graphics_card=gfx_card)
     tb = options.tb_size_mb
     if type(tb) is not int or tb not in (128, 256, 512):
         raise MachineError("Unsupported translation buffer size")
-    package = Path(safe_path(paths.qemu_osx_package, "OS X emulator package", "dir"))
     bios = package / "share/qemu"
     qemu = safe_path(package / "bin/qemu-system-ppc", "emulator")
     firmware = safe_path(package / FIRMWARE, "Mac OS X Open Firmware")
     disk = safe_path(machine.disk, "disk")
     rtc = rtc_base(read_nvram(machine.nvram))
     nvram = safe_path(machine.nvram, "OS X startup memory")
-    w, h = guest_geometry(display, settings["display.guest_size"], settings.get("display.pixel_scale", "auto"))
+    w, h = guest_geometry(display, eff_settings["display.guest_size"], eff_settings.get("display.pixel_scale", "auto"))
+    if gfx_card == graphics.ATI:
+        screen = graphics.osx_ati_screen(display, eff_settings, exact=True)
+        if eff_settings.get("display.guest_size", "auto") == "auto" and (w, h) != screen and (w < 1024 or h < 600):
+            w, h = screen
     name = re.sub(r"[^A-Za-z0-9 ._-]", "", machine.name)[:40] or machine.id
-    audio = qemu_audiodev(options.audio_device) if settings["audio.enabled"] and options.audio_capable else "none,id=snd0"
+    audio = qemu_audiodev(options.audio_device) if eff_settings["audio.enabled"] and options.audio_capable else "none,id=snd0"
     args = [qemu, "-accel", f"tcg,tb-size={tb}", "-M", "mac99,via=pmu,usb=off,audiodev=snd0",
             "-cpu", "7400", "-m", str(ram),
             "-L", str(bios), "-bios", firmware, "-global", "macio-nvram.osx-flash=on",
@@ -210,8 +249,7 @@ def build_argv(machine, settings: dict, paths, display: dict | None, options) ->
         # The separate OS X NDRV reads the detailed EDID timing. Its geometry
         # must agree with the firmware's initial framebuffer hint.
         args += ["-global", f"VGA.xres={w}", "-global", f"VGA.yres={h}"]
-    from . import graphics
-    if not options.boot_cd and graphics.effective(settings, machine, package) == graphics.ATI:
+    if not options.boot_cd and gfx_card == graphics.ATI:
         for value in ("std", "VGA.romfile=", "VGA.vgamem_mb=64"):
             index = args.index(value)
             del args[index - 1:index + 1]
@@ -219,7 +257,7 @@ def build_argv(machine, settings: dict, paths, display: dict | None, options) ->
             if value in args:
                 index = args.index(value)
                 del args[index - 1:index + 1]
-        screen = graphics.ati_size((w, h), exact=True)
+        screen = graphics.osx_ati_screen(display, eff_settings, exact=True)
         from .osx_graphics import (COHERENT_FEATURE, I8_FEATURE, YUV_VIEW_FEATURE, YUV_RAM_FEATURE,
                                    DEPTH_MEMORY_FEATURE, SELECTIVE_2D_FEATURE,
                                    TEXTURE_PAGE_FEATURE, RAM_SOURCE_FEATURE)

@@ -335,7 +335,7 @@ void rb_startup_geometry(struct rb_startup_geom *g, int W, int H, int s, int pix
         g->land_y = l.dst.y + (int)(((long)(iy + RB_ICON_SIZE / 2) * l.dst.h) / gh) - RB_ICON_SIZE / 2;
     }
     rb_layout_free(&l);
-    *g = rb_startup_geom_at(g, g->k);
+    *g = rb_startup_geom_at(g, rb_startup_boot_q(W, H, g->k));
 }
 
 void rb_startup_scene(uint32_t *px, int stride_px, int W, int H, rb_rect clip, int cs, const struct rb_startup_geom *g,

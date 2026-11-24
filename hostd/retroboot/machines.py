@@ -400,6 +400,18 @@ class Machine:
             self.meta["schema_version"] = OSX_SCHEMA
         atomic_write_json(self.dir / "machine.json", self.meta)
 
+    def settings(self) -> dict:
+        raw = self.meta.get("settings")
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def cpu_label(self, active_cpu: str | None = None) -> str:
+        if self.quadra:
+            return "Motorola 68040"
+        if self.osx:
+            return "PowerPC G4 (7400)"
+        cpu = self.settings().get("cpu") or active_cpu or "7400"
+        return "PowerPC G3" if cpu == "g3" else "PowerPC G4 (7400)"
+
     def public(self) -> dict:
         st = self.state()
         try:
@@ -412,7 +424,135 @@ class Machine:
                 "disk": disk, "clean": st.get("clean", True), "last_exit": st.get("last_exit"),
                 "prep": self.meta.get("prep"), "blank": self.blank,
                 "startup_volume": self.startup_volume() if self.blank else "system",
-                "family": self.family, "family_label": FAMILY_LABELS[self.family], "guest_os": self.guest_os}
+                "family": self.family, "family_label": FAMILY_LABELS[self.family], "guest_os": self.guest_os,
+                "settings": self.settings(), "cpu_label": self.cpu_label()}
+
+
+_CLASSIC_RAM_CHOICES = (256, 384, 512, 768, 896)
+_OSX_RAM_CHOICES = (128, 256, 384, 512, 768, 896, 1024, 1536, 2048)
+_QUADRA_RAM_CHOICES = (64, 128, 256)
+_VALID_GRAPHICS = ("vga", "ati-radeon")
+_VALID_ADAPTERS = ("ethernet", "airport")
+_VALID_CPUS = ("7400", "g3")
+
+
+def _snap_ram(val: int, choices: tuple[int, ...], minimum: int = 0) -> int:
+    eligible = [c for c in choices if c >= minimum]
+    if not eligible:
+        return choices[-1]
+    if val in eligible:
+        return val
+    above = [c for c in eligible if c >= val]
+    return above[0] if above else eligible[-1]
+
+
+def default_machine_settings(machine: Machine, *, recommended_settings: dict | None = None,
+                             host_ram_mb: int | None = None, gl_available: bool = False,
+                             quadra_max_mb: int | None = None) -> dict:
+    """Initial per-Mac hardware settings derived from catalog recommendedSettings,
+    machine.json['template'], and host RAM / OpenGL capabilities (#44)."""
+    rs = dict(recommended_settings or machine.meta.get("recommended_settings") or {})
+    tpl = machine.meta.get("template") if isinstance(machine.meta.get("template"), dict) else {}
+    out: dict[str, Any] = {}
+    if machine.osx:
+        tpl_id = str((machine.meta.get("source") or {}).get("template_id") or "")
+        is_deluxe = "deluxe" in machine.id.lower() or "deluxe" in machine.name.lower() or "deluxe" in tpl_id.lower()
+        req_ram = rs.get("osx_ram_mb") or rs.get("ram_mb") or tpl.get("ramMB")
+        req_ram = int(req_ram) if isinstance(req_ram, int) and not isinstance(req_ram, bool) else None
+        floor = 256 if machine.guest_os == "macosx-10.4" else 128
+        if is_deluxe or (req_ram and req_ram >= 2048):
+            if host_ram_mb is None or host_ram_mb >= 3500:
+                target = 2048
+            elif host_ram_mb >= 1800:
+                target = 1024
+            else:
+                target = max(floor, 512)
+        elif machine.guest_os == "macosx-10.4" and (host_ram_mb is None or host_ram_mb >= 3500):
+            target = max(req_ram or 0, 1024)
+        else:
+            target = req_ram or (512 if machine.guest_os == "macosx-10.4" else 256)
+        out["osx_ram_mb"] = _snap_ram(target, _OSX_RAM_CHOICES, floor)
+        want_gfx = rs.get("graphics") or tpl.get("graphics")
+        if want_gfx == "ati-radeon" and gl_available:
+            out["graphics"] = "ati-radeon"
+        else:
+            out["graphics"] = "vga"
+        out["guest_adapter"] = "ethernet"
+    elif machine.quadra:
+        req_ram = rs.get("ram_mb") or tpl.get("ramMB")
+        choices = tuple(c for c in _QUADRA_RAM_CHOICES if quadra_max_mb is None or c <= quadra_max_mb) or (64,)
+        if isinstance(req_ram, int) and not isinstance(req_ram, bool) and req_ram in choices:
+            out["ram_mb"] = req_ram
+        else:
+            out["ram_mb"] = 128 if 128 in choices and (host_ram_mb is None or host_ram_mb >= 1024) else choices[0]
+    else:
+        req_ram = rs.get("ram_mb") or tpl.get("ramMB")
+        if isinstance(req_ram, int) and not isinstance(req_ram, bool):
+            out["ram_mb"] = _snap_ram(req_ram, _CLASSIC_RAM_CHOICES)
+        if rs.get("graphics") in _VALID_GRAPHICS:
+            out["graphics"] = rs["graphics"] if rs["graphics"] != "ati-radeon" or gl_available else "vga"
+        if rs.get("guest_adapter") in _VALID_ADAPTERS:
+            out["guest_adapter"] = rs["guest_adapter"]
+        if tpl.get("useG4CPU") is False:
+            out["cpu"] = "g3"
+        elif rs.get("cpu") in _VALID_CPUS:
+            out["cpu"] = rs["cpu"]
+    return out
+
+
+def validate_machine_settings(machine: Machine, changes: dict, *, host_ram_mb: int | None = None,
+                              quadra_max_mb: int | None = None, gl_available: bool = True) -> dict:
+    """Validate and merge per-machine settings for ``machine.json['settings']``."""
+    if not isinstance(changes, dict):
+        raise ValueError("Settings must be a JSON object.")
+    cur = machine.settings()
+    allowed = {"graphics", "guest_adapter"}
+    if machine.osx:
+        allowed |= {"osx_ram_mb", "ram_mb"}
+    elif machine.quadra:
+        allowed |= {"ram_mb"}
+    else:
+        allowed |= {"ram_mb", "cpu"}
+    unknown = set(changes) - allowed
+    if unknown:
+        raise ValueError(f"Unsupported per-machine setting(s): {', '.join(sorted(unknown))}.")
+    merged = dict(cur)
+    for k, v in changes.items():
+        if k == "osx_ram_mb" or (machine.osx and k == "ram_mb"):
+            if type(v) is not int or v not in _OSX_RAM_CHOICES:
+                raise ValueError(f"Mac OS X memory must be one of {_OSX_RAM_CHOICES} MB.")
+            if machine.guest_os == "macosx-10.4" and v < 256:
+                raise ValueError("Mac OS X 10.4 Tiger needs at least 256 MB of memory.")
+            merged["osx_ram_mb"] = v
+        elif k == "ram_mb" and machine.quadra:
+            choices = tuple(c for c in _QUADRA_RAM_CHOICES if quadra_max_mb is None or c <= quadra_max_mb)
+            if type(v) is not int or v not in choices:
+                raise ValueError(f"68k Mac memory must be one of {choices} MB.")
+            merged["ram_mb"] = v
+        elif k == "ram_mb":
+            if type(v) is not int or v not in _CLASSIC_RAM_CHOICES:
+                raise ValueError(f"Classic Mac memory must be one of {_CLASSIC_RAM_CHOICES} MB.")
+            merged["ram_mb"] = v
+        elif k == "graphics":
+            val = "vga" if v == "standard" else v
+            if val not in _VALID_GRAPHICS:
+                raise ValueError("Graphics must be vga or ati-radeon.")
+            if val == "ati-radeon" and not gl_available:
+                raise ValueError("ATI Radeon 3D acceleration is not available on this computer.")
+            if machine.quadra and val != "vga":
+                raise ValueError("68k Macs use Standard VGA display.")
+            merged["graphics"] = val
+        elif k == "guest_adapter":
+            if v not in _VALID_ADAPTERS:
+                raise ValueError("Network adapter must be ethernet or airport.")
+            if (machine.osx or machine.quadra) and v != "ethernet":
+                raise ValueError("AirPort is only available for Classic PowerPC Mac OS.")
+            merged["guest_adapter"] = v
+        elif k == "cpu":
+            if v not in _VALID_CPUS:
+                raise ValueError("Processor must be 7400 or g3.")
+            merged["cpu"] = v
+    return merged
 
 
 def startup_volume(disk: Path, *, osx: bool = False) -> str:
@@ -774,12 +914,18 @@ def build_argv(machine: Machine, settings: dict, paths: Paths, display: dict | N
     if machine.family == QUADRA800:          # a 68k Mac: QEMU q800 (quadra.py)
         from .quadra import build_argv as quadra_argv
         return quadra_argv(machine, settings, paths, display, options)
-    cpu = settings["machine.cpu"]
+    per = machine.settings()
+    cpu = per.get("cpu") or settings["machine.cpu"]
     if cpu not in ("g3", "7400"):
         raise MachineError("Unsupported CPU")
-    ram = settings["machine.ram_mb"]
+    ram = per.get("ram_mb") if per.get("ram_mb") is not None else settings["machine.ram_mb"]
     if type(ram) is not int or not 128 <= ram <= 1024:
         raise MachineError("RAM outside prototype bounds")
+    eff_settings = dict(settings)
+    if per.get("graphics") in _VALID_GRAPHICS:
+        eff_settings["display.graphics"] = per["graphics"]
+    if per.get("guest_adapter") in _VALID_ADAPTERS:
+        eff_settings["network.guest_adapter"] = per["guest_adapter"]
     package = safe_path(paths.qemu_package, "qemu package", "dir")
     bios = Path(package) / "share/qemu"
     qemu = safe_path(Path(package) / "bin/qemu-system-ppc", "qemu")
@@ -821,14 +967,14 @@ def build_argv(machine: Machine, settings: dict, paths: Paths, display: dict | N
     # The graphics card (graphics.py): std-VGA, or the experimental ATI Radeon when it is
     # requested, the package has it and Mac OS has ATI's drivers.  Never for the CD route.
     from . import graphics
-    card = graphics.STANDARD if boot_cd else graphics.effective(settings, machine, paths.qemu_package)
+    card = graphics.STANDARD if boot_cd else graphics.effective(eff_settings, machine, paths.qemu_package)
     if card != graphics.STANDARD:
         accelerated = False      # the accelerated boot's hand-off is a std-VGA feature
     # With the card Mac OS starts at ATI's own startup mode (-g) and RetroBoot Display
     # sets the Mac screen hostd chose (-prom-env retroboot-display=WxH) before the Finder;
     # with a package that has ati-edid-modes the card's monitor (EDID) offers exactly it.
     exact = card == graphics.ATI and graphics.edid_modes(paths.qemu_package)
-    startup, card_args = graphics.launch_args(card, display, settings, exact)
+    startup, card_args = graphics.launch_args(card, display, eff_settings, exact)
     if startup:
         width, height = startup
     tb = options.tb_size_mb
@@ -836,7 +982,7 @@ def build_argv(machine: Machine, settings: dict, paths: Paths, display: dict | N
         raise MachineError("Unsupported translation buffer size")
     args = [qemu, "-accel", f"tcg,tb-size={tb}", "-M", f"mac99,via={via},audiodev=snd0",
             "-cpu", cpu, "-m", str(ram), *data_dirs,
-            *graphics.launch_device_args(card, display, settings, exact,
+            *graphics.launch_device_args(card, display, eff_settings, exact,
                                          direct_framebuffer=direct_framebuffer(machine.meta.get("template"))),
             "-global", f"macio-ide.dma-completion-delay-ns={1000000 if boot_cd else 0}",
             # Disk boots: finish an in-flight PIO read before a status read, so OpenBIOS's

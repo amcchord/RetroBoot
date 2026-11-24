@@ -20,6 +20,8 @@ boot_delay=0
 # dtoverlay= line: a dtparam= after one sets that overlay's parameter instead (vc4-kms-v3d
 # has its own "audio", HDMI audio, on by default). Raspberry Pi OS uses the same order.
 dtparam=audio=on
+# Hardware watchdog for automatic tryboot rollback if an update hangs before hostd.
+dtparam=watchdog=on
 
 # KMS display driver (vc4) for HDMI with up to two outputs, HDMI audio included; Linux (the
 # presenter) picks the mode from the EDID itself instead of a mode passed by the firmware.

@@ -115,10 +115,21 @@ Gemini PDA (``prefer="gemini"``):
 from __future__ import annotations
 
 import json
+import logging
+import math
+import os
 import re
 import shutil
+import struct
 import subprocess
+import tempfile
 from pathlib import Path
+
+log = logging.getLogger("retroboot.audio")
+
+CHIME_NAMES = ("os9", "quadra", "powermac", "macii", "se")
+CHIME_SETTINGS = ("auto", *CHIME_NAMES, "off")
+CHIMES_DIR_DEFAULT = Path("/usr/share/retroboot/chimes")
 
 ASOUND = Path("/proc/asound")
 DRM_SYSFS = Path("/sys/class/drm")
@@ -264,7 +275,52 @@ def _sad_count(eld: dict) -> int:
         return 0
 
 
-def pick_output(outputs: list[dict], prefer: str = "hdmi") -> dict | None:
+def _match_output(outputs: list[dict], output: str | None, prefer: str = "hdmi",
+                  *, fallback: bool = True, bluetooth_sinks: list[dict] | None = None) -> dict | None:
+    req = (output or "auto").strip()
+    if not req or req == "auto":
+        return pick_output(outputs, prefer)
+    lower = req.lower()
+    if lower in ("speakers", "analog"):
+        found = next((o for o in outputs if o.get("kind") == "analog"), None)
+        return found if (found is not None or not fallback) else pick_output(outputs, prefer)
+    if lower == "hdmi":
+        found = next((o for o in outputs if o.get("kind") == "hdmi" and o.get("connected")), None)
+        if found is None:
+            found = next((o for o in outputs if o.get("kind") == "hdmi" and o.get("connected") is not False), None)
+        return found if (found is not None or not fallback) else pick_output(outputs, prefer)
+    if lower == "usb":
+        found = next((o for o in outputs if o.get("kind") == "usb"), None)
+        return found if (found is not None or not fallback) else pick_output(outputs, prefer)
+    if lower == "bluetooth" or req.startswith("bt:"):
+        sinks = list(bluetooth_sinks or ())
+        if req.startswith("bt:"):
+            target = req[3:]
+            found = next((s for s in sinks if s.get("pw_sink") == target or s.get("id") == req), None)
+        else:
+            found = next((s for s in sinks if s.get("available", True)), None)
+        if found is None:
+            found = next((o for o in outputs if o.get("kind") == "bluetooth"), None)
+        return found if (found is not None or not fallback) else pick_output(outputs, prefer)
+    if req.startswith("card:"):
+        spec = req[5:]
+        card_id, _, dev_str = spec.partition(":")
+        for o in outputs:
+            if o.get("card_id") == card_id and (not dev_str or str(o.get("device")) == dev_str):
+                return o
+        return pick_output(outputs, prefer) if fallback else None
+    if ":" in req or "=" in req:
+        try:
+            return configured(req)
+        except ValueError:
+            return pick_output(outputs, prefer) if fallback else None
+    found = next((o for o in outputs if o.get("card_id") == req or o.get("id") == req), None)
+    return found if (found is not None or not fallback) else pick_output(outputs, prefer)
+
+
+def pick_output(outputs: list[dict], prefer: str = "hdmi", output: str = "auto") -> dict | None:
+    if output and output != "auto":
+        return _match_output(outputs, output, prefer, fallback=True)
     hdmi = lambda o: o["kind"] == "hdmi" and o["connected"]  # noqa: E731
     analog = lambda o: o["kind"] == "analog"  # noqa: E731
     usb = lambda o: o["kind"] == "usb"  # noqa: E731
@@ -410,7 +466,7 @@ def vc4_softvol(output: dict | None, run=subprocess.run) -> bool | None:
 
     def present() -> bool:
         r = run(["amixer", "-c", card, "scontrols"], capture_output=True, text=True, timeout=5)
-        return r.returncode == 0 and "'PCM'" in r.stdout
+        return r.returncode == 0 and any(m.group(1) == "PCM" for m in _SCONTROL.finditer(r.stdout or ""))
     try:
         ok = present()
         if not ok:
@@ -435,7 +491,8 @@ def alsa_device(output: dict | None, pcms: set[str] | None = None) -> str | None
 
 
 def has_ucm(output: dict, root: Path = UCM_ROOT) -> bool:
-    return bool(output.get("asoc")) and (root / output["driver"]).is_dir() and bool(shutil.which("alsaucm"))
+    drv = output.get("driver")
+    return bool(output.get("asoc")) and bool(drv) and (root / str(drv)).is_dir() and bool(shutil.which("alsaucm"))
 
 
 def ucm_prepare(output: dict | None, run=subprocess.run, root: Path = UCM_ROOT,
@@ -639,22 +696,336 @@ def sound_setup_pending(sys_root: Path = SYSFS, proc: Path = PROC) -> list[str]:
     return pending_sound(sys_root) + (["alsactl"] if alsactl_running(proc) else [])
 
 
-def choose(root: Path = ASOUND, prefer: str = "hdmi", driving: list[str] | None = None,
-           drm: Path = DRM_SYSFS, pcms=list_pcms, sys_root: Path | None = None) -> dict | None:
-    """The output to use now, with its ALSA device string (None: use ALSA default).
-    ``driving`` and ``drm`` matter only for Raspberry Pi HDMI cards (mark_vc4_ports);
-    ``pcms`` is a set of PCM names or a function returning one (``aplay -L``), asked
-    only when a vc4 HDMI card is chosen.  ``sys_root``: as in playback_outputs."""
+def _probe_bluetooth_sinks(run=subprocess.run, which=shutil.which) -> list[dict]:
+    """Discover active Bluetooth audio sinks via pactl if a sound server is running."""
+    pactl = which("pactl") if which else None
+    if not pactl:
+        return []
+    try:
+        r = run([pactl, "list", "short", "sinks"], capture_output=True, text=True, timeout=1.5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0 or not r.stdout:
+        return []
+    sinks = []
+    for line in r.stdout.splitlines():
+        cols = line.split("\t")
+        if len(cols) < 2:
+            continue
+        sink_name = cols[1].strip()
+        if "bluez" not in sink_name.lower():
+            continue
+        label = sink_name.replace("bluez_output.", "").replace("bluez_sink.", "").split(".")[0].replace("_", ":")
+        sinks.append({"kind": "bluetooth", "card": None, "card_id": None, "device": None,
+                      "driver": "bluez", "name": f"Bluetooth Audio ({label})", "connected": True,
+                      "pw_sink": sink_name, "alsa": "pulse" if which("paplay") else None})
+    return sinks
+
+
+def _prepared_outputs(root: Path = ASOUND, driving: list[str] | None = None,
+                      drm: Path = DRM_SYSFS, pcms=list_pcms,
+                      sys_root: Path | None = None,
+                      bluetooth_sinks: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
     outputs = playback_outputs(root, sys_root)
     if any(o.get("vc4") for o in outputs):
         outputs = mark_vc4_ports(outputs, driving, drm)
-    out = pick_output(outputs, prefer)
+    if bluetooth_sinks is None:
+        bt = _probe_bluetooth_sinks() if root == ASOUND else []
+    else:
+        bt = [dict(s, kind="bluetooth") for s in bluetooth_sinks]
+    return outputs, bt
+
+
+def list_outputs(root: Path = ASOUND, driving: list[str] | None = None, drm: Path = DRM_SYSFS,
+                 pcms=list_pcms, active_output: str | None = None, *,
+                 sys_root: Path | None = None, bluetooth_sinks: list[dict] | None = None) -> list[dict]:
+    """Clean selectable audio outputs for Display & Sound UI (always starts with ``auto``)."""
+    outputs, bt = _prepared_outputs(root, driving, drm, pcms, sys_root, bluetooth_sinks)
+    names = None
+    if any(o.get("vc4") for o in outputs):
+        names = pcms() if callable(pcms) else pcms
+    cur = (active_output or "auto").strip() or "auto"
+    items: list[dict] = [{
+        "id": "auto",
+        "kind": "auto",
+        "label": "Automatic",
+        "card_id": None,
+        "device": None,
+        "alsa": None,
+        "sink": None,
+        "pw_sink": None,
+        "available": True,
+        "active": cur == "auto",
+    }]
+    primary_used: set[str] = set()
+    device_items: list[dict] = []
+    for out in outputs:
+        kind = out["kind"]
+        available = out.get("connected") is not False
+        if kind == "hdmi" and not available:
+            continue
+        if kind == "analog":
+            oid = "speakers" if "speakers" not in primary_used else f"card:{out['card_id']}:{out['device']}"
+            if oid == "speakers":
+                primary_used.add("speakers")
+            label_detail = out.get("name") or out.get("card_id") or ""
+            label = f"Built-in Speakers ({label_detail})" if label_detail else "Built-in Speakers"
+        elif kind == "hdmi":
+            oid = "hdmi" if "hdmi" not in primary_used else f"card:{out['card_id']}:{out['device']}"
+            if oid == "hdmi":
+                primary_used.add("hdmi")
+            detail = out.get("sink") or out.get("connector") or out.get("name") or out.get("card_id") or ""
+            label = f"HDMI / DisplayPort ({detail})" if detail else "HDMI / DisplayPort Audio"
+        else:
+            oid = "usb" if "usb" not in primary_used else f"card:{out['card_id']}:{out['device']}"
+            if oid == "usb":
+                primary_used.add("usb")
+            detail = out.get("name") or out.get("card_id") or ""
+            label = f"USB Audio ({detail})" if detail else "USB Audio"
+        device_items.append({
+            "id": oid,
+            "kind": kind,
+            "label": label,
+            "card_id": out.get("card_id"),
+            "device": out.get("device"),
+            "alsa": alsa_device(out, names),
+            "sink": out.get("sink"),
+            "pw_sink": None,
+            "available": available,
+            "active": cur == oid or (oid == "speakers" and cur == "analog"),
+        })
+    for s in bt:
+        sink = s.get("pw_sink") or s.get("sink")
+        oid = "bluetooth" if "bluetooth" not in primary_used else f"bt:{sink}"
+        primary_used.add("bluetooth")
+        device_items.append({
+            "id": oid,
+            "kind": "bluetooth",
+            "label": s.get("name") or "Bluetooth Audio",
+            "card_id": None,
+            "device": None,
+            "alsa": s.get("alsa"),
+            "sink": s.get("sink"),
+            "pw_sink": sink,
+            "available": bool(s.get("available", True)),
+            "active": cur == oid,
+        })
+    order = {"analog": 0, "hdmi": 1, "usb": 2, "bluetooth": 3}
+    device_items.sort(key=lambda item: (order.get(item["kind"], 9), 0 if item["id"] in ("speakers", "hdmi", "usb", "bluetooth") else 1))
+    items.extend(device_items)
+    return items
+
+
+def choose(root: Path = ASOUND, prefer: str = "hdmi", driving: list[str] | None = None,
+           drm: Path = DRM_SYSFS, pcms=list_pcms, sys_root: Path | None = None,
+           output: str = "auto", bluetooth_sinks: list[dict] | None = None) -> dict | None:
+    """The output to use now, with its ALSA device string (None: use ALSA default).
+    ``driving`` and ``drm`` matter only for Raspberry Pi HDMI cards (mark_vc4_ports);
+    ``pcms`` is a set of PCM names or a function returning one (``aplay -L``), asked
+    only when a vc4 HDMI card is chosen.  ``sys_root``: as in playback_outputs.
+    ``output`` honors ``audio.output`` (``auto``, ``speakers``, ``hdmi``, ``usb``,
+    ``bluetooth``, or a card/device selector)."""
+    outputs, bt = _prepared_outputs(root, driving, drm, pcms, sys_root, bluetooth_sinks)
+    out = _match_output(outputs, output, prefer, fallback=True, bluetooth_sinks=bt)
     if out is None:
         return None
+    if out.get("kind") == "bluetooth":
+        return dict(out)
+    if out.get("kind") == "configured":
+        return dict(out)
     names = None
     if out.get("vc4"):
         names = pcms() if callable(pcms) else pcms
     return dict(out, alsa=alsa_device(out, names))
+
+
+def supports_48khz(output: dict | None, root: Path = ASOUND) -> bool:
+    """Whether ``output`` supports 48 kHz playback natively for Tiger OS X output."""
+    if output is None:
+        return True
+    if output.get("keepalive") or output.get("vc4") or output.get("kind") in ("hdmi", "usb", "bluetooth"):
+        return True
+    if str(output.get("driver") or "").startswith(("HDA", "sof-", "vc4")):
+        return True
+    card = output.get("card")
+    if card is None:
+        return True
+    card_dir = root / f"card{card}"
+    try:
+        codecs = sorted(card_dir.glob("codec*"))
+    except OSError:
+        return True
+    found_rates = False
+    for codec in codecs:
+        try:
+            text = codec.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if "rates [" in line:
+                found_rates = True
+                if "48000" in line:
+                    return True
+    return not found_rates
+
+
+def resolve_chimes_dir(override: Path | str | None = None) -> Path:
+    if override is not None:
+        return Path(override)
+    env = os.environ.get("RB_CHIMES_DIR", "").strip()
+    return Path(env) if env else CHIMES_DIR_DEFAULT
+
+
+def resolve_chime_name(family: str = "powermac", chime_setting: str = "auto") -> str | None:
+    """Map ``audio.startup_chime`` and Mac family to the runtime WAV stem (or None)."""
+    setting = (chime_setting or "auto").strip().lower()
+    if setting in ("off", "none", ""):
+        return None
+    if setting == "auto":
+        return "quadra" if family in ("quadra800", "68k", "m68k") else "os9"
+    return setting if setting in CHIME_NAMES else None
+
+
+def chime_path(family: str = "powermac", chime_setting: str = "auto",
+               chimes_dir: Path | str | None = None) -> Path | None:
+    """Return the genuine WAV path for this chime if present on disk, else None."""
+    name = resolve_chime_name(family, chime_setting)
+    if name is None:
+        return None
+    path = resolve_chimes_dir(chimes_dir) / f"{name}.wav"
+    try:
+        return path if path.is_file() else None
+    except OSError:
+        return None
+
+
+def playback_command(wav: Path | str, output: dict | None = None, *, which=shutil.which) -> list[str]:
+    """Player command for an async WAV playback on the active output sink/device."""
+    path = str(wav)
+    pw_sink = (output or {}).get("pw_sink")
+    if pw_sink:
+        if which("pw-play"):
+            return ["pw-play", "--target", pw_sink, path]
+        if which("paplay"):
+            return ["paplay", "--device", pw_sink, path]
+    alsa = (output or {}).get("alsa")
+    if alsa and alsa not in ("pulse", "pipewire"):
+        return ["aplay", "-q", "-D", alsa, path]
+    if alsa == "pulse" and which("paplay"):
+        return ["paplay", path]
+    if which("aplay") or not (which("pw-play") or which("paplay")):
+        return ["aplay", "-q", path]
+    if which("pw-play"):
+        return ["pw-play", path]
+    return ["paplay", path]
+
+
+def prepare_output_for_playback(output: dict | None, run=subprocess.run, root: Path = ASOUND,
+                                warm_up_fn=warm_up) -> None:
+    """Apply UCM routing, HDA stage unmuting, vc4 softvol, and ES8336 warm-up before playing."""
+    if not output or output.get("kind") == "bluetooth":
+        return
+    try:
+        if has_ucm(output):
+            ucm_prepare(output, run=run, asound=root)
+        if output.get("vc4"):
+            vc4_softvol(output, run=run)
+        hda_output_stage(output, run=run)
+        alsa = output.get("alsa")
+        if output.get("keepalive") and alsa and warm_up_fn is not None:
+            warm_up_fn(output, alsa, run=run, root=root)
+    except Exception as exc:
+        log.debug("audio output prep skipped: %s", exc)
+
+
+def play_startup_chime(family: str = "powermac", chime_setting: str = "auto", *,
+                       output: str = "auto", audio_out: dict | None = None,
+                       root: Path = ASOUND, prefer: str = "hdmi",
+                       driving: list[str] | None = None, drm: Path = DRM_SYSFS,
+                       chimes_dir: Path | str | None = None,
+                       muted: bool = False, volume: int | None = None,
+                       run=subprocess.run, popen=subprocess.Popen,
+                       warm_up_fn=warm_up, which=shutil.which,
+                       bluetooth_sinks: list[dict] | None = None) -> bool:
+    """Play a genuine WAV startup chime asynchronously without popping amps or failing if missing."""
+    if muted or (volume is not None and int(volume) <= 0):
+        return False
+    wav = chime_path(family, chime_setting, chimes_dir)
+    if wav is None:
+        return False
+    out = audio_out
+    if out is None:
+        out = choose(root=root, prefer=prefer, driving=driving, drm=drm,
+                     output=output, bluetooth_sinks=bluetooth_sinks)
+    prepare_output_for_playback(out, run=run, root=root, warm_up_fn=warm_up_fn)
+    cmd = playback_command(wav, out, which=which)
+    try:
+        popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.info("startup chime not played: %s", exc)
+        return False
+
+
+def _test_beep_wav(rate: int = 48000) -> bytes:
+    """Plain 440 Hz diagnostic test beep WAV (used only by Test Sound when chimes WAVs are absent)."""
+    n = int(rate * 0.25)
+    frames = bytearray()
+    for i in range(n):
+        env = min(1.0, i / (rate * 0.015)) * min(1.0, (n - i) / (rate * 0.05))
+        sample = int(9000 * env * math.sin(2 * math.pi * 440 * i / rate))
+        frames += struct.pack("<h", sample)
+    return struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + len(frames), b"WAVE", b"fmt ",
+                       16, 1, 1, rate, rate * 2, 2, 16, b"data", len(frames)) + bytes(frames)
+
+
+def test_sound(output: str = "auto", *, audio_out: dict | None = None,
+               root: Path = ASOUND, prefer: str = "hdmi",
+               driving: list[str] | None = None, drm: Path = DRM_SYSFS,
+               pcms=list_pcms, chimes_dir: Path | str | None = None,
+               chime_setting: str = "auto", family: str = "powermac",
+               muted: bool = False, run=subprocess.run, popen=subprocess.Popen,
+               warm_up_fn=warm_up, which=shutil.which,
+               bluetooth_sinks: list[dict] | None = None,
+               run_dir: Path | None = None) -> dict:
+    """Play a short test sound on the selected output (Sound UI Test Sound button)."""
+    req = (output or "auto").strip() or "auto"
+    out = audio_out
+    if out is None:
+        outputs, bt = _prepared_outputs(root, driving, drm, pcms, None, bluetooth_sinks)
+        out = _match_output(outputs, req, prefer, fallback=(req == "auto"), bluetooth_sinks=bt)
+        if out is None:
+            if req != "auto":
+                return {"ok": False, "output": req, "device": None, "player": None,
+                        "error": f"Selected audio output '{req}' is not available."}
+        elif out.get("kind") not in ("bluetooth", "configured"):
+            names = (pcms() if callable(pcms) else pcms) if out.get("vc4") else None
+            out = dict(out, alsa=alsa_device(out, names))
+    if muted:
+        return {"ok": False, "output": req, "device": (out or {}).get("alsa") or (out or {}).get("pw_sink"),
+                "player": None, "error": "Sound is muted."}
+    wav = chime_path(family, "auto" if chime_setting == "off" else chime_setting, chimes_dir)
+    if wav is None:
+        croot = resolve_chimes_dir(chimes_dir)
+        for name in CHIME_NAMES:
+            candidate = croot / f"{name}.wav"
+            if candidate.is_file():
+                wav = candidate
+                break
+    if wav is None:
+        target_dir = Path(run_dir) if run_dir is not None else Path(tempfile.gettempdir())
+        target_dir.mkdir(parents=True, exist_ok=True)
+        wav = target_dir / "retroboot-test-sound.wav"
+        if not wav.exists():
+            wav.write_bytes(_test_beep_wav())
+    prepare_output_for_playback(out, run=run, root=root, warm_up_fn=warm_up_fn)
+    cmd = playback_command(wav, out, which=which)
+    device = (out or {}).get("pw_sink") or (out or {}).get("alsa")
+    try:
+        popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return {"ok": True, "output": req, "device": device, "player": cmd[0], "file": str(wav), "error": None}
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "output": req, "device": device, "player": cmd[0], "error": str(exc)}
 
 
 def configured(device: str) -> dict | None:

@@ -33,6 +33,7 @@ Policy:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import hashlib
 import json
@@ -40,6 +41,7 @@ import logging
 import os
 import shutil
 import signal
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -221,6 +223,9 @@ class Supervisor:
         # AirPort, ATI or USB, and its Mac OS keeps the CPU busy unless RetroBoot Idle runs.
         self.family: str = POWERMAC
         self.unavailable: str | None = None       # why the last start was refused (MachineUnavailable)
+        self.corrupt_disk_recovery: dict | None = None  # failed pre-launch disk repair state (#48)
+        self.manual_resize_notice: str | None = None    # Monitors mode blocking live RESIZE (#19)
+        self._last_osx_frame: tuple[int, int, bytes] | None = None
         # A 68k Mac's Restart is hostd's Shut Down and a new start (_restart_by_shutdown): set
         # when hostd's own Return goes to the verified dialog, {session, mono}.  Independent of
         # the request's intent, so a Shut Down Mac OS finishes after the request gave up (an
@@ -497,11 +502,19 @@ class Supervisor:
                 await self.upgrade_prep(machine, have, want)
         st = machine.state()
         if not just_prepared and not st.get("clean", True):
+            pre_fsck = await self._create_pre_fsck_backup(machine, st)
             res = await self._prep(machine)["repair"](machine.disk)
             self.log.event("disk_repair", machine=machine.id, why="previous session did not end cleanly",
-                           last_exit=(st.get("last_exit") or {}).get("reason"), **res)
+                           last_exit=(st.get("last_exit") or {}).get("reason"),
+                           pre_fsck=pre_fsck, **res)
             if res["result"] == "ok":
                 machine.set_state(repaired_at=wall())
+            elif res["result"] == "failed":
+                recovery = self._build_corrupt_disk_recovery(machine, res, pre_fsck)
+                self.corrupt_disk_recovery = recovery
+                log_fields = {("machine_name" if k == "name" else k): v for k, v in recovery.items()}
+                self.log.event("corrupt_disk_recovery", **log_fields)
+                return {"corrupt_disk_recovery": recovery}
         if getattr(machine, "quadra", False):
             # A 68k Mac: none of the Mac OS 9 hooks (AirPort, ATI, Control Strip, Platinum
             # bundle from an HFS+ disk); the presenter's startup geometry is the standard card's.
@@ -514,6 +527,160 @@ class Supervisor:
         await self.app.ensure_guest_isolation()          # Mac OS can't reach this computer's services
         await self.app.platinum.ensure(machine.disk)     # Platinum web/panel assets, once, disk idle
         return notice
+
+    async def _copy_pre_fsck_disk(self, src: Path, dst: Path) -> str:
+        """Create a reflink (or sparse/regular fallback) disk snapshot before fsck."""
+        from .util import run as run_cmd
+        for flags, method in ((["--reflink=always"], "reflink"),
+                              (["--reflink=auto", "--sparse=always"], "reflink-auto"),
+                              (["--reflink=auto"], "reflink-auto")):
+            rc, _, _ = await run_cmd(["cp", *flags, str(src), str(dst)], timeout=3600)
+            if rc == 0:
+                return method
+            try:
+                dst.unlink()
+            except FileNotFoundError:
+                pass
+        await asyncio.to_thread(shutil.copy2, src, dst)
+        return "copy"
+
+    async def _create_pre_fsck_backup(self, machine, state: dict) -> dict | None:
+        """Checkpoint-compatible ``pre-fsck`` reflink snapshot before running repair() (#48)."""
+        cp_root = getattr(self.paths, "checkpoints", None)
+        if cp_root is None or not getattr(machine, "disk", None) or not Path(machine.disk).is_file():
+            return None
+        from .util import atomic_write_json
+        base = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        d = Path(cp_root) / machine.id
+        d.mkdir(parents=True, exist_ok=True)
+        cp_id, n = base, 1
+        while (d / cp_id).exists():
+            n += 1
+            cp_id = f"{base}-{n}"
+        staging = d / f".{cp_id}.tmp"
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            method = await self._copy_pre_fsck_disk(Path(machine.disk), staging / "disk.img")
+            mj = Path(machine.dir) / "machine.json"
+            if mj.is_file():
+                shutil.copy2(mj, staging / "machine.json")
+            st_disk = (staging / "disk.img").stat()
+            settings = dict(getattr(getattr(self.app, "settings", None), "applied", {}) or {})
+            rev = int(getattr(getattr(self.app, "settings", None), "revision", 0) or 0)
+            meta = {
+                "schema": 1,
+                "id": cp_id,
+                "label": "Pre-repair backup",
+                "kind": "pre-fsck",
+                "created": wall(),
+                "machine": machine.id,
+                "disk_bytes": st_disk.st_size,
+                "allocated_bytes": getattr(st_disk, "st_blocks", 0) * 512,
+                "method": method,
+                "settings": settings,
+                "settings_revision": rev,
+                "package": None,
+                "last_exit": state.get("last_exit"),
+            }
+            atomic_write_json(staging / "checkpoint.json", meta)
+            os.rename(staging, d / cp_id)
+            return {"id": cp_id, "label": "Pre-repair backup", "kind": "pre-fsck",
+                    "method": method, "path": str(d / cp_id)}
+        except Exception as exc:
+            log.warning("pre-fsck backup skipped for %s: %s", machine.id, exc)
+            return None
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+    def _build_corrupt_disk_recovery(self, machine, res: dict, pre_fsck: dict | None) -> dict:
+        last_clean = None
+        fresh_install = None
+        cps = getattr(self.app, "checkpoints", None)
+        entries: list[dict] = []
+        if cps is not None and hasattr(cps, "list"):
+            try:
+                entries = list(cps.list(machine.id))
+            except Exception:
+                entries = []
+        elif getattr(self.paths, "checkpoints", None):
+            from .util import read_json
+            d = Path(self.paths.checkpoints) / machine.id
+            if d.is_dir():
+                for c in sorted(d.iterdir(), reverse=True):
+                    try:
+                        entries.append(read_json(c / "checkpoint.json", 1024 * 1024))
+                    except (OSError, ValueError):
+                        continue
+        for item in entries:
+            label = str(item.get("label") or "")
+            low = label.strip().lower()
+            if low in ("pre-fsck", "pre-repair backup") or item.get("kind") == "pre-fsck":
+                continue
+            if last_clean is None:
+                last_clean = item.get("id")
+            if fresh_install is None and low == "fresh install":
+                fresh_install = item.get("id")
+        return {
+            "machine": machine.id,
+            "name": getattr(machine, "name", machine.id),
+            "repair": res,
+            "pre_fsck_checkpoint": pre_fsck,
+            "last_clean_checkpoint": last_clean,
+            "fresh_install_checkpoint": fresh_install,
+        }
+
+    async def play_startup_chime(self, machine=None, audio_out: dict | None = None) -> bool:
+        """Play the configured Macintosh startup chime asynchronously on the active output."""
+        if not self.app.audio_capable():
+            return False
+        settings = dict(getattr(getattr(self.app, "settings", None), "applied", {}) or {})
+        if not settings.get("audio.enabled", True):
+            return False
+        if getattr(getattr(self.app, "laptop", None), "muted", False):
+            return False
+        m = machine if machine is not None else self.active_machine()
+        family = getattr(m, "family", POWERMAC) if m is not None else POWERMAC
+        chime_setting = str(settings.get("audio.startup_chime", "auto") or "auto")
+        output_pref = str(settings.get("audio.output", "auto") or "auto")
+        vol = settings.get("audio.volume")
+        out = audio_out
+        if out is None and hasattr(self.app, "choose_audio_output"):
+            out = await asyncio.to_thread(self.app.choose_audio_output)
+        prefer = "analog" if getattr(self.app.platform, "is_laptop", False) else "hdmi"
+        return await asyncio.to_thread(
+            hostaudio.play_startup_chime,
+            family,
+            chime_setting,
+            output=output_pref,
+            audio_out=out,
+            prefer=prefer,
+            volume=vol,
+            muted=False,
+        )
+
+    async def test_sound(self, output: str | None = None) -> dict:
+        """Play a short test sound on the specified or active audio output."""
+        settings = dict(getattr(getattr(self.app, "settings", None), "applied", {}) or {})
+        m = self.active_machine()
+        family = getattr(m, "family", POWERMAC) if m is not None else POWERMAC
+        chime_setting = str(settings.get("audio.startup_chime", "auto") or "auto")
+        req_output = output if output is not None else str(settings.get("audio.output", "auto") or "auto")
+        muted = bool(getattr(getattr(self.app, "laptop", None), "muted", False))
+        prefer = "analog" if getattr(self.app.platform, "is_laptop", False) else "hdmi"
+        out = None
+        if output is None and hasattr(self.app, "choose_audio_output"):
+            out = await asyncio.to_thread(self.app.choose_audio_output)
+        return await asyncio.to_thread(
+            hostaudio.test_sound,
+            req_output,
+            audio_out=out,
+            prefer=prefer,
+            chime_setting=chime_setting,
+            family=family,
+            muted=muted,
+            run_dir=getattr(self.paths, "run", None),
+        )
 
     async def usb_pointer(self, machine) -> tuple[bool, int | None]:
         """pointer.py: a USB mouse for the right button and wheel when the disk has
@@ -636,6 +803,8 @@ class Supervisor:
 
     async def _start_locked(self, reason: str) -> bool:
         self.unavailable = None                    # only ever about the start being made now
+        self.corrupt_disk_recovery = None
+        self.manual_resize_notice = None
         if self.start_cancel:
             self.start_cancel = False
             self.log.event("guest_start_cancelled", reason=reason, why="shut down requested before Mac OS started")
@@ -678,6 +847,30 @@ class Supervisor:
         await self.app.show_scene("splash")
         self.app.panel.forget()
         notice = await self.prepare_disk(machine, no_system=plan["no_system"])
+        if notice is not None and notice.get("corrupt_disk_recovery"):
+            recovery = notice["corrupt_disk_recovery"]
+            self.corrupt_disk_recovery = recovery
+            self.failure = {"reason": "corrupt_disk_recovery",
+                            "message": "Mac OS's startup disk could not be repaired safely.",
+                            "recovery": recovery}
+            handler = getattr(self.app, "on_corrupt_disk_recovery", None)
+            if handler is not None:
+                res_cb = handler(recovery)
+                if inspect.isawaitable(res_cb):
+                    await res_cb
+            else:
+                show = getattr(self.app.panel, "show_corrupt_disk_recovery", None)
+                if show is not None:
+                    res_cb = show(recovery)
+                    if inspect.isawaitable(res_cb):
+                        await res_cb
+                else:
+                    await self.app.panel.show_failure(
+                        "Mac OS disk repair failed.",
+                        "Restore Last Clean Checkpoint or Reset to Fresh Install before starting Mac OS.",
+                        None,
+                    )
+            return False
         if self.start_cancel:
             # Shut Down was asked for while the launch hooks ran (disk check, first-launch
             # preparation): they finished, and Mac OS is not started at all.
@@ -705,7 +898,9 @@ class Supervisor:
             await go.wait()
             self.app.panel.forget()
             await self.app.show_scene("splash")
-        settings = dict(self.app.settings.applied)
+        from . import graphics as hostgraphics
+        pkg_dir = self.paths.qemu_osx_package if machine.osx else self.paths.qemu_package
+        settings = hostgraphics.machine_settings(self.app.settings.applied, machine, pkg_dir)
         boot = plan["boot"]
         quadra = getattr(machine, "quadra", False)
         if boot and not quadra and settings.get("machine.cpu") != "7400":
@@ -757,15 +952,23 @@ class Supervisor:
                 self.log.event("audio_output", kind=audio_out["kind"], card=audio_out["card_id"],
                                device=audio_out["device"], sink=audio_out.get("sink"),
                                warmed=audio_out.get("warmed"), stage=audio_out.get("stage"), **extra)
-                plat = self.app.platform
-                if (plat.is_raspberry_pi or plat.is_gemini) and (audio_out.get("card_id") != self.app.mixer.card or
-                                                                 not self.app.mixer.available):
-                    # hostd's first choice came before the presenter reported its outputs (a TV
-                    # on HDMI, then the Pi 4's jack), or before the HDMI output was on (vc4's
-                    # softvol control did not exist yet): the volume control follows the card used.
-                    await self.app.mixer.probe(audio_out.get("card_id"), audio_out.get("mixer"), detect_switch=True)
+                want_mixer = audio_out.get("mixer")
+                if (audio_out.get("card_id") != self.app.mixer.card
+                        or (want_mixer and want_mixer != self.app.mixer.control)
+                        or not self.app.mixer.available):
+                    # Re-probe whenever the chosen output card/control changes (including x86
+                    # laptops falling back from HDMI to built-in analog speakers, Pi, Gemini,
+                    # and explicit audio.output switches).
+                    await self.app.mixer.probe(audio_out.get("card_id"), want_mixer, detect_switch=True)
                     if self.app.mixer.available:
-                        await self.app.apply_engine.push_volume()
+                        if getattr(getattr(self.app, "laptop", None), "muted", False):
+                            vol = int(settings.get("audio.volume", 70))
+                            await self.app.mixer.set_volume(vol, unmute=False)
+                            await self.app.mixer.set_mute(True)
+                        else:
+                            await self.app.apply_engine.push_volume()
+            if not plan["no_system"]:
+                await self.play_startup_chime(machine, audio_out=audio_out)
             if quadra or machine.osx:   # OS X uses native drivers; no OS9 device hooks
                 power_socket = buttons = cities = None
                 usb_mouse, wheel = False, None
@@ -775,10 +978,12 @@ class Supervisor:
                                                        boot_cd=bool(boot))   # keys.py hook
                 usb_mouse, wheel = (False, None) if boot else await self.usb_pointer(machine)   # right button, wheel
                 cities = await self.mac_cities(machine, settings)        # Mac OS's location (macclock)
+            osx_48k = (getattr(machine, "guest_os", None) == "macosx-10.4"
+                       and (hostaudio.supports_48khz(audio_out) or machine.id == self.cfg.osx_48k_machine))
             argv = build_argv(machine, settings, self.paths, display,
                               LaunchOptions(display_backend=self.cfg.display_backend,
                                             audio_capable=audio_capable,
-                                            osx_48k_output=machine.id == self.cfg.osx_48k_machine,
+                                            osx_48k_output=osx_48k,
                                             audio_device=audio_out["alsa"] if audio_out else None,
                                             ndrv_dir=Path(ndrv["dir"]) if ndrv else None,
                                             loader_dir=Path(loader["dir"]) if loader else None,
@@ -1449,6 +1654,11 @@ class Supervisor:
         elif ev == "guest_surface":
             self.log.event("guest_surface", size=msg.get("size"))
             self.guest_surface = msg.get("size")      # Mac OS's own screen size (status display)
+            self.manual_resize_notice = None
+        elif ev == "relayout":
+            detail = str(msg.get("detail") or msg.get("message") or "")
+            if msg.get("timed_out") or "no new guest surface" in detail:
+                self._spawn(self._handle_relayout_timeout(), "relayout-nudge")
         elif ev == "preboot_key":
             self.log.event("preboot_key", key=msg.get("key"), state=self.state)
             await self.on_preboot_escape()
@@ -1895,10 +2105,68 @@ class Supervisor:
             if pk is None:
                 self.log.event("power_button_no_dialog", session=session)
 
+    async def _nudge_host_resize(self, width: int, height: int) -> bool:
+        """Re-arm QEMU's VGA/nubus-qfb host-resize-request latch over QMP after Monitors edits (#19)."""
+        qmp = self.qmp
+        if qmp is None or self.machine is None or getattr(self.machine, "osx", False):
+            return False
+        if width < 512 or height < 384:
+            return False
+        for parent in ("/machine/peripheral-anon", "/machine/peripheral", "/machine/unattached"):
+            try:
+                nodes = await qmp.execute("qom-list", {"path": parent})
+            except Exception:
+                continue
+            for item in (nodes or []):
+                name = item.get("name") if isinstance(item, dict) else None
+                if not name:
+                    continue
+                path = f"{parent}/{name}"
+                try:
+                    props = await qmp.execute("qom-list", {"path": path})
+                except Exception:
+                    continue
+                if any(isinstance(p, dict) and p.get("name") == "host-resize-request" for p in (props or [])):
+                    try:
+                        await qmp.execute("qom-set", {"path": path, "property": "host-resize-request",
+                                                      "value": f"{width}x{height + 1}"})
+                        await qmp.execute("qom-set", {"path": path, "property": "host-resize-request",
+                                                      "value": f"{width}x{height}"})
+                        self.log.event("host_resize_nudged", path=path, size=[width, height])
+                        return True
+                    except Exception:
+                        return False
+        return False
+
+    async def _handle_relayout_timeout(self) -> None:
+        if not self.active or self.machine is None or getattr(self.machine, "osx", False):
+            return
+        if self.app.graphics.running == "ati-radeon":
+            return
+        display = getattr(self.app.presenter, "display", None)
+        if not display or not display.get("mode"):
+            return
+        settings = dict(self.app.settings.applied)
+        tw, th = guest_geometry(display, settings.get("display.guest_size", "auto"),
+                                settings.get("display.pixel_scale", "auto"))
+        if self.guest_surface and list(self.guest_surface) == [tw, th]:
+            self.manual_resize_notice = None
+            return
+        session = self.session
+        nudged = await self._nudge_host_resize(tw, th)
+        if nudged:
+            await asyncio.sleep(1.5)
+        if session == self.session and self.guest_surface and list(self.guest_surface) != [tw, th]:
+            self.manual_resize_notice = (
+                "Mac OS kept a resolution picked in Monitors; restart Mac OS or switch back in Monitors to use host scaling."
+            )
+            self.log.event("display_resize_blocked", target=[tw, th], surface=self.guest_surface)
+
     async def _osx_power_state(self) -> str | None:
         frame = await self.dump_frame()
         if frame is None or self.machine is None:
             return None
+        self._last_osx_frame = frame
         return await asyncio.to_thread(power_osx.state, self.machine.guest_os,
                                        self.machine.meta.get("os_version"), *frame,
                                        build=self.machine.meta.get("os_build"))
@@ -1920,35 +2188,47 @@ class Supervisor:
 
     async def _osx_shutdown_ui(self, origin: str, job: Job | None = None, *, confirm: bool = True,
                                restart_by_shutdown: bool = False) -> bool:
-        """Use the native Apple menu; both Returns require measured native UI.
+        """Use the native Apple menu; both Returns require verified UI (Aqua or keyboard-diff fallback).
 
         A real guest SHUTDOWN/exit still decides success. Application save questions
-        remain for the user. Unknown versions, themes, and languages fail closed.
+        remain for the user. Supports measured Aqua references plus Jaguar 10.2.8 /
+        non-Aqua themes (e.g. Graphite) via verified menu/modal visual diffs (#45).
         """
         session = self.session
         self.power_failure = "osx-ui"
-        if self.machine is None or not power_osx.supported(self.machine.guest_os,
-                                                          self.machine.meta.get("os_version"),
-                                                          self.machine.meta.get("os_build")):
+        if self.machine is None:
             return False
-        reference = power_osx.reference(self.machine.guest_os, self.machine.meta.get("os_version"),
-                                        self.machine.meta.get("os_build"))
+        profile = self.machine.guest_os
+        version = self.machine.meta.get("os_version")
+        build = self.machine.meta.get("os_build")
+        aqua_known = power_osx.supported(profile, version, build)
+        fallback_ok = power_osx.fallback_supported(profile, version, build)
+        if not aqua_known and not fallback_ok:
+            return False
+        reference = power_osx.reference(profile, version, build)
         if not self._session_alive(session):
             return False
         mice = await self.qmp.execute("query-mice")
-        if not isinstance(mice, list) or sum(bool(m.get("current") and m.get("absolute"))
-                                             for m in mice if isinstance(m, dict)) != 1:
+        abs_mice = (sum(bool(m.get("current") and m.get("absolute")) for m in mice if isinstance(m, dict))
+                    if isinstance(mice, list) else 0)
+        if aqua_known and abs_mice != 1:
             return False
-        await self.qmp.execute("input-send-event", {"events": [
-            {"type": "abs", "data": {"axis": "x", "value": 24575}},
-            {"type": "abs", "data": {"axis": "y", "value": 24575}}]})
-        await asyncio.sleep(0.2)  # keep the software cursor out of the measured menu/alert
-        current = await self._osx_power_state()
+        if abs_mice == 1:
+            await self.qmp.execute("input-send-event", {"events": [
+                {"type": "abs", "data": {"axis": "x", "value": 24575}},
+                {"type": "abs", "data": {"axis": "y", "value": 24575}}]})
+            await asyncio.sleep(0.2)  # keep the software cursor out of the measured menu/alert
+        self._last_osx_frame = None
+        current = await self._osx_power_state() if aqua_known else None
+        before_frame = self._last_osx_frame
+        if before_frame is None and not aqua_known:
+            before_frame = await self.dump_frame()
+        via_fallback = False
+        menu_frame = None
         if current in {"apple-menu", "shutdown-selected", "shutdown-confirmation"}:
             current = await self._osx_wait_power_state(session, {current})
         else:
             # OS X keyboard polling needs the modifier visible before F2.
-            # This is the native press/release order, with no preference changes.
             await self.qmp.key_event("ctrl", True)
             try:
                 await asyncio.sleep(0.05)
@@ -1964,20 +2244,55 @@ class Supervisor:
             if not self._session_alive(session):
                 return False
             await self.qmp.send_key("down", hold_ms=100)
-            current = await self._osx_wait_power_state(session, {"apple-menu", "shutdown-selected",
-                                                                "shutdown-confirmation"})
+            if aqua_known:
+                current = await self._osx_wait_power_state(session, {"apple-menu", "shutdown-selected",
+                                                                    "shutdown-confirmation"})
+                menu_frame = self._last_osx_frame
+            else:
+                await asyncio.sleep(0.25)
+                menu_frame = await self.dump_frame()
+            if current is None and fallback_ok and before_frame is not None and menu_frame is not None:
+                bw, bh, brgb = before_frame
+                mw, mh, mrgb = menu_frame
+                if (bw, bh) == (mw, mh) and power_osx.detect_menu_opened(mw, mh, brgb, mrgb):
+                    current = "apple-menu"
+                    via_fallback = True
         if current == "apple-menu":
             await self.qmp.send_key("end", hold_ms=100)
             await asyncio.sleep(0.15)
             if not self._session_alive(session):
                 return False
             await self.qmp.send_key("up", hold_ms=100)
-            current = await self._osx_wait_power_state(session, {"shutdown-selected"})
+            if aqua_known and not via_fallback:
+                current = await self._osx_wait_power_state(session, {"shutdown-selected"})
+                sel_frame = self._last_osx_frame
+            else:
+                await asyncio.sleep(0.25)
+                sel_frame = await self.dump_frame()
+                current = None
+            if current is None and fallback_ok and menu_frame is not None and sel_frame is not None:
+                mw, mh, mrgb = menu_frame
+                sw, sh, srgb = sel_frame
+                if (mw, mh) == (sw, sh) and power_osx.detect_menu_selection_moved(sw, sh, mrgb, srgb):
+                    current = "shutdown-selected"
+                    via_fallback = True
         if current == "shutdown-selected":
             if not self._session_alive(session):
                 return False
             await self.qmp.send_key("ret", hold_ms=100)
-            current = await self._osx_wait_power_state(session, {"shutdown-confirmation"})
+            if aqua_known and not via_fallback:
+                current = await self._osx_wait_power_state(session, {"shutdown-confirmation"})
+                conf_frame = self._last_osx_frame
+            else:
+                await asyncio.sleep(0.35)
+                conf_frame = await self.dump_frame()
+                current = None
+            if current is None and fallback_ok and before_frame is not None and conf_frame is not None:
+                bw, bh, brgb = before_frame
+                cw, ch, crgb = conf_frame
+                if (bw, bh) == (cw, ch) and power_osx.detect_confirmation_dialog(cw, ch, brgb, crgb):
+                    current = "shutdown-confirmation"
+                    via_fallback = True
         if current != "shutdown-confirmation" or not self._session_alive(session):
             return False
         if not confirm:
@@ -1995,7 +2310,8 @@ class Supervisor:
             raise
         self.power_failure = None
         self.log.event("osx_shutdown_confirmed", session=session, origin=origin,
-                       restart=restart_by_shutdown, reference=reference)
+                       restart=restart_by_shutdown,
+                       reference=reference or (f"{profile}-keyboard-fallback" if via_fallback else None))
         return True
 
     FORCE_HINT = {
@@ -2273,4 +2589,5 @@ class Supervisor:
                 "started": self.started_wall,
                 "uptime_s": round(mono() - self.t_start, 1) if self.t_start and self.active else None,
                 "boot_speed": self.boot_speed, "handoff": self.handoff, "last_exit": self.last_exit,
-                "failure": self.failure, "timeline": self.timeline()}
+                "failure": self.failure, "corrupt_disk_recovery": self.corrupt_disk_recovery,
+                "timeline": self.timeline()}

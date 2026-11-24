@@ -14,6 +14,7 @@ Frame message (binary WebSocket message, little-endian):
 """
 from __future__ import annotations
 
+import functools
 import struct
 import zlib
 
@@ -165,3 +166,92 @@ def unpack_frame(data: bytes) -> tuple[int, int, int, list[tuple[Rect, int, byte
         tiles.append(((x, y, w, h), enc, data[o:o + length]))
         o += length
     return seq, gen, flags, tiles
+
+
+_FONT_5X7 = {
+    "A": (0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11),
+    "B": (0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E),
+    "C": (0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E),
+    "D": (0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C),
+    "E": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F),
+    "F": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10),
+    "G": (0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F),
+    "H": (0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11),
+    "I": (0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E),
+    "K": (0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11),
+    "L": (0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F),
+    "M": (0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11),
+    "N": (0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11),
+    "O": (0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E),
+    "P": (0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10),
+    "R": (0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11),
+    "S": (0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E),
+    "T": (0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04),
+    "U": (0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E),
+    "W": (0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11),
+    "Y": (0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04),
+    ".": (0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C),
+    " ": (0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
+}
+
+
+@functools.lru_cache(maxsize=8)
+def pairing_masked_png(width: int = 800, height: int = 600) -> bytes:
+    """Crisp Platinum privacy screen returned instead of local pairing codes/QRs."""
+    w = max(320, min(int(width), 1920))
+    h = max(240, min(int(height), 1080))
+    light, dark = b"\xb8\xb8\xb8", b"\x68\x68\x68"
+    even_row = bytearray().join(light if (x & 1) == 0 else dark for x in range(w))
+    odd_row = bytearray().join(dark if (x & 1) == 0 else light for x in range(w))
+    buf = bytearray(w * h * 3)
+    rw = w * 3
+    for y in range(h):
+        buf[y * rw:(y + 1) * rw] = even_row if (y & 1) == 0 else odd_row
+
+    def fill(x0: int, y0: int, ww: int, hh: int, rgb: tuple[int, int, int]) -> None:
+        r, g, b = rgb
+        px = bytes((r, g, b)) * max(0, min(ww, w - x0))
+        if not px or y0 >= h:
+            return
+        xs = max(0, x0)
+        for yy in range(max(0, y0), min(h, y0 + hh)):
+            o = yy * rw + xs * 3
+            buf[o:o + len(px)] = px
+
+    bx, by = max(16, (w - 420) // 2), max(16, (h - 140) // 2)
+    bw, bh = min(420, w - 32), min(140, h - 32)
+    fill(bx + 2, by + 2, bw, bh, (0x33, 0x33, 0x33))
+    fill(bx, by, bw, bh, (0x00, 0x00, 0x00))
+    fill(bx + 1, by + 1, bw - 2, bh - 2, (0xee, 0xee, 0xee))
+    fill(bx + 2, by + 2, bw - 4, 2, (0xff, 0xff, 0xff))
+    fill(bx + 2, by + 2, 2, bh - 4, (0xff, 0xff, 0xff))
+    fill(bx + 2, by + bh - 4, bw - 4, 2, (0x88, 0x88, 0x88))
+    fill(bx + bw - 4, by + 2, 2, bh - 4, (0x88, 0x88, 0x88))
+    for py in range(by + 6, by + 20, 2):
+        fill(bx + 8, py, bw - 16, 1, (0x77, 0x77, 0x77))
+    fill(bx + 8, by + 24, bw - 16, 1, (0x22, 0x22, 0x22))
+    # Draw crisp 2x lock badge + uppercase privacy notice
+    lx, ly = bx + bw // 2 - 12, by + 36
+    fill(lx + 4, ly, 16, 4, (0x22, 0x22, 0x22))
+    fill(lx + 4, ly + 4, 4, 8, (0x22, 0x22, 0x22))
+    fill(lx + 16, ly + 4, 4, 8, (0x22, 0x22, 0x22))
+    fill(lx, ly + 12, 24, 18, (0x22, 0x22, 0x22))
+    fill(lx + 10, ly + 18, 4, 6, (0xee, 0xee, 0xee))
+
+    def draw_text(text: str, cy: int, scale: int = 2) -> None:
+        text = text.upper()
+        tw = len(text) * 6 * scale
+        tx = max(bx + 12, (w - tw) // 2)
+        for ch in text:
+            rows = _FONT_5X7.get(ch, _FONT_5X7[" "])
+            for ry, bits in enumerate(rows):
+                for rx in range(5):
+                    if bits & (1 << (4 - rx)):
+                        fill(tx + rx * scale, cy + ry * scale, scale, scale, (0x11, 0x11, 0x11))
+            tx += 6 * scale
+
+    draw_text("PAIRING CODE HIDDEN", by + 78, 2)
+    draw_text("CHECK THE RETROBOOT SCREEN", by + 104, 1)
+    raw = b"".join(b"\0" + buf[y * rw:(y + 1) * rw] for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + _chunk(b"IDAT", zlib.compress(raw, 4)) + _chunk(b"IEND", b""))

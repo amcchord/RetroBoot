@@ -191,6 +191,7 @@ fi
 # ---- first boot work, debug bundle, data directory -------------------------
 arm64_firstboot_done "$root"
 arm64_pi_check "$flavor" "$root"
+[ -d "$root/usr/share/retroboot/chimes" ] || stage_startup_chimes "$root"
 log "data directory /var/lib/retroboot"
 arm64_populate_data "$root/var/lib/retroboot" "$root" "$machine_dir" "$machine_id"
 

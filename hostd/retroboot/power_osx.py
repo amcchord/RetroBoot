@@ -71,9 +71,89 @@ def supported(profile: str, version: str | None, build: str | None = None) -> bo
     return (profile, version, build) in REFERENCES
 
 
+FALLBACK_PROFILES = {"macosx-10.2", "macosx-10.3", "macosx-10.4"}
+
+
+def fallback_supported(profile: str, version: str | None = None, build: str | None = None) -> bool:
+    """Whether keyboard Apple-menu navigation fallback may attempt clean shutdown on
+    unrecognized themes (e.g. Graphite) or Jaguar 10.2.8 when Aqua screenshots don't match (#45)."""
+    if profile not in FALLBACK_PROFILES:
+        return False
+    if version is not None and not (version == profile[7:] or version.startswith(profile[7:] + ".")):
+        return False
+    return True
+
+
 def reference(profile: str, version: str | None, build: str | None = None) -> str | None:
     ref = REFERENCES.get((profile, version, build))
     return ref[0] if ref else None
+
+
+def _box_diff_stats(width: int, height: int, before: bytes, current: bytes,
+                    box: tuple[int, int, int, int], threshold: int = 24) -> tuple[int, int]:
+    x0 = max(0, box[0])
+    y0 = max(0, box[1])
+    x1 = min(width, box[2])
+    y1 = min(height, box[3])
+    if x1 <= x0 or y1 <= y0 or len(before) != width * height * 3 or len(current) != width * height * 3:
+        return 0, 0
+    changed = 0
+    total = (x1 - x0) * (y1 - y0)
+    for y in range(y0, y1):
+        row = y * width * 3
+        for x in range(x0, x1):
+            off = row + x * 3
+            if (abs(before[off] - current[off]) + abs(before[off + 1] - current[off + 1]) +
+                    abs(before[off + 2] - current[off + 2])) > threshold:
+                changed += 1
+    return changed, total
+
+
+def detect_menu_opened(width: int, height: int, before: bytes, current: bytes) -> bool:
+    """Verify Ctrl+F2 + Down visibly opened the Apple menu dropdown cleanly (#45)."""
+    if width < 640 or height < 480 or len(before) != width * height * 3 or len(current) != width * height * 3:
+        return False
+    if before == current:
+        return False
+    menu_changed, menu_total = _box_diff_stats(width, height, before, current, (0, 22, min(260, width), min(340, height)))
+    rest_changed, rest_total = _box_diff_stats(width, height, before, current, (min(300, width), 22, width, height))
+    if menu_total == 0 or menu_changed < 300:
+        return False
+    return (menu_changed / menu_total) >= 0.03 and (rest_total == 0 or (rest_changed / rest_total) < 0.20)
+
+
+def detect_menu_selection_moved(width: int, height: int, prev_menu: bytes, current: bytes) -> bool:
+    """Verify End + Up moved the selection highlight inside the open Apple menu (#45)."""
+    if width < 640 or height < 480 or len(prev_menu) != width * height * 3 or len(current) != width * height * 3:
+        return False
+    if prev_menu == current:
+        return False
+    changed, total = _box_diff_stats(width, height, prev_menu, current, (4, 180, min(250, width), min(340, height)))
+    rest_changed, rest_total = _box_diff_stats(width, height, prev_menu, current, (min(300, width), 22, width, height))
+    return total > 0 and changed >= 80 and (rest_total == 0 or (rest_changed / rest_total) < 0.15)
+
+
+def detect_confirmation_dialog(width: int, height: int, before: bytes, current: bytes) -> bool:
+    """Verify a centered OS X Shut Down confirmation modal appeared (#45)."""
+    if width < 640 or height < 480 or len(before) != width * height * 3 or len(current) != width * height * 3:
+        return False
+    if before == current:
+        return False
+    from .powerdlg import modal_change
+    mc = modal_change((width, height, before), (width, height, current))
+    if mc.get("modal") and mc.get("box"):
+        x0, y0, x1, y1 = mc["box"]
+        cx = (x0 + x1) / 2.0
+        if (x1 - x0) >= 160 and (y1 - y0) >= 60 and width * 0.2 <= cx <= width * 0.8:
+            return True
+    # Also accept a centered dialog change even if desktop menu bar closed at the same frame.
+    center_changed, center_total = _box_diff_stats(
+        width, height, before, current, (width // 2 - 220, 40, width // 2 + 220, height - 80)
+    )
+    edge_changed, edge_total = _box_diff_stats(
+        width, height, before, current, (width - 140, 22, width, height)
+    )
+    return center_total > 0 and center_changed >= 2000 and (edge_total == 0 or (edge_changed / edge_total) < 0.25)
 
 
 def _mask(width: int, height: int, rgb: bytes, box: tuple, kind: str) -> bytes | None:

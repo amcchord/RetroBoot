@@ -204,12 +204,17 @@ class WebHelper:
             await run_cmd(["nft", "delete", "table", "inet", TABLE], timeout=10)
 
     async def _sync_child(self, want: bool) -> None:
+        import signal
         running = self.proc is not None and self.proc.returncode is None
         if want and running:
-            self.proc.send_signal(1)                 # SIGHUP: re-read the configuration
-        elif want:
+            self.proc.send_signal(signal.SIGHUP)     # re-read the configuration
+            await asyncio.sleep(0.15)
+            return
+        if want:
             env = dict(os.environ, PYTHONPATH=str(self.lib), PYTHONDONTWRITEBYTECODE="1")
-            logf = open(self.app.paths.logs / "webproxy.log", "ab")
+            log_path = self.app.paths.logs / "webproxy.log"
+            prev_mtime = self.status_path.stat().st_mtime_ns if self.status_path.exists() else 0
+            logf = open(log_path, "ab")
             try:
                 self.proc = await asyncio.create_subprocess_exec(
                     sys.executable, "-m", "rbwebproxy", "--config", str(self.config_path),
@@ -217,7 +222,17 @@ class WebHelper:
                     start_new_session=True)
             finally:
                 logf.close()
-            await asyncio.sleep(0.5)
+            for _ in range(30):
+                if self.proc.returncode is not None:
+                    try:
+                        tail = log_path.read_text(errors="replace").strip().splitlines()[-3:]
+                        self.error = "; ".join(tail)[:200] or f"helper exited ({self.proc.returncode})"
+                    except OSError:
+                        self.error = f"helper exited ({self.proc.returncode})"
+                    break
+                if self.status_path.exists() and self.status_path.stat().st_mtime_ns != prev_mtime:
+                    break
+                await asyncio.sleep(0.05)
         elif running:
             self.proc.terminate()
             try:

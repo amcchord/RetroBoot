@@ -20,6 +20,7 @@ wireless-regdb
 e2fsprogs
 xfsprogs
 dosfstools
+exfatprogs
 gdisk
 cloud-guest-utils
 rsync
@@ -28,6 +29,8 @@ util-linux
 hfsprogs
 # Classic Mac archives (StuffIt etc.) for the media library (apps/rbapps; LGPL-2.1)
 unar
+# PostScript-to-PDF conversion (ps2pdf) for Print-to-PDF into RetroBoot Share
+ghostscript
 # Networking and management (iw: the internal Wi-Fi bring-up waits for wlan0 with it)
 network-manager
 wpasupplicant

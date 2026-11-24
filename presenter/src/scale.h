@@ -30,7 +30,7 @@ enum rb_scaling { RB_SCALING_INTEGER = 0, RB_SCALING_FIT = 1 };
 #define RB_GUEST_PMIN_H 640
 #define RB_GUEST_PMAX_W 2160
 #define RB_GUEST_PMAX_H 3840
-/* Automatic scale: the largest s with long/s >= 720 and short/s >= 540
+/* Automatic scale: the largest s with long/s >= 640 and short/s >= 480
  * (orientation-independent, so a rotation keeps the scale). */
 int rb_suggested_scale(int w, int h);
 void rb_auto_guest_size(int w, int h, int s, int *gw, int *gh);
@@ -83,6 +83,10 @@ int rb_layout_compute_ex(rb_layout *l, int screen_w, int screen_h, int src_w, in
  * into the panel's logical buffer: returns 0 and fills `out` (no tables) when
  * the physical layout is integer with k and its origin multiples of s, else -1. */
 int rb_layout_logical(const rb_layout *phys, int s, rb_layout *out);
+/* Panel dimmed-background layout matching `phys->dst` on the 1/s logical grid
+ * even when k is not divisible by s (e.g. 800x600 at 1x on a 2x screen) or
+ * `phys` uses fit scaling. Caller frees `out` with rb_layout_free(). */
+int rb_layout_panel(const rb_layout *phys, int s, rb_layout *out);
 void rb_layout_free(rb_layout *l);
 
 /* Screen rect that must be redrawn when source rect r changes (clipped to dst). */

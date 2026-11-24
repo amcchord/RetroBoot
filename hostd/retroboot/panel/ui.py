@@ -110,11 +110,13 @@ def icon_view(id: str, items: list[dict], value: str | None, columns: int = 4, h
 
 
 def field(id: str, label: str, value: str = "", secure: bool = False, placeholder: str = "",
-          max_length: int | None = None) -> dict:
+          max_length: int | None = None, width: int | None = None) -> dict:
     d: dict[str, Any] = {"type": "field", "id": id, "label": label, "secure": secure, "value": value,
                          "placeholder": placeholder}
     if max_length:
         d["max_length"] = max_length
+    if width:
+        d["width"] = width
     return d
 
 
@@ -247,6 +249,27 @@ def clip_words(text: str, limit: int) -> str:
     if space > limit // 2:
         cut = cut[:space]
     return cut.rstrip(" ,;:.–-") + "…"
+
+
+def format_fingerprint(fp: str | None, group_bytes: int = 8) -> list[str]:
+    """Split a colon-separated SHA-256 fingerprint into symmetrical lines (default 4 x 8 bytes)."""
+    tokens = [part.strip() for part in str(fp or "").split(":") if part.strip()]
+    if not tokens:
+        return []
+    return [":".join(tokens[i:i + group_bytes]) for i in range(0, len(tokens), group_bytes)]
+
+
+def format_download_status(fraction: float | None, message: str = "") -> str:
+    """Combine a download percentage and byte summary into one crisp status line."""
+    detail = " ".join(str(message or "").split())
+    for prefix in ("Downloading…", "Downloading...", "downloading…", "downloading..."):
+        if detail.lower().startswith(prefix.lower()):
+            detail = detail[len(prefix):].strip()
+            break
+    pct = f"{int(round(max(0.0, min(1.0, fraction)) * 100))}%" if isinstance(fraction, (int, float)) else ""
+    if pct and detail:
+        return f"{pct} · {detail}"
+    return pct or detail or "Downloading…"
 
 
 def human_bytes(n: int | None) -> str:

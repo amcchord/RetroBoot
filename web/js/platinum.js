@@ -79,6 +79,14 @@ export function scaleExact(k, dpr = window.devicePixelRatio || 1) {
 }
 
 let mql = null;
+export function updateLayoutClasses() {
+  const vw = root.clientWidth || window.innerWidth || 0;
+  const macWidth = vw / (pt.zoom || 1);
+  root.classList.toggle('mac-narrow', macWidth < 620);
+  root.classList.toggle('mac-wide', macWidth >= 980);
+  return macWidth;
+}
+
 export function applyScale(pref = pixelPref()) {
   const dpr = window.devicePixelRatio || 1;
   const k = pref === 'auto' || !scaleExact(Number(pref), dpr) ? autoScale(dpr) : Number(pref);
@@ -86,10 +94,8 @@ export function applyScale(pref = pixelPref()) {
   pt.zoom = k / dpr;
   root.style.setProperty('--pt-zoom', String(pt.zoom));
   root.dataset.pixelSize = String(k);
-  // Layout breakpoints are in Mac pixels: the CSS media queries cannot see the zoom.
-  const macWidth = window.innerWidth / pt.zoom;
-  root.classList.toggle('mac-narrow', macWidth < 620);
-  root.classList.toggle('mac-wide', macWidth >= 980);
+  // Layout breakpoints follow Mac pixels immediately via ResizeObserver + CSS @media.
+  updateLayoutClasses();
   if (mql) mql.removeEventListener('change', onDprChange);
   mql = window.matchMedia(`(resolution: ${dpr}dppx)`);
   mql.addEventListener('change', onDprChange);
@@ -100,6 +106,7 @@ function onDprChange() {
   applyScale();
 }
 window.addEventListener('resize', () => applyScale());
+window.visualViewport?.addEventListener('resize', () => applyScale());
 
 // ---- Whole-pixel text ----------------------------------------------------------
 // Boxes are painted on whole layout pixels, but text is drawn exactly where layout
@@ -183,7 +190,12 @@ export function watchSnap(node = document.body) {
   if (snapObserver) return;
   snapObserver = new MutationObserver(snapText);
   snapObserver.observe(node, { childList: true, subtree: true, characterData: true });
-  if ('ResizeObserver' in window) new ResizeObserver(snapText).observe(document.documentElement);
+  if ('ResizeObserver' in window) {
+    new ResizeObserver(() => {
+      updateLayoutClasses();
+      snapText();
+    }).observe(document.documentElement);
+  }
   document.fonts?.addEventListener?.('loadingdone', snapText);
   snapText();
 }

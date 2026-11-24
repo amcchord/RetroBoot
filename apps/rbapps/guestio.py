@@ -343,7 +343,13 @@ def read_ppm(data: bytes) -> Image:
     w, h, maxval = parts
     if maxval != 255:
         raise ValueError("unsupported PPM depth")
-    return Image(w, h, data[i:i + w * h * 3])
+    row = w * 3
+    stride = (row + 3) & ~3
+    if stride != row and len(data) - i >= h * stride:
+        rgb = b"".join(data[i + r * stride:i + r * stride + row] for r in range(h))
+    else:
+        rgb = data[i:i + h * row]
+    return Image(w, h, rgb)
 
 
 def menu_bar_ready(img: Image) -> bool:

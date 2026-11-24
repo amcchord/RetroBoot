@@ -32,8 +32,10 @@ static void test_landing(void)
         CHECK_EQ(g.k, 1);
         CHECK_EQ(g.land_x, measured[i][0]);
         CHECK_EQ(g.land_y, measured[i][1]);
-        CHECK_EQ(g.x, g.land_x);
-        CHECK_EQ(g.q, 1);
+        int want_q = rb_startup_boot_q(sizes[i][0], sizes[i][1], 1);
+        CHECK_EQ(g.q, want_q);
+        CHECK_EQ(g.x + 16 * g.q, g.land_x + 16 * g.k);
+        CHECK_EQ(g.y + 16 * g.q, g.land_y + 16 * g.k);
     }
     struct rb_startup_geom g;
     /* auto sizes: 1920x1080 at 2x -> 960x540, the icon at (464, 254) x 2 */
@@ -41,10 +43,13 @@ static void test_landing(void)
     CHECK_EQ(g.k, 2);
     CHECK_EQ(g.land_x, 928);
     CHECK_EQ(g.land_y, 508);
-    /* 1366x768: guest 1360x768 centred, origin x = 3 */
+    /* 1366x768: guest 1360x768 centred, origin x = 3, indicator doubled to 2x at center */
     rb_startup_geometry(&g, 1366, 768, 1, 0, 0, 0);
     CHECK_EQ(g.land_x, 3 + 664);
     CHECK_EQ(g.land_y, 368);
+    CHECK_EQ(g.q, 2);
+    CHECK_EQ(g.x, 3 + 664 - 16);
+    CHECK_EQ(g.y, 368 - 16);
     /* 4K at 4x: 960x540 x 4 */
     rb_startup_geometry(&g, 3840, 2160, 4, 0, 0, 0);
     CHECK_EQ(g.k, 4);
@@ -60,9 +65,10 @@ static void test_landing(void)
     CHECK_EQ(g.k, 3);
     CHECK_EQ(g.land_x, (2560 - 848 * 3) / 2 / 3 * 3 + 408 * 3);
     CHECK_EQ(g.land_y, 224 * 3);
-    /* fixed 640x480 with pixel size 1 on 1920x1080: 1x, centred */
+    /* fixed 640x480 with pixel size 1 on 1920x1080: 1x landing, 2x centered indicator */
     rb_startup_geometry(&g, 1920, 1080, 1, 1, 640, 480);
     CHECK_EQ(g.k, 1);
+    CHECK_EQ(g.q, 2);
     CHECK_EQ(g.land_x, 640 + 304);
     CHECK_EQ(g.land_y, 300 + 224);
     /* fixed 640x480 at auto on 1920x1080 (s = 2): the largest fitting 2x */
@@ -70,9 +76,10 @@ static void test_landing(void)
     CHECK_EQ(g.k, 2);
     CHECK_EQ(g.land_x, 320 + 304 * 2);
     CHECK_EQ(g.land_y, 60 + 224 * 2);
-    /* fixed 1024x768 that does not fit at 2x: 1x, origin on the 2-grid */
+    /* fixed 1024x768 that does not fit at 2x: 1x landing, 2x centered indicator */
     rb_startup_geometry(&g, 1920, 1080, 2, 2, 1024, 768);
     CHECK_EQ(g.k, 1);
+    CHECK_EQ(g.q, 2);
     CHECK_EQ(g.land_x, 448 + 496);
     CHECK_EQ(g.land_y, 156 + 368);
     /* the same layout the guest gets */
@@ -95,10 +102,10 @@ static void test_landing(void)
             CHECK_EQ(g.land_x, l.dst.x + (tw - 32) / 2 * l.k);
             CHECK_EQ(g.land_y, l.dst.y + (th - 32) / 2 * l.k);
         }
-        /* the indicator is the Happy Mac at the guest's own scale and place */
-        CHECK_EQ(g.q, g.k);
-        CHECK_EQ(g.x, g.land_x);
-        CHECK_EQ(g.y, g.land_y);
+        /* the indicator scales cleanly centered on the Happy Mac's landing */
+        CHECK_EQ(g.q, rb_startup_boot_q(W, H, g.k));
+        CHECK_EQ(g.x + 16 * g.q, g.land_x + 16 * g.k);
+        CHECK_EQ(g.y + 16 * g.q, g.land_y + 16 * g.k);
         /* another scale keeps the landing's centre */
         struct rb_startup_geom big = rb_startup_geom_at(&g, 3 * g.k);
         CHECK_EQ(big.x + 16 * big.q, g.land_x + 16 * g.k);
@@ -151,7 +158,7 @@ static void test_identity(void)
         CHECK_EQ(count_diff(grub, splash, n), 0);
         CHECK_EQ(g.x, b.geom.x);
         CHECK_EQ(g.q, b.geom.q);
-        CHECK_EQ(g.q, s); /* the Happy Mac's size: not the DPI-scaled pattern's */
+        CHECK_EQ(g.q, rb_startup_boot_q(W, H, g.k)); /* 2x boot Happy Mac on >=1280 1x frames */
         /* presenter: random dirty rectangles, each composed as compose_rect does */
         memset(pres, 0x55, n * 4);
         for (int i = 0; i < 300; i++) {
@@ -201,7 +208,7 @@ static void test_rotated(void)
         rb_icon_art_builtin(&art);
         struct rb_startup_geom g;
         rb_startup_geometry(&g, ow, oh, 1, 0, 0, 0);
-        CHECK_EQ(g.q, 1);
+        CHECK_EQ(g.q, rb_startup_boot_q(ow, oh, g.k));
         rb_startup_draw(logical, ow, ow, oh, (rb_rect){0, 0, ow, oh}, &g, &art, 5, false);
         rb_startup_draw_rotated(fb, fb_w, fb_w, fb_h, rot, &g, &art, 5, false);
         int bad = 0;
@@ -237,7 +244,8 @@ static void test_rotated(void)
     for (int y = 0; y < fb_h; y += 7)
         for (int x = 0; x < fb_w; x += 5) {
             int lx = y, ly = fb_w - 1 - x; /* inverse of l2f for 90 */
-            bool icon = lx >= b.geom.x && lx < b.geom.x + 32 && ly >= b.geom.y && ly < b.geom.y + 32;
+            bool icon = lx >= b.geom.x && lx < b.geom.x + 32 * b.geom.q && ly >= b.geom.y &&
+                        ly < b.geom.y + 32 * b.geom.q;
             if (!icon)
                 bad += buf[(size_t)y * fb_w + x] != rb_checker_pixel_at(lx, ly, 3, rb_startup_anchor(&b.geom));
         }
@@ -519,14 +527,15 @@ static void test_light_and_capture(void)
     CHECK(rb_startup_lit(1000, 10)); /* before the start: on (GRUB's) */
     struct rb_startup_geom g;
     rb_startup_geometry(&g, 1280, 800, 1, 0, 0, 0);
+    CHECK_EQ(g.q, 2);
     rb_rect lr = rb_startup_light_rect(&g, &a), sr = rb_startup_screen_rect(&g);
-    CHECK_EQ(lr.x, 624 + 6);
-    CHECK_EQ(lr.y, 384 + 22);
-    CHECK_EQ(lr.w, 2);
-    CHECK_EQ(lr.h, 1);
-    CHECK_EQ(sr.x, 624 + 7);
-    CHECK_EQ(sr.w, 17);
-    CHECK_EQ(sr.h, 13);
+    CHECK_EQ(lr.x, 608 + 6 * 2);
+    CHECK_EQ(lr.y, 368 + 22 * 2);
+    CHECK_EQ(lr.w, 4);
+    CHECK_EQ(lr.h, 2);
+    CHECK_EQ(sr.x, 608 + 7 * 2);
+    CHECK_EQ(sr.w, 17 * 2);
+    CHECK_EQ(sr.h, 13 * 2);
     /* a guest frame: the stand-in icon on Mac OS's gray, at Mac OS's place */
     const int w = 640, h = 480;
     uint32_t *fr = malloc((size_t)w * h * 4);

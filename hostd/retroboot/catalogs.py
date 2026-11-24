@@ -123,9 +123,12 @@ def entry_family(entry: dict) -> str:
     """The capability-filtered catalog kind; OS X is separate so an older emulator
     never downloads a Mac that would receive classic disk preparation."""
     from .machines import POWERMAC, TEMPLATE_FAMILIES, OSX_CATALOG_FAMILY, OSX_TEMPLATE_FAMILY
-    if entry.get("machineFamily") == OSX_TEMPLATE_FAMILY:
+    fam = entry.get("machineFamily") or entry.get("family")
+    if fam in (OSX_TEMPLATE_FAMILY, OSX_CATALOG_FAMILY):
         return OSX_CATALOG_FAMILY
-    return TEMPLATE_FAMILIES.get(entry.get("machineFamily"), POWERMAC)
+    if fam in (POWERMAC, "quadra800"):
+        return fam
+    return TEMPLATE_FAMILIES.get(fam, POWERMAC)
 
 
 EDITION_RE = re.compile(r"deluxe|edition|activities|period", re.I)
@@ -133,26 +136,145 @@ EDITION_RE = re.compile(r"deluxe|edition|activities|period", re.I)
 
 def _os_version_key(version) -> tuple[int, ...]:
     """"9.2.2" -> (9, 2, 2); "Mac OS 9.2.1" -> (9, 2, 1); text without digits -> ()."""
-    return tuple(int(n) for n in re.findall(r"\d+", str(version or ""))[:4])
+    v = str(version or "")
+    if v.startswith("macos-"):
+        v = v[6:]
+    return tuple(int(n) for n in re.findall(r"\d+", v)[:4])
+
+
+def _item_known(it) -> bool:
+    if hasattr(it, "known"):
+        return bool(it.known)
+    return bool(isinstance(it, dict) and it.get("installed"))
+
+
+def _item_entry(it) -> dict | None:
+    e = getattr(it, "entry", None)
+    if isinstance(e, dict):
+        return e
+    if isinstance(it, dict) and "id" in it:
+        return it
+    mid = getattr(it, "machine_id", None)
+    if not mid:
+        return None
+    name = str(getattr(it, "name", "") or "")
+    osv = str(getattr(it, "os_version", "") or "")
+    fam = "quadra800" if ("7.5" in osv or "8.1" in osv or "68k" in name.lower()) else None
+    out = {"id": mid, "name": name, "osVersion": osv}
+    if fam:
+        out["machineFamily"] = fam
+    return out
+
+
+def _item_bytes(it, e: dict) -> int:
+    sz = getattr(it, "size", None)
+    if isinstance(sz, int) and sz > 0:
+        return sz
+    if isinstance(e, dict):
+        req = e.get("requiredStorageBytes") or e.get("install_bytes") or e.get("installedBytes") or e.get("size") or 0
+        return int(req) if isinstance(req, int) else 0
+    return 0
+
+
+def first_boot_picks(items, *, max_bytes: int | None = None):
+    """Choose the two hero options ``(featured_deluxe, featured_base)`` for first-boot &
+    Download a Mac: ``os922-mega-deluxe-v4`` and ``os922-full-v5`` when compatible and fitting,
+    falling back gracefully on constrained hardware (such as Raspberry Pi Zero 2 W or smaller disks)."""
+    from .machines import POWERMAC, QUADRA800
+
+    cands = []
+    for it in items:
+        if getattr(it, "older", False):
+            continue
+        if isinstance(it, dict) and it.get("compatible") is False:
+            continue
+        e = _item_entry(it)
+        if not isinstance(e, dict) or not e.get("id"):
+            continue
+        fam = entry_family(e)
+        if fam not in (POWERMAC, QUADRA800):
+            continue
+        need = _item_bytes(it, e)
+        if max_bytes is not None and need > max_bytes:
+            continue
+        ver = _os_version_key(e.get("osVersion") or e.get("guest_os"))
+        cands.append((it, e, fam, ver))
+
+    def pick_deluxe():
+        best, best_score = None, None
+        for it, e, fam, ver in cands:
+            eid = str(e.get("id", ""))
+            is_ed = bool(EDITION_RE.search(str(e.get("name", ""))) or EDITION_RE.search(eid))
+            if not is_ed:
+                continue
+            tier = (3 if eid.startswith("os922-mega-deluxe") else
+                    2 if "superdeluxe" in eid else
+                    1 if "deluxe" in eid else 0)
+            score = (fam == POWERMAC, tier, ver)
+            if best_score is None or score > best_score:
+                best, best_score = it, score
+        return best
+
+    def pick_base(exclude=None):
+        best, best_score = None, None
+        for it, e, fam, ver in cands:
+            if it is exclude:
+                continue
+            eid = str(e.get("id", ""))
+            is_ed = bool(EDITION_RE.search(str(e.get("name", ""))) or EDITION_RE.search(eid))
+            if is_ed:
+                continue
+            exact922 = eid.startswith("os922-full")
+            score = (fam == POWERMAC, exact922, ver)
+            if best_score is None or score > best_score:
+                best, best_score = it, score
+        return best
+
+    deluxe = pick_deluxe()
+    base = pick_base(exclude=deluxe)
+    return deluxe, base
 
 
 def recommended(items):
     """The Mac to offer first on a new computer: the newest standard classic Mac OS it can
-    start (Mac OS 9.2.2 on a PC or a Raspberry Pi 4/5, the newest 68k system on a Zero 2 W),
-    not an edition with extra software and not Mac OS X.  ``items`` are already filtered to
-    this computer's kinds of Mac (``Listed`` or the installer's ``Choice``: ``entry`` and
-    ``older``, optionally ``known``); None when every candidate is installed or older."""
+    start (Mac OS 9.2.2 on a PC or a Raspberry Pi 4/5, the newest 68k system on a Zero 2 W).
+    Once any 9.2.2 Mac is already installed, never recommend downgrading to 9.2.1; recommend
+    ``os922-mega-deluxe-v4`` if not yet installed, otherwise ``None``."""
     from .machines import POWERMAC, QUADRA800
+
+    all_items = list(items)
+    has_922 = False
+    for it in all_items:
+        e = _item_entry(it)
+        if not isinstance(e, dict) or not _item_known(it):
+            continue
+        fam = entry_family(e)
+        if fam in (POWERMAC, QUADRA800) and _os_version_key(e.get("osVersion") or e.get("guest_os")) >= (9, 2, 2):
+            has_922 = True
+            break
+
+    if has_922:
+        for it in all_items:
+            if _item_known(it) or getattr(it, "older", False):
+                continue
+            e = _item_entry(it)
+            if not isinstance(e, dict):
+                continue
+            eid = str(e.get("id", ""))
+            if eid == "os922-mega-deluxe-v4" or eid.startswith("os922-mega-deluxe"):
+                return it
+        return None
+
     best, best_score = None, None
-    for it in items:
-        e = getattr(it, "entry", None)
-        if not isinstance(e, dict) or getattr(it, "known", False) or getattr(it, "older", False):
+    for it in all_items:
+        e = _item_entry(it)
+        if not isinstance(e, dict) or _item_known(it) or getattr(it, "older", False):
             continue
         family = entry_family(e)
         if family not in (POWERMAC, QUADRA800):
             continue
         standard = not EDITION_RE.search(str(e.get("name", ""))) and not EDITION_RE.search(str(e.get("id", "")))
-        score = (family == POWERMAC, standard, _os_version_key(e.get("osVersion")))
+        score = (family == POWERMAC, standard, _os_version_key(e.get("osVersion") or e.get("guest_os")))
         if best_score is None or score > best_score:
             best, best_score = it, score
     return best

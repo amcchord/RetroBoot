@@ -395,17 +395,166 @@ def convert_legacy(esp: Path, running_root: Path, new_root: Path) -> bool:
     return True
 
 
+def _resolve_rpi_src(base: Path, rel: str) -> Path | None:
+    for cand in (base / rel, base / "bootfs" / rel, base / "esp" / rel):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _rpi_root_arg(dev: str, slot: str) -> str:
+    """Kernel root= argument for a Pi GPT slot (PARTUUID when readable, else PARTLABEL)."""
+    try:
+        r = subprocess.run(["blkid", "-s", "PARTUUID", "-o", "value", dev],
+                           capture_output=True, text=True, timeout=5)
+        pu = r.stdout.strip()
+        if r.returncode == 0 and pu and re.fullmatch(r"[A-Za-z0-9-]+", pu):
+            return f"PARTUUID={pu}"
+    except OSError:
+        pass
+    return f"PARTLABEL={slotenv.SLOT_LABEL[slot]}"
+
+
+def sync_rpi_slot(esp: Path, slot: str, boot_root: Path, cmdline: str, version: str = "", build_id: str = "",
+                  root_arg: str | None = None) -> list[str]:
+    """Verify bootfs files shipped inside ``boot_root`` and stage them under ``retroboot/slot-<slot>/``."""
+    base, info = boot_payload(boot_root)
+    files_map = info.get("bootfs_files_sha256") or info.get("files_sha256") or {}
+    skip_exact = {"config.txt", "cmdline.txt", "tryboot.txt", "DISPLAY-SETUP.txt", "SETUP.txt"}
+    copied = []
+    dest_dir = Path(esp) / "retroboot" / f"slot-{slot}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    import hashlib
+    for rel, digest in sorted(files_map.items()):
+        clean = rel[4:] if rel.startswith("esp/") else (rel[7:] if rel.startswith("bootfs/") else rel)
+        if not clean or clean.startswith("/") or ".." in Path(clean).parts:
+            continue
+        if clean in skip_exact or clean.startswith("retroboot/"):
+            continue
+        src = _resolve_rpi_src(base, rel)
+        if src is None:
+            continue
+        data = src.read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise WriteError(f"The startup file {clean} doesn't match its checksum.", "boot-payload")
+        dst = dest_dir / clean
+        try:
+            if dst.read_bytes() == data:
+                continue
+        except OSError:
+            pass
+        slotenv.write_file_atomic(dst, data)
+        copied.append(clean)
+    cfg_src = _resolve_rpi_src(base, "config.txt") or (Path(esp) / "config.txt")
+    cfg_text = cfg_src.read_text(errors="replace") if cfg_src.is_file() else "[all]\nkernel=kernel8.img\ninitramfs initramfs8 followkernel\n"
+    if cfg_src.is_file() and info.get("config_txt_sha256") and cfg_src != Path(esp) / "config.txt":
+        if hashlib.sha256(cfg_src.read_bytes()).hexdigest() != info["config_txt_sha256"]:
+            raise WriteError("The startup configuration doesn't match its checksum.", "boot-payload")
+    prefix = slotenv.rpi_slot_prefix(slot)
+    slotenv.write_file_atomic(dest_dir / "config.txt",
+                              slotenv.render_rpi_config(cfg_text, prefix, "cmdline.txt").encode())
+    target_root = root_arg or f"PARTLABEL={slotenv.SLOT_LABEL[slot]}"
+    slotenv.write_file_atomic(dest_dir / "cmdline.txt",
+                              slotenv.render_rpi_cmdline(cmdline, slot, target_root, trial=False).encode())
+    slotenv.write_file_atomic(dest_dir / "cmdline-trial.txt",
+                              slotenv.render_rpi_cmdline(cmdline, slot, target_root, trial=True).encode())
+    slotenv.write_rpi_slot_meta(esp, slot, version, build_id)
+    return copied
+
+
+def convert_legacy_rpi(esp: Path, running_root: Path, cur_slot: str = "a") -> bool:
+    """Record a pre-slotted Pi boot partition's running slot so rollback can return to it."""
+    esp = Path(esp)
+    cfg = esp / "config.txt"
+    if not cfg.is_file():
+        raise WriteError("RetroBoot's Raspberry Pi startup file couldn't be found.", "boot-payload")
+    legacy = esp / "config.txt.legacy"
+    if not legacy.exists() and not slotenv.rpi_cfg_is_slotted(esp):
+        slotenv.write_file_atomic(legacy, cfg.read_bytes())
+        cmd = slotenv.rpi_legacy_cmdline(esp) or ""
+        cur_dir = esp / "retroboot" / f"slot-{cur_slot}"
+        cur_dir.mkdir(parents=True, exist_ok=True)
+        if not (cur_dir / "config.txt").exists():
+            slotenv.write_file_atomic(cur_dir / "config.txt", cfg.read_bytes())
+        if cmd and not (cur_dir / "cmdline.txt").exists():
+            slotenv.write_file_atomic(cur_dir / "cmdline.txt", (cmd.strip() + "\n").encode())
+        rel = release_info(running_root)
+        slotenv.write_rpi_slot_meta(esp, cur_slot, rel.get("version", ""), rel.get("build_id", ""))
+        _vals, src = slotenv.read_env(esp, env_name=slotenv.RPI_ENV_NAME)
+        if src == "none":
+            slotenv.write_env(esp, slotenv.DEFAULTS, env_name=slotenv.RPI_ENV_NAME)
+        return True
+    return False
+
+
+def _restore_or_clear_tryboot(esp: Path) -> None:
+    esp = Path(esp)
+    tb = esp / "tryboot.txt"
+    inst = esp / "retroboot" / "installer-config.txt"
+    if inst.is_file():
+        slotenv.write_file_atomic(tb, inst.read_bytes())
+    else:
+        try:
+            tb.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def arm_rpi_tryboot(esp: Path, slot: str) -> None:
+    """Write ``tryboot.txt`` on the Pi FAT boot partition for a one-shot ``reboot \"0 tryboot\"``."""
+    esp = Path(esp)
+    slot_cfg = esp / "retroboot" / f"slot-{slot}" / "config.txt"
+    base = slot_cfg.read_text(errors="replace") if slot_cfg.is_file() else (esp / "config.txt").read_text(errors="replace")
+    trial_cfg = slotenv.render_rpi_config(base, slotenv.rpi_slot_prefix(slot), "cmdline-trial.txt")
+    slotenv.write_file_atomic(esp / "tryboot.txt", trial_cfg.encode())
+
+
+def commit_rpi_slot(esp: Path, slot: str) -> list[str]:
+    """Promote the verified slot's ``config.txt`` to the main ``config.txt`` and clear trial ``tryboot.txt``."""
+    esp = Path(esp)
+    slot_cfg = esp / "retroboot" / f"slot-{slot}" / "config.txt"
+    if not slot_cfg.is_file():
+        raise WriteError("The new system's Raspberry Pi startup configuration is missing.", "boot-payload")
+    cfg = esp / "config.txt"
+    if cfg.is_file() and not (esp / "config.txt.legacy").exists() and not slotenv.rpi_cfg_is_slotted(esp):
+        slotenv.write_file_atomic(esp / "config.txt.legacy", cfg.read_bytes())
+    if cfg.is_file():
+        slotenv.write_file_atomic(esp / "config.txt.prev", cfg.read_bytes())
+    slotenv.write_file_atomic(cfg, slot_cfg.read_bytes())
+    _restore_or_clear_tryboot(esp)
+    return ["config.txt"]
+
+
+def activate_rpi_slot(esp: Path, slot: str) -> None:
+    """Switch main ``config.txt`` directly to ``slot`` (for explicit rollback)."""
+    esp = Path(esp)
+    slot_cfg = esp / "retroboot" / f"slot-{slot}" / "config.txt"
+    legacy = esp / "config.txt.legacy"
+    if slot_cfg.is_file():
+        data = slot_cfg.read_bytes()
+    elif slot == "a" and legacy.is_file():
+        data = legacy.read_bytes()
+    else:
+        raise WriteError("The previous version's Raspberry Pi startup configuration is missing.", "no-previous")
+    cfg = esp / "config.txt"
+    if cfg.is_file():
+        slotenv.write_file_atomic(esp / "config.txt.prev", cfg.read_bytes())
+    slotenv.write_file_atomic(cfg, data)
+    _restore_or_clear_tryboot(esp)
+
+
 # --- the writer -------------------------------------------------------------------------------
 
 class SlotWriter:
     def __init__(self, esp: Path, lay: dict, work: Path, ops=None, running_root: Path = Path("/"),
-                 data_dir: Path = Path(DATA_MOUNT)):
+                 data_dir: Path = Path(DATA_MOUNT), mode: str | None = None):
         self.esp = Path(esp)
         self.lay = lay
         self.work = Path(work)
         self.ops = ops or RealOps()
         self.running_root = Path(running_root)
         self.data_dir = Path(data_dir)
+        self.mode = mode or ("rpi" if slotenv.is_rpi_esp(self.esp) else "grub")
 
     def target(self) -> str:
         cur = self.lay.get("current")
@@ -445,7 +594,8 @@ class SlotWriter:
         list_file.write_bytes(gzip.compress(json.dumps({"format": "retroboot-root-files/1",
                                                         "entries": entries}).encode(), 6))
         # 1. The target stops being a bootable choice before it is touched.
-        slotenv.update_env(self.esp, rb_next="", rb_tries="0", rb_other_ok="0")
+        env_name = slotenv.RPI_ENV_NAME if self.mode == "rpi" else None
+        slotenv.update_env(self.esp, env_name=env_name, rb_next="", rb_tries="0", rb_other_ok="0")
         payload, slot_mnt = str(self.work / "payload"), str(self.work / "slot")
         mounted = []
         try:
@@ -483,8 +633,13 @@ class SlotWriter:
                     self.ops.umount(p)
                 except Exception as exc:  # noqa: BLE001 - best effort cleanup
                     _log(f"cleanup umount {p}: {exc}")
-        slotenv.write_slot_cfg(self.esp, target, cmdline, version, build_id)
-        converted = convert_legacy(self.esp, self.running_root, self.work / "boot")
+        if self.mode == "rpi":
+            converted = convert_legacy_rpi(self.esp, self.running_root, self.lay.get("current") or "a")
+            sync_rpi_slot(self.esp, target, new_root_boot, cmdline, version, build_id,
+                          root_arg=_rpi_root_arg(dev, target))
+        else:
+            slotenv.write_slot_cfg(self.esp, target, cmdline, version, build_id)
+            converted = convert_legacy(self.esp, self.running_root, new_root_boot)
         progress(1.0, f"RetroBoot {version} is ready to install.")
         return {"slot": target, "carried": carried, "converted_grub": converted,
                 "version": version, "build_id": build_id, "flavor": flavor}

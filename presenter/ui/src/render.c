@@ -157,7 +157,10 @@ static void draw_list(rbui *ui, rb_gfx *g, rb_node *n, int disabled)
     if (list_has_bar(n)) {
         int pressed = ui->track == TR_LISTBAR && ui->tnode == n && ui->track_inside ? ui->track_part : 0;
         int thumb = -1;
-        if (ui->track == TR_LISTBAR && ui->tnode == n && ui->track_part == SB_THUMB) thumb = -1;
+        if (ui->track == TR_LISTBAR && ui->tnode == n && ui->track_part == SB_THUMB) {
+            thumb = ui->py - ui->track_grab + (n->scrolled ? ui->scroll : 0);
+            if (thumb < 0) thumb = 0;
+        }
         pt_scrollbar(g, list_bar_rect(n), n->nopts, vis, n->scroll, pressed, thumb);
     }
     if (ui->focus == n && !disabled && !pt_v9()) pt_focus_ring(g, r_out(n->ctl, 1));
@@ -309,7 +312,11 @@ static void draw_slider(rbui *ui, rb_gfx *g, rb_node *n, int disabled)
 {
     slider_parts s = slider_geom(ui, n);
     int y = n->r.y;
-    if (n->text && n->text[0]) tx_draw(g, ui->f_sys, 1, s.label_x, y + 12, n->text, strlen(n->text), fg(disabled));
+    if (n->text && n->text[0]) {
+        int end = s.lo_x >= 0 ? s.lo_x : s.track.x;
+        int maxw = end - s.label_x - 4;
+        if (maxw > 0) tx_draw_fit(g, ui->f_sys, s.label_x, y + 12, maxw, n->text, fg(disabled));
+    }
     if (s.lo_x >= 0) icon_draw(g, n->icon, 16, s.lo_x, y, disabled);
     if (s.hi_x >= 0) icon_draw(g, n->icon2, 16, s.hi_x, y, disabled);
     int pressed = ui->track == TR_SLIDER && ui->tnode == n;
@@ -401,7 +408,12 @@ void render_doc(rbui *ui, rb_gfx *g)
         if (root->kids[i] != ui->pinned && root->kids[i] != ui->pinned_band) draw_node(ui, &v, root->kids[i], 0);
     if (ui->scrollable) {
         int pressed = ui->track == TR_VBAR && ui->track_inside ? ui->track_part : 0;
-        pt_scrollbar(g, ui->vbar, ui->content_h, ui->view.h, ui->scroll, pressed, -1);
+        int thumb = -1;
+        if (ui->track == TR_VBAR && ui->track_part == SB_THUMB) {
+            thumb = ui->py - ui->track_grab;
+            if (thumb < 0) thumb = 0;
+        }
+        pt_scrollbar(g, ui->vbar, ui->content_h, ui->view.h, ui->scroll, pressed, thumb);
         if (ui->pinned) pt_separator(g, ui->content.x, ui->view.y + ui->view.h, ui->content.w - 1);
     }
     if (ui->pinned || ui->pinned_band) {

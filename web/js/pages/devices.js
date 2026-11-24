@@ -88,7 +88,7 @@ export function render(ctx) {
     'div',
     { class: 'page page-narrow' },
     pageHeader('devices', 'Paired Devices', 'Browsers allowed to manage this RetroBoot. Remove any you no longer use.'),
-    win({ title: 'Paired Devices', icon: 'devices' }, listEl, h('p', { class: 'muted small' }, `To pair another phone or computer, open RetroBoot Recovery on ${hw().the} and show the web pairing code, then open this page’s address on the new device.`)),
+    win({ title: 'Paired Devices', icon: 'devices' }, listEl, h('p', { class: 'muted small' }, `To pair another phone or computer, press Ctrl+Alt+Delete and open Network & Web Access on ${hw().the} to show the web pairing code, then open this page’s address on the new device.`)),
   );
   load();
   return { el, destroy: () => scope.destroy() };

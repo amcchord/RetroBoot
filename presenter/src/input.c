@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include "gamepad.h"
 #include "gemkbd.h"
 #include "log.h"
 #include "rbui.h"
@@ -30,7 +31,7 @@ struct rb_input {
     int devices;
     bool legacy_mouse_enabled;
     struct libinput_device *motion_device;
-    double mouse_dpi; /* zero for other devices, such as a touchpad */
+    double mouse_dpi; /* zero for non-relative-pointer devices */
     /* touchscreens and tablets (touch.h): what the presenter binds to outputs */
     struct {
         struct libinput_device *dev;
@@ -38,7 +39,9 @@ struct rb_input {
     } tdev[RB_INPUT_MAX_TOUCH_DEVS];
     int ntdev;
     double finger_acc;
-    bool esc_held; /* Escape was already down when a device was opened */
+    bool esc_held;    /* Escape was already down when a device was opened */
+    bool caps_synced; /* initial hardware CapsLock LED synced into xkb state */
+    struct rb_gamepad *gamepad;
     /* Gemini PDA built-in keyboard (gemkbd.h): on when the device tree says
      * planet,gemini-pda unless RB_GEMINI_KEYBOARD=off; its devices carry
      * &gemkbd as libinput user data. */
@@ -48,6 +51,17 @@ struct rb_input {
 };
 
 #define KEY_LONGS ((KEY_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long)))
+#define LED_LONGS ((LED_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long)))
+
+static void sync_caps_led(struct rb_input *in)
+{
+    if (!in || !in->keymap || !in->state)
+        return;
+    xkb_mod_index_t idx = xkb_keymap_mod_get_index(in->keymap, XKB_MOD_NAME_CAPS);
+    if (idx == XKB_MOD_INVALID)
+        return;
+    xkb_state_update_mask(in->state, 0, 0, 1u << idx, 0, 0, 0);
+}
 
 static int open_restricted(const char *path, int flags, void *user)
 {
@@ -62,6 +76,12 @@ static int open_restricted(const char *path, int flags, void *user)
     if (in && ioctl(fd, EVIOCGKEY(sizeof keys), keys) >= 0 &&
         ((keys[KEY_ESC / (8 * sizeof(unsigned long))] >> (KEY_ESC % (8 * sizeof(unsigned long)))) & 1UL))
         in->esc_held = true;
+    unsigned long leds[LED_LONGS] = {0};
+    if (in && !in->caps_synced && ioctl(fd, EVIOCGLED(sizeof leds), leds) >= 0 &&
+        ((leds[LED_CAPSL / (8 * sizeof(unsigned long))] >> (LED_CAPSL % (8 * sizeof(unsigned long)))) & 1UL)) {
+        in->caps_synced = true;
+        sync_caps_led(in);
+    }
     return fd;
 }
 
@@ -229,6 +249,10 @@ static void configure_device(struct rb_input *in, struct libinput_device *dev)
         libinput_device_config_tap_set_enabled(dev, LIBINPUT_CONFIG_TAP_ENABLED);
         libinput_device_config_tap_set_drag_enabled(dev, LIBINPUT_CONFIG_DRAG_ENABLED);
     }
+    if (libinput_device_config_click_get_methods(dev) & LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER)
+        libinput_device_config_click_set_method(dev, LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER);
+    if (libinput_device_config_dwt_is_available(dev))
+        libinput_device_config_dwt_set_enabled(dev, LIBINPUT_CONFIG_DWT_ENABLED);
     char caps[64] = "";
     static const struct {
         enum libinput_device_capability c;
@@ -303,9 +327,9 @@ static bool legacy_mouse_sample(struct rb_input *in, struct libinput_event *ev,
         in->mouse_dpi = 0;
         struct udev_device *ud = libinput_device_get_udev_device(device);
         if (ud) {
-            if (udev_device_get_property_value(ud, "ID_INPUT_MOUSE") &&
-                !udev_device_get_property_value(ud, "ID_INPUT_TOUCHPAD") &&
-                !udev_device_get_property_value(ud, "ID_INPUT_POINTINGSTICK"))
+            if (udev_device_get_property_value(ud, "ID_INPUT_MOUSE") ||
+                udev_device_get_property_value(ud, "ID_INPUT_TOUCHPAD") ||
+                udev_device_get_property_value(ud, "ID_INPUT_POINTINGSTICK"))
                 in->mouse_dpi = rb_mouse_dpi(udev_device_get_property_value(ud, "MOUSE_DPI"));
             udev_device_unref(ud);
         }
@@ -377,15 +401,22 @@ static void handle_event(struct rb_input *in, struct libinput_event *ev)
         if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL) && in->cb.scroll)
             in->cb.scroll(in->data,
                           libinput_event_pointer_get_scroll_value_v120(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL));
+        if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL) && in->cb.scroll_h)
+            in->cb.scroll_h(in->data,
+                            libinput_event_pointer_get_scroll_value_v120(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL));
         break;
     }
     case LIBINPUT_EVENT_POINTER_SCROLL_FINGER:
     case LIBINPUT_EVENT_POINTER_SCROLL_CONTINUOUS: {
         struct libinput_event_pointer *p = libinput_event_get_pointer_event(ev);
+        /* ~15 units of finger travel per wheel notch */
         if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL) && in->cb.scroll) {
-            /* ~15 units of finger travel per wheel notch */
             double v = libinput_event_pointer_get_scroll_value(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL);
             in->cb.scroll(in->data, v * 8.0);
+        }
+        if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL) && in->cb.scroll_h) {
+            double h = libinput_event_pointer_get_scroll_value(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL);
+            in->cb.scroll_h(in->data, h * 8.0);
         }
         break;
     }
@@ -488,6 +519,7 @@ struct rb_input *rb_input_new(struct rb_loop *loop, const struct rb_input_cb *cb
     if (!in->watch)
         goto fail;
     input_ready(in, -1, 0);
+    in->gamepad = rb_gamepad_new(loop, cb ? cb->gamepad_key : NULL, data);
     rb_log("input: libinput seat0 with %d devices", in->devices);
     return in;
 fail:
@@ -500,6 +532,7 @@ void rb_input_free(struct rb_input *in)
 {
     if (!in)
         return;
+    rb_gamepad_free(in->gamepad);
     if (in->watch)
         rb_watch_remove(in->watch);
     if (in->li)
@@ -521,6 +554,18 @@ void rb_input_set_screen(struct rb_input *in, int w, int h)
         return;
     in->screen_w = w;
     in->screen_h = h;
+}
+
+void rb_input_set_gamepad_mode(struct rb_input *in, int mode)
+{
+    if (in && in->gamepad)
+        rb_gamepad_set_mode(in->gamepad, (enum rb_gamepad_mode)mode);
+}
+
+void rb_input_set_gamepad_active(struct rb_input *in, bool active)
+{
+    if (in && in->gamepad)
+        rb_gamepad_set_enabled(in->gamepad, active);
 }
 
 bool rb_input_has_xkb(const struct rb_input *in) { return in && in->state; }

@@ -220,6 +220,20 @@ static void test_checker_border(void)
             free(fb);
             rb_xform_free(&x);
         }
+    /* #15: 1/d and fit downscaled mirrors continue with checkerboard borders instead of black. */
+    struct rb_xform x;
+    memset(&x, 0, sizeof x);
+    rb_xform_set_src_scale(&x, 2);
+    CHECK_EQ(rb_xform_setup(&x, 0, 1920, 1200, 3840, 2160, true), 0);
+    CHECK_EQ(x.k, 0);
+    CHECK_EQ(x.div, 2);
+    rb_xform_set_border(&x, RB_BORDER_CHECKER, 1, (struct rb_checker_anchor){0, 0});
+    uint32_t *fb2 = calloc((size_t)1920 * 1200, 4);
+    rb_xform_fill_border(&x, fb2, 1920);
+    CHECK(fb2[0] != fb2[1]); /* 1x checkerboard top border row instead of solid black */
+    CHECK(fb2[0] != fb2[1920]);
+    free(fb2);
+    rb_xform_free(&x);
 }
 
 /* Absolute input: scanout point -> frame point through rotation/letterbox. */

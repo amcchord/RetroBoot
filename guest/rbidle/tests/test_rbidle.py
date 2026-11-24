@@ -27,7 +27,7 @@ import rbidle_check  # noqa: E402
 
 BUILD = Path(os.environ.get("RBIDLE_BUILD", RBIDLE / "build"))
 TOOLCHAIN = Path(os.environ.get("RETRO68_TOOLCHAIN",
-                                "/opt/retro68/toolchain"))
+                                "/Users/austinmcchord/Development/ClassicMac/vendor/Retro68-build/toolchain"))
 OBJDUMP = TOOLCHAIN / "bin" / "m68k-apple-macos-objdump"
 
 # The handler as it must be: (mnemonic, operands) in objdump's MIT syntax.

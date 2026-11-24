@@ -25,6 +25,8 @@ export const KEY_CODES = new Set([
 const MODIFIERS = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight', 'OSLeft', 'OSRight']);
 const LONG_PRESS_MS = 550;
 const TAP_SLOP = 10; // CSS pixels a finger may wander and still tap
+const DRAG_SLOP = 18; // CSS pixels of immediate roll before committing a touch drag
+const DRAG_HOLD_MS = 120; // ms grace window so clumsy taps/staggered 2-finger touches don't drag Finder icons
 const DOUBLE_TAP_MS = 320;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -37,13 +39,17 @@ export class InputController {
    * @param {HTMLTextAreaElement} [o.keyboardSink]  focused to bring up a touch keyboard
    * @param {() => boolean} o.canControl
    * @param {(latched: Set<string>) => void} [o.onLatch]
+   * @param {(ev: object) => void} [o.onPinch]
+   * @param {() => boolean} [o.canPan]
    */
-  constructor({ canvas, stream, keyboardSink, canControl, onLatch }) {
+  constructor({ canvas, stream, keyboardSink, canControl, onLatch, onPinch, canPan }) {
     this.canvas = canvas;
     this.stream = stream;
     this.sink = keyboardSink || null;
     this.canControl = canControl;
     this.onLatch = onLatch || (() => {});
+    this.onPinch = onPinch || null;
+    this.canPan = canPan || (() => false);
     this.trackpad = false;
     this.latched = new Set(); // 'shift' | 'control' | 'option' | 'command'
     this.latchKey = null;
@@ -54,9 +60,17 @@ export class InputController {
     this.raf = 0;
     this.touches = new Map();
     this.touchState = null;
+    this.twoMode = null;
+    this.twoDist0 = 0;
+    this.twoDistLast = 0;
+    this.twoMidLast = null;
+    this.twoCenter = null;
     this.vp = null;
     this.lastTapEnd = 0;
     this.wheelAcc = 0;
+    this.composing = false;
+    this.compText = '';
+    this.committedDuringComp = false;
     this.probe = null;
     this.latency = [];
     const on = (el, type, fn, opts) => {
@@ -77,9 +91,15 @@ export class InputController {
     if (this.sink) {
       on(this.sink, 'keydown', (e) => this.keyDown(e, true));
       on(this.sink, 'keyup', (e) => this.keyUp(e, true));
+      on(this.sink, 'compositionstart', () => this.compositionStart());
+      on(this.sink, 'compositionupdate', (e) => this.compositionUpdate(e));
+      on(this.sink, 'compositionend', (e) => this.compositionEnd(e));
       on(this.sink, 'beforeinput', (e) => this.beforeInput(e));
-      on(this.sink, 'input', () => (this.sink.value = ''));
-      on(this.sink, 'blur', () => this.releaseAll());
+      on(this.sink, 'input', (e) => this.sinkInput(e));
+      on(this.sink, 'blur', () => {
+        this.flushComposition();
+        this.releaseAll();
+      });
     }
   }
 
@@ -313,7 +333,7 @@ export class InputController {
 
   keyDown(e, fromSink = false) {
     if (!this.canControl()) return;
-    if (e.isComposing || e.keyCode === 229) return;
+    if (e.isComposing || this.composing || e.keyCode === 229) return;
     if (!KEY_CODES.has(e.code)) return; // a touch keyboard: text arrives as beforeinput
     e.preventDefault();
     if (e.repeat) return;
@@ -354,16 +374,76 @@ export class InputController {
     }
   }
 
+  compositionStart() {
+    this.composing = true;
+    this.compText = '';
+    this.committedDuringComp = false;
+  }
+
+  compositionUpdate(e) {
+    this.composing = true;
+    if (typeof e.data === 'string') this.compText = e.data;
+  }
+
+  compositionEnd(e) {
+    this.composing = false;
+    const text = !this.committedDuringComp ? (typeof e.data === 'string' ? e.data : this.compText || (this.sink ? this.sink.value : '')) : '';
+    this.compText = '';
+    this.committedDuringComp = false;
+    if (this.sink) this.sink.value = '';
+    if (text && this.canControl()) this.stream.send({ t: 'type', text });
+  }
+
+  flushComposition() {
+    if (!this.composing) return;
+    const text = !this.committedDuringComp ? (this.compText || (this.sink ? this.sink.value : '')) : '';
+    this.composing = false;
+    this.compText = '';
+    this.committedDuringComp = false;
+    if (this.sink) this.sink.value = '';
+    if (text && this.canControl()) this.stream.send({ t: 'type', text });
+  }
+
+  sinkInput(e) {
+    if (!this.sink) return;
+    if (this.composing || (e && e.isComposing)) {
+      this.compText = this.sink.value;
+      return;
+    }
+    if (this.sink.value && this.canControl()) {
+      this.stream.send({ t: 'type', text: this.sink.value });
+    }
+    this.sink.value = '';
+  }
+
   beforeInput(e) {
     if (!this.canControl()) return;
     const t = e.inputType;
-    if (t === 'insertText' || t === 'insertReplacementText' || t === 'insertFromPaste') {
+    if (t === 'insertCompositionText' || t === 'deleteCompositionText' || t === 'deleteByComposition') {
+      // Android Gboard / Samsung IME: never preventDefault or wipe sink.value mid-composition.
+      this.composing = true;
+      if (typeof e.data === 'string') this.compText = e.data;
+      else if (t === 'deleteCompositionText') this.compText = '';
+    } else if (t === 'insertFromComposition') {
+      e.preventDefault();
+      const text = e.data || this.compText || (this.sink ? this.sink.value : '');
+      this.composing = false;
+      this.compText = '';
+      this.committedDuringComp = true;
+      if (this.sink) this.sink.value = '';
+      if (text) this.stream.send({ t: 'type', text });
+    } else if (t === 'insertText' || t === 'insertReplacementText' || t === 'insertFromPaste') {
+      if (e.isComposing || this.composing) return;
       e.preventDefault();
       if (e.data) this.stream.send({ t: 'type', text: e.data });
+      if (this.sink) this.sink.value = '';
     } else if (t === 'insertLineBreak' || t === 'insertParagraph') {
       e.preventDefault();
+      this.flushComposition();
+      if (this.sink) this.sink.value = '';
       this.tapKey('Enter');
     } else if (t === 'deleteContentBackward') {
+      if (this.composing || e.isComposing) return;
       e.preventDefault();
       this.tapKey('Backspace');
     } else if (t === 'deleteContentForward') {
@@ -409,6 +489,13 @@ export class InputController {
       this.touchState = 'two';
       this.twoAt = now;
       this.twoMoved = 0;
+      this.twoMode = null;
+      const [t1, t2] = [...this.touches.values()];
+      this.twoDist0 = Math.hypot(t2.x - t1.x, t2.y - t1.y);
+      this.twoDistLast = this.twoDist0;
+      this.twoMidLast = { x: (t1.x + t2.x) / 2, y: (t1.y + t2.y) / 2 };
+      this.twoMid0 = { ...this.twoMidLast };
+      this.twoCenter = this.pos({ clientX: this.twoMidLast.x, clientY: this.twoMidLast.y });
     }
   }
 
@@ -421,12 +508,39 @@ export class InputController {
     t.y = e.clientY;
     const moved = Math.hypot(t.x - t.x0, t.y - t.y0);
     if (this.touchState === 'two') {
-      this.twoMoved += Math.abs(dy);
-      this.wheelAcc += dy;
-      const notches = Math.trunc(this.wheelAcc / 24);
-      if (notches) {
-        this.wheelAcc -= notches * 24;
-        this.stream.send({ t: 'wheel', dy: -notches });
+      this.twoMoved += Math.hypot(dx, dy);
+      if (this.touches.size === 2) {
+        const [t1, t2] = [...this.touches.values()];
+        const mid = { x: (t1.x + t2.x) / 2, y: (t1.y + t2.y) / 2 };
+        const midDx = mid.x - (this.twoMidLast ? this.twoMidLast.x : mid.x);
+        const midDy = mid.y - (this.twoMidLast ? this.twoMidLast.y : mid.y);
+        const dist = Math.hypot(t2.x - t1.x, t2.y - t1.y);
+        if (!this.twoMode) {
+          if (this.onPinch && this.twoDist0 > 10 && Math.abs(dist - this.twoDist0) > 12) {
+            this.twoMode = 'pinch';
+            this.onPinch({ phase: 'start', midX: mid.x, midY: mid.y });
+          } else if (this.onPinch && this.canPan() && this.twoMid0 && Math.hypot(mid.x - this.twoMid0.x, mid.y - this.twoMid0.y) > TAP_SLOP) {
+            this.twoMode = 'pan';
+            this.onPinch({ phase: 'start', midX: mid.x, midY: mid.y });
+          } else if (Math.abs(dy) > 4) {
+            this.twoMode = 'scroll';
+          }
+        }
+        if (this.twoMode === 'pinch' && this.onPinch) {
+          const ratio = this.twoDistLast > 0 ? dist / this.twoDistLast : 1;
+          this.onPinch({ phase: 'move', scaleRatio: ratio, midX: mid.x, midY: mid.y, dx: midDx, dy: midDy });
+        } else if (this.twoMode === 'pan' && this.onPinch) {
+          this.onPinch({ phase: 'move', scaleRatio: 1, midX: mid.x, midY: mid.y, dx: midDx, dy: midDy });
+        } else {
+          this.wheelAcc += dy;
+          const notches = Math.trunc(this.wheelAcc / 24);
+          if (notches) {
+            this.wheelAcc -= notches * 24;
+            this.stream.send({ t: 'wheel', dy: -notches });
+          }
+        }
+        this.twoDistLast = dist;
+        this.twoMidLast = mid;
       }
       return;
     }
@@ -446,7 +560,8 @@ export class InputController {
       this.queueMove(this.round(this.vp));
       return;
     }
-    if (this.touchState === 'pending' && moved > TAP_SLOP) {
+    const elapsed = performance.now() - t.t0;
+    if (this.touchState === 'pending' && (moved > DRAG_SLOP || (moved > TAP_SLOP && elapsed >= DRAG_HOLD_MS))) {
       clearTimeout(this.touchTimer);
       this.touchState = 'drag';
       if (this.touchStart) {
@@ -473,8 +588,13 @@ export class InputController {
     if (!this.canControl()) return;
     if (this.touchState === 'two') {
       if (this.touches.size === 0) {
-        if (this.trackpad && now - this.twoAt < 300 && this.twoMoved < TAP_SLOP && this.vp) this.click(this.round(this.vp), { button: 2 });
+        if (now - this.twoAt < 300 && this.twoMoved < TAP_SLOP) {
+          const target = this.trackpad ? (this.vp && this.round(this.vp)) : this.twoCenter;
+          if (target) this.click(target, { button: 2 });
+        }
+        if (this.twoMode === 'pinch' || this.twoMode === 'pan') this.onPinch?.({ phase: 'end' });
         this.touchState = null;
+        this.twoMode = null;
       }
       return;
     }
@@ -483,10 +603,11 @@ export class InputController {
     this.flushMove();
     const state = this.touchState;
     this.touchState = null;
+    const moved = Math.hypot(t.x - t.x0, t.y - t.y0);
     if (state === 'drag') {
       this.button(0, false, this.trackpad && this.vp ? this.round(this.vp) : this.pos(e));
-    } else if (state === 'pending' || state === 'tapdrag') {
-      const p = this.trackpad ? this.vp && this.round(this.vp) : this.pos(e);
+    } else if (state === 'tapdrag' || (state === 'pending' && (this.trackpad || moved <= DRAG_SLOP))) {
+      const p = this.trackpad ? this.vp && this.round(this.vp) : (this.touchStart || this.pos(e));
       if (p) this.click(p);
       this.lastTapEnd = state === 'pending' ? now : 0;
     }

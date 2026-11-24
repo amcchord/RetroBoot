@@ -411,8 +411,16 @@ static uint32_t border_pixel(const struct rb_xform *x, int lx, int ly)
 {
     if (x->border == RB_BORDER_OSX_GRAY)
         return 0x00c0c0c0u;
-    if (x->border != RB_BORDER_CHECKER || x->k <= 0)
+    if (x->border != RB_BORDER_CHECKER)
         return 0;
+    if (x->k <= 0) {
+        if (x->div > 0 && x->checker_s >= x->div) {
+            int u = (lx - x->img.x) * x->div + x->div / 2;
+            int v = (ly - x->img.y) * x->div + x->div / 2;
+            return rb_checker_pixel_at(u, v, x->checker_s, x->checker_anchor);
+        }
+        return rb_checker_pixel_at(lx, ly, 1, (struct rb_checker_anchor){x->img.x, x->img.y});
+    }
     /* Continue the frame's checkerboard (frame pixel u, v; cell s). */
     int u = rb_floordiv(lx - x->img.x, x->k), v = rb_floordiv(ly - x->img.y, x->k);
     return rb_checker_pixel_at(u, v, x->checker_s, x->checker_anchor);

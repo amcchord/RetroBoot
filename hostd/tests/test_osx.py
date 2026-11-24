@@ -964,6 +964,44 @@ class Profiles(unittest.TestCase):
             self.assertEqual(f.read(12), b"old live Mac")
         self.assertEqual((saved[0] / "nvram.img").read_bytes(), nvram_seed())
 
+    def test_per_machine_settings_and_smart_host_ram_gl_defaults(self):
+        from retroboot import osx_graphics
+        m = self.mac("macosx-10.4")
+        m.update_meta(name="Mac OS X 10.4.11 Tiger Deluxe")
+        m.meta["os_build"] = "8S165"
+        path = self.pkg / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["features"] += sorted({
+            osx_graphics.FEATURE, osx_graphics.EGL_FEATURE,
+            osx_graphics.COHERENT_FEATURE, osx_graphics.I8_FEATURE,
+        } | osx.SLEEP_FEATURES)
+        path.write_text(json.dumps(manifest))
+
+        # Smart defaults: Deluxe + host RAM >= 4 GB + GL ready -> 2048 MB & ati-radeon (#44).
+        gl = {"ok": True, "render_node": "/dev/dri/renderD129", "renderer": "AMD gfx1150", "software": False}
+        with mock.patch.object(osx_graphics, "_host_gl", gl), \
+                mock.patch("retroboot.hostinfo.memory_bytes", return_value=6144 * 1024 * 1024):
+            args = build_argv(m, schema.defaults(), self.paths, {"mode": [1920, 1080, 60]},
+                              LaunchOptions())
+        self.assertEqual(args[args.index("-m") + 1], "2048")
+        self.assertTrue(any(a.startswith("ati-vga,") for a in args))
+        # #18: on 1920x1080 auto (which would give classic 960x540), OS X ATI picks 1024x768.
+        self.assertIn("1024x768x32", args)
+        self.assertTrue(any("xres=1024,yres=768" in a for a in args))
+
+        # machine.json["settings"] explicitly overrides template & global defaults.
+        m.meta["template"]["ramMB"] = 1024
+        m.meta["settings"] = {"osx_ram_mb": 1536, "graphics": "standard"}
+        with mock.patch.object(osx_graphics, "_host_gl", gl):
+            args2 = build_argv(m, schema.defaults(), self.paths, {"mode": [1920, 1080, 60]})
+        self.assertEqual(args2[args2.index("-m") + 1], "1536")
+        self.assertFalse(any(a.startswith("ati-vga,") for a in args2))
+
+        # Without machine.json["settings"], template ramMB overrides the bare 512 MB default.
+        del m.meta["settings"]
+        args3 = build_argv(m, schema.defaults(), self.paths, None)
+        self.assertEqual(args3[args3.index("-m") + 1], "1024")
+
 
 class FinderPresence(unittest.TestCase):
     def test_exact_profile_version_and_unmodified_menu_are_required(self):

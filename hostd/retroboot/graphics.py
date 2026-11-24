@@ -290,13 +290,14 @@ def guest_software(machine) -> str | None:
     return None
 
 
-def requested(settings: dict) -> str:
-    return ATI if settings.get(SETTING, STANDARD) == ATI else STANDARD
+def requested(settings: dict, machine=None) -> str:
+    eff = machine_settings(settings, machine) if machine is not None else settings
+    return ATI if eff.get(SETTING, STANDARD) == ATI else STANDARD
 
 
 def why_not(settings: dict, machine, package_root: Path) -> str | None:
     """Why the requested card is not used (None when it is, or nothing was asked)."""
-    if requested(settings) != ATI:
+    if requested(settings, machine) != ATI:
         return None
     if getattr(machine, "osx", False):
         from . import osx_graphics
@@ -315,7 +316,7 @@ def why_not(settings: dict, machine, package_root: Path) -> str | None:
 
 def effective(settings: dict, machine, package_root: Path) -> str:
     """The card the guest gets at the next launch."""
-    if requested(settings) == ATI and why_not(settings, machine, package_root) is None:
+    if requested(settings, machine) == ATI and why_not(settings, machine, package_root) is None:
         return ATI
     return STANDARD
 
@@ -380,6 +381,75 @@ def ati_size(bound: tuple[int, int], exact: bool = False) -> tuple[int, int]:
     bw, bh = int(bound[0]), int(bound[1])
     fits = [s for s in ATI_SIZES if s[0] <= bw and s[1] <= bh]
     return max(fits, key=lambda s: (s[0] * s[1], s[0])) if fits else STARTUP_SIZE
+
+
+AUTO_FLOOR = (640, 480)
+
+
+def auto_scale_for(width: int, height: int) -> int:
+    """Maximum automatic pixel scale keeping at least ``640x480`` (#22)."""
+    long_side, short_side = max(int(width), int(height)), min(int(width), int(height))
+    s = 1
+    while long_side // (s + 1) >= AUTO_FLOOR[0] and short_side // (s + 1) >= AUTO_FLOOR[1]:
+        s += 1
+    return s
+
+
+def machine_settings(settings: dict | None, machine, package_root: Path | None = None) -> dict:
+    """Overlay per-machine ``machine.json["settings"]`` and template/GL defaults (#44)."""
+    out = dict(settings or {})
+    if machine is None:
+        return out
+    meta = getattr(machine, "meta", None) or {}
+    ms = meta.get("settings") if isinstance(meta.get("settings"), dict) else {}
+    tpl = meta.get("template") if isinstance(meta.get("template"), dict) else {}
+
+    ram = ms.get("ram_mb")
+    if isinstance(ram, int) and not isinstance(ram, bool):
+        out["machine.ram_mb"] = ram
+    elif ram in (None, "auto") and isinstance(tpl.get("ramMB"), int) and not isinstance(tpl.get("ramMB"), bool):
+        if out.get("machine.ram_mb") in (None, 512):
+            out["machine.ram_mb"] = tpl["ramMB"]
+
+    osx_ram = ms.get("osx_ram_mb")
+    if isinstance(osx_ram, int) and not isinstance(osx_ram, bool):
+        out["machine.osx_ram_mb"] = osx_ram
+
+    gfx = ms.get("graphics")
+    if gfx in (STANDARD, ATI):
+        out[SETTING] = gfx
+    elif gfx in (None, "auto"):
+        tpl_gfx = tpl.get("graphics") or (tpl.get("recommendedSettings") or {}).get("graphics")
+        if tpl_gfx in (STANDARD, ATI) and out.get(SETTING, STANDARD) == STANDARD:
+            out[SETTING] = tpl_gfx
+        elif (getattr(machine, "osx", False)
+              and getattr(machine, "guest_os", None) == "macosx-10.4"
+              and out.get(SETTING, STANDARD) == STANDARD
+              and "deluxe" in f"{getattr(machine, 'id', '')} {getattr(machine, 'name', '')}".lower()):
+            from . import osx_graphics
+            if package_root is not None and osx_graphics.why_not(machine, package_root) is None:
+                out[SETTING] = ATI
+
+    adapter = ms.get("guest_adapter")
+    if adapter in ("ethernet", "airport"):
+        out["network.guest_adapter"] = adapter
+    return out
+
+
+def osx_ati_screen(display: dict | None, settings: dict, exact: bool = False) -> tuple[int, int]:
+    """Mac OS X ATI screen size: avoids non-VESA sub-1024 auto sizes like 960x540 (#18)."""
+    from .display import guest_geometry
+    gs = settings.get("display.guest_size", "auto")
+    ps = settings.get("display.pixel_scale", "auto")
+    bound = guest_geometry(display, gs, ps)
+    sized = ati_size(bound, exact=exact)
+    if gs in (None, "", "auto") and display and display.get("mode") and (sized[0] < 1024 or sized[1] < 600):
+        mw, mh = int(display["mode"][0]), int(display["mode"][1])
+        if mw >= 1024 and mh >= 768:
+            return (1024, 768)
+        if mw >= 800 and mh >= 600:
+            return (800, 600)
+    return sized
 
 
 def mac_screen(display: dict | None, settings: dict, exact: bool = False) -> tuple[int, int]:
@@ -549,40 +619,78 @@ class Graphics:
             why = None
         return {"available": why is None, "reason": why, "message": AVAILABILITY.get(why)}
 
+    def _pkg_for(self, machine) -> Path:
+        if getattr(machine, "osx", False):
+            return self.app.paths.qemu_osx_package
+        return self.app.paths.qemu_package
+
+    def _screen_for(self, machine, display: dict | None, settings: dict) -> tuple[int, int] | None:
+        if not display or not display.get("mode"):
+            return None
+        if getattr(machine, "osx", False):
+            return osx_ati_screen(display, settings, self.exact())
+        return mac_screen(display, settings, self.exact())
+
+    def _guest_scale(self, display: dict | None, screen: list[int] | None, settings: dict) -> int | None:
+        if not display or not display.get("mode"):
+            return None
+        if display.get("guest_scale"):
+            return int(display["guest_scale"])
+        if screen and screen[0] > 0 and screen[1] > 0:
+            from .display import integer_factor
+            mode = display["mode"]
+            return integer_factor(int(mode[0]), int(mode[1]), int(screen[0]), int(screen[1]),
+                                  settings.get("display.pixel_scale", "auto"), display.get("scale"))
+        return display.get("scale") or auto_scale_for(display["mode"][0], display["mode"][1])
+
     def ui_context(self) -> dict:
         """For the settings schema (ValidationContext.graphics), the panel and the web.
         ``by_machine`` has the same answer for every installed Mac, so a change that
         switches the startup Mac and turns 3D acceleration on together is judged by
         the Mac that will start."""
         out = self.availability()
-        out["osx"] = bool(getattr(self.app.supervisor.active_machine(), "osx", False))
+        m = self.app.supervisor.active_machine()
+        out["osx"] = bool(getattr(m, "osx", False))
         machines = getattr(self.app, "machines", None)
         try:
-            out["by_machine"] = {m.id: self.availability(m)
-                                 for m in (machines.list() if machines is not None else [])}
+            out["by_machine"] = {item.id: self.availability(item)
+                                 for item in (machines.list() if machines is not None else [])}
         except Exception:                    # never break the settings page over this
             out["by_machine"] = {}
+        eff = machine_settings(self.app.settings.desired, m, self._pkg_for(m))
         display = self.app.presenter.display if getattr(self.app, "presenter", None) else None
+        ati = self._screen_for(m, display, eff)
+        out["ati_screen"] = list(ati) if ati else None
+        gs = eff.get("display.guest_size", "auto")
+        out["auto_floor"] = list(AUTO_FLOOR)
+        out["keep_auto"] = {"keep": bool(gs and gs != "auto"), "auto": not gs or gs == "auto",
+                            "guest_size": gs, "pixel_scale": eff.get("display.pixel_scale", "auto")}
         if display and display.get("mode"):
-            out["ati_screen"] = list(mac_screen(display, self.app.settings.desired, self.exact()))
+            mode = display["mode"]
+            out["suggested_scale"] = auto_scale_for(int(mode[0]), int(mode[1]))
+            out["mac_screen"] = self.current_screen()
+            out["guest_scale"] = self._guest_scale(display, out["mac_screen"], eff)
         else:
-            out["ati_screen"] = None
+            out["suggested_scale"] = None
+            out["mac_screen"] = None
+            out["guest_scale"] = None
         return out
 
     def next_card(self) -> str:
         """The card of the next launch (applied settings).  Until the host GL probe
         has finished, the card of the last launch (state hint) stands in, so the
         presenter's startup geometry does not jump while hostd starts."""
-        settings = self.app.settings.applied
-        if requested(settings) != ATI:
-            return STANDARD
         m = self.app.supervisor.active_machine()
+        pkg = self._pkg_for(m)
+        settings = machine_settings(self.app.settings.applied, m, pkg)
+        if requested(settings, m) != ATI:
+            return STANDARD
         if getattr(m, "osx", False):
-            return effective(settings, m, self.app.paths.qemu_osx_package)
+            return effective(settings, m, pkg)
         if host_gl() is None:
             hint = read_hint(self.app.paths.state)
             return ATI if hint.get("card") == ATI and m is not None and hint.get("machine") == m.id else STANDARD
-        return effective(settings, m, self.app.paths.qemu_package)
+        return effective(settings, m, pkg)
 
     def startup_guest_size(self) -> list[int] | None:
         """display_config guest_size override: ATI's startup mode while the card is the
@@ -606,8 +714,12 @@ class Graphics:
         display = self._display()
         if display is None:
             return None
-        settings = self.app.settings.applied
-        if getattr(self.app.supervisor.active_machine(), "osx", False):
+        m = self.app.supervisor.active_machine()
+        pkg = self._pkg_for(m)
+        settings = machine_settings(self.app.settings.applied, m, pkg)
+        if getattr(m, "osx", False):
+            if (card or self.next_card()) == ATI:
+                return osx_ati_screen(display, settings, self.exact())
             from .display import guest_geometry
             return guest_geometry(display, settings.get("display.guest_size", "auto"),
                                   settings.get("display.pixel_scale", "auto"))
@@ -646,27 +758,35 @@ class Graphics:
             self.app.lifecycle.event("control_strip", machine=machine.id, screen="%dx%d" % tuple(size), **res)
 
     def public(self) -> dict[str, Any]:
-        settings = self.app.settings.applied
         m = self.app.supervisor.active_machine()
-        pkg = self.app.paths.qemu_package
+        pkg = self._pkg_for(m)
+        settings = machine_settings(self.app.settings.applied, m, pkg)
         gl = host_gl() or {}
         if getattr(m, "osx", False):
             from . import osx_graphics
-            pkg = self.app.paths.qemu_osx_package
             gl = osx_graphics.host_gl() or {}
         avail = self.availability(m)
         display = self._display()
-        ati = mac_screen(display, settings, self.exact()) if display else None
-        return {"capable": self.capable(), "requested": requested(settings),
+        cur = self.current_screen()
+        if getattr(m, "osx", False) and self.app.supervisor.active and self.running == ATI and cur:
+            ati = tuple(cur)
+        else:
+            ati = self._screen_for(m, display, settings)
+        start_scr = self.start_screen() if getattr(m, "osx", False) else STARTUP_SIZE
+        guest_scale = self._guest_scale(display, cur, settings)
+        return {"capable": self.capable(), "requested": requested(settings, m),
                 "family": m.family if m is not None else None,
                 "effective": effective(settings, m, pkg), "running": self.running if self.app.supervisor.active
                 else None, "guest_software": guest_software(m),
                 "helper": (m.meta.get("graphics") or {}).get("helper") if m else None,
                 "reason": why_not(settings, m, pkg), "available": avail["available"],
                 "unavailable_reason": avail["reason"], "unavailable_message": avail["message"],
-                "mac_screen": self.current_screen(), "ati_screen": list(ati) if ati else None,
-                "startup_screen": (list(self.start_screen()) if self.start_screen() else None)
-                                  if getattr(m, "osx", False) else list(STARTUP_SIZE),
+                "mac_screen": cur, "ati_screen": list(ati) if ati else None,
+                "startup_screen": list(start_scr) if start_scr else None,
+                "scale": guest_scale,
+                "guest_scale": guest_scale,
+                "host_scale": display.get("scale") if display else None,
+                "auto_floor": list(AUTO_FLOOR),
                 "experimental": bool(getattr(m, "osx", False)),
                 "host_gl": {"ok": bool(gl.get("ok")), "reason": gl.get("reason"),
                             "renderer": gl.get("renderer"), "software": gl.get("software"),
@@ -676,17 +796,22 @@ class Graphics:
                                         else host_gl()) is not None}}
 
     def notices(self) -> list[dict]:
-        """The card was asked for but Mac OS gets the standard one: say why."""
-        settings = self.app.settings.applied
+        """The card was asked for but Mac OS gets the standard one, or Monitors blocks live resize."""
         m = self.app.supervisor.active_machine()
-        pkg = self.app.paths.qemu_osx_package if getattr(m, "osx", False) else self.app.paths.qemu_package
+        pkg = self._pkg_for(m)
+        settings = machine_settings(self.app.settings.applied, m, pkg)
         why = why_not(settings, m, pkg)
         from . import osx_graphics
         gl = osx_graphics.host_gl() if getattr(m, "osx", False) else host_gl()
-        if why in (None, "family") or (why == "host-gl" and gl is None):
-            return []                # a 68k Mac never has the card: nothing to tell
-        return [{"id": "graphics-fallback", "level": "warning",
-                 "message": f"Mac OS uses the standard graphics card because {REASONS[why]}."}]
+        out = []
+        if why not in (None, "family") and not (why == "host-gl" and gl is None):
+            out.append({"id": "graphics-fallback", "level": "warning",
+                        "message": f"Mac OS uses the standard graphics card because {REASONS[why]}."})
+        blocked = getattr(self.app.supervisor, "manual_resize_notice", None)
+        if blocked:
+            out.append({"id": "monitors-resize-override", "level": "info",
+                        "message": blocked})
+        return out
 
     def check_disk(self, machine) -> dict | None:
         """Read-only: ATI's software and RetroBoot Display on the (stopped) disk."""
@@ -706,7 +831,7 @@ class Graphics:
         GRUB's startup geometry match the card this launch will use."""
         if machine is None:
             return
-        if requested(self.app.settings.applied) == ATI:
+        if requested(machine_settings(self.app.settings.applied, machine, self._pkg_for(machine)), machine) == ATI:
             await self.wait_probe()          # the first launch may come before the probe ends
             await self.reprobe_if_changed()
         if getattr(machine, "osx", False):

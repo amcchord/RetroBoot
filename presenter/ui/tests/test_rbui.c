@@ -1568,6 +1568,16 @@ static void test_controls9(void)
           pt_bar_arrow(rr(0, 0, 16, 100), 90) == SB_DOWN && pt_bar_arrow(rr(0, 0, 16, 100), 10) == SB_NONE,
           "both scroll arrows at the bottom");
     CHECK(pt_check_text_dx() == 16 && pt_field_text_dx() == 4, "9.2.1 label and text insets");
+    uint32_t p_en[40 * 30], p_dis[40 * 30];
+    for (int i = 0; i < 40 * 30; ++i) p_en[i] = p_dis[i] = 0xDDDDDDu;
+    rb_gfx ge = {p_en, 40, 40, 30, {0, 0, 40, 30}, 0, 0};
+    rb_gfx gd = {p_dis, 40, 40, 30, {0, 0, 40, 30}, 0, 0};
+    pt_progress(&ge, rr(4, 8, 32, 12), 0.5, 0, 0, 0);
+    pt_progress(&gd, rr(4, 8, 32, 12), 0.5, 0, 0, 1);
+    CHECK(memcmp(p_en, p_dis, sizeof p_en) != 0, "progress9 disabled dims fill");
+    pt_progress(&ge, rr(4, 8, 32, 12), 0, 1, 2, 0);
+    pt_progress(&gd, rr(4, 8, 32, 12), 0, 1, 2, 1);
+    CHECK(memcmp(p_en, p_dis, sizeof p_en) != 0, "progress9 disabled dims indeterminate stripes");
     assets_reset();
     CHECK(!pt_v9() && g_pal.face == C_E6, "forgotten: 8.1 again");
     remove_nine(dir);
@@ -1631,6 +1641,147 @@ static void test_feedback(void)
     free(b);
 }
 
+static void test_ui_310(void)
+{
+    events e = {0};
+    /* #29: Escape / Cmd+. fall back from cancel -> back -> done. */
+    rbui *ui = new_ui(640, 480, &e);
+    const char *back_doc = "{\"id\":\"b\",\"items\":[{\"type\":\"text\",\"text\":\"Step\"},"
+                           "{\"type\":\"buttons\",\"items\":[{\"id\":\"back\",\"label\":\"Back\",\"align\":\"left\"},"
+                           "{\"id\":\"next\",\"label\":\"Continue\",\"default\":true}]}]}";
+    CHECK(set(ui, back_doc) == 0, "back_doc");
+    key(ui, RBUI_KEY_ESCAPE, 0);
+    CHECK(strstr(ev_last(&e), "\"id\":\"back\""), "escape activates back when cancel absent: %s", ev_last(&e));
+    ev_clear(&e);
+    rbui_key(ui, RBUI_KEY_NONE, ".", 1, RBUI_MOD_COMMAND);
+    rbui_key(ui, RBUI_KEY_NONE, NULL, 0, RBUI_MOD_COMMAND);
+    CHECK(strstr(ev_last(&e), "\"id\":\"back\""), "Cmd+. activates back: %s", ev_last(&e));
+
+    const char *done_doc = "{\"id\":\"d\",\"items\":[{\"type\":\"text\",\"text\":\"Finished\"},"
+                           "{\"type\":\"buttons\",\"items\":[{\"id\":\"done\",\"label\":\"Done\"}]}]}";
+    CHECK(set(ui, done_doc) == 0, "done_doc");
+    ev_clear(&e);
+    key(ui, RBUI_KEY_ESCAPE, 0);
+    CHECK(strstr(ev_last(&e), "\"id\":\"done\""), "escape activates done when back/cancel absent: %s", ev_last(&e));
+
+    /* #34a: Return activates a Tab-focused button when no default button exists. */
+    ev_clear(&e);
+    rbui_focus(ui, "done");
+    key(ui, RBUI_KEY_RETURN, 0);
+    CHECK(strstr(ev_last(&e), "\"id\":\"done\""), "Return activates focused button without default: %s", ev_last(&e));
+
+    /* #30: long popup menu scroll arrows step immediately by 1 on click & honor repeat delay. */
+    char mdoc[8192];
+    int mo = snprintf(mdoc, sizeof mdoc, "{\"id\":\"m\",\"items\":[{\"type\":\"popup\",\"id\":\"p\",\"value\":\"o10\",\"options\":[");
+    for (int i = 0; i < 60; ++i)
+        mo += snprintf(mdoc + mo, sizeof mdoc - (size_t)mo, "%s{\"id\":\"o%d\",\"label\":\"Option %d\"}", i ? "," : "", i, i);
+    snprintf(mdoc + mo, sizeof mdoc - (size_t)mo, "]}]}");
+    rbui_resize(ui, 480, 320);
+    CHECK(set(ui, mdoc) == 0, "long menu doc");
+    int pr[4];
+    CHECK(widget_rect(ui, "p", pr), "popup rect");
+    click(ui, pr[0] + 10, pr[1] + 10);   /* click to open sticky menu */
+    char *desc = rbui_describe(ui);
+    int mr[4] = {0};
+    char *mp = desc ? strstr(desc, "\"menu\":[") : NULL;
+    CHECK(mp && sscanf(mp + 8, "%d,%d,%d,%d", &mr[0], &mr[1], &mr[2], &mr[3]) == 4, "menu rect");
+    free(desc);
+    uint32_t *before = malloc(480 * 320 * 4), *after_up = malloc(480 * 320 * 4), *after_early = malloc(480 * 320 * 4);
+    rbui_render(ui, before, 480, RBUI_BG_CHECKERBOARD, NULL, 0, 1);
+    /* Single quick click on bottom arrow row (hold 50ms < 300ms repeat delay). */
+    rbui_pointer(ui, mr[0] + mr[2] / 2, mr[1] + mr[3] - 10, 1);
+    rbui_tick(ui, 1050);
+    rbui_render(ui, after_up, 480, RBUI_BG_CHECKERBOARD, NULL, 0, 1);
+    CHECK(memcmp(before, after_up, 480 * 320 * 4) != 0, "scroll arrow press steps menu immediately");
+    /* Tick before RB_REPEAT_FIRST_MS (300ms) must not step again prematurely. */
+    rbui_tick(ui, 1150);
+    rbui_render(ui, after_early, 480, RBUI_BG_CHECKERBOARD, NULL, 0, 1);
+    CHECK(memcmp(after_up, after_early, 480 * 320 * 4) == 0, "repeat_at waits RB_REPEAT_FIRST_MS");
+    rbui_pointer(ui, mr[0] + mr[2] / 2, mr[1] + mr[3] - 10, 0);
+    desc = rbui_describe(ui);
+    CHECK(desc && strstr(desc, "\"menu\":["), "menu stays open after clicking scroll arrow");
+    free(desc);
+    free(before);
+    free(after_up);
+    free(after_early);
+
+    /* #31a: narrow screen button row wrapping avoids collisions. */
+    const char *five = "{\"id\":\"narrow\",\"width\":480,\"items\":[{\"type\":\"text\",\"text\":\"Pick\"},"
+                       "{\"type\":\"buttons\",\"items\":["
+                       "{\"id\":\"back\",\"label\":\"Back\",\"align\":\"left\"},"
+                       "{\"id\":\"more\",\"label\":\"Details...\",\"align\":\"left\"},"
+                       "{\"id\":\"cancel\",\"label\":\"Cancel\"},"
+                       "{\"id\":\"other\",\"label\":\"Use Another\"},"
+                       "{\"id\":\"ok\",\"label\":\"Continue\",\"default\":true}]}]}";
+    rbui_resize(ui, 480, 480);
+    CHECK(set(ui, five) == 0, "five buttons narrow doc");
+    const char *bids[5] = {"back", "more", "cancel", "other", "ok"};
+    int br[5][4];
+    for (int i = 0; i < 5; ++i) {
+        CHECK(widget_rect(ui, bids[i], br[i]), "narrow btn %s", bids[i]);
+        CHECK(br[i][0] >= 0 && br[i][0] + br[i][2] <= 480, "btn %s inside canvas", bids[i]);
+    }
+    int overlap = 0;
+    for (int i = 0; i < 5; ++i)
+        for (int j = i + 1; j < 5; ++j)
+            if (br[i][0] < br[j][0] + br[j][2] && br[i][0] + br[i][2] > br[j][0] &&
+                br[i][1] < br[j][1] + br[j][3] && br[i][1] + br[i][3] > br[j][1])
+                overlap++;
+    CHECK(overlap == 0, "narrow button layout has zero overlaps");
+
+    /* #31b: scrollable view with pinned_band + pinned buttons does not overlap pinned_band. */
+    char pdoc[8192];
+    int po = snprintf(pdoc, sizeof pdoc, "{\"id\":\"pb\",\"title\":\"Sound\",\"width\":420,\"items\":[");
+    for (int i = 0; i < 18; ++i)
+        po += snprintf(pdoc + po, sizeof pdoc - (size_t)po, "{\"type\":\"checkbox\",\"id\":\"c%d\",\"label\":\"Opt %d\"},", i, i);
+    snprintf(pdoc + po, sizeof pdoc - (size_t)po,
+             "{\"type\":\"band\",\"pin\":true,\"height\":40,\"items\":[{\"type\":\"slider\",\"id\":\"v\",\"label\":\"Vol\","
+             "\"min\":0,\"max\":100,\"step\":5,\"value\":50,\"x\":12,\"y\":12}]},"
+             "{\"type\":\"buttons\",\"items\":[{\"id\":\"ok\",\"label\":\"OK\",\"default\":true}]}]}");
+    rbui_resize(ui, 480, 320);
+    CHECK(set(ui, pdoc) == 0, "scrollable pinned_band doc");
+    CHECK(ui->scrollable == 1 && ui->pinned_band && ui->pinned, "pinned_band + pinned scrollable");
+    CHECK(ui->view.y + ui->view.h <= ui->pinned_band->r.y,
+          "scrollable view (%d) does not overlap pinned_band (%d)", ui->view.y + ui->view.h, ui->pinned_band->r.y);
+    CHECK(ui->pinned_band->r.y + ui->pinned_band->r.h < ui->pinned->r.y,
+          "pinned_band above pinned buttons");
+
+    /* #31c: narrow slider label uses tx_draw_fit instead of colliding with track. */
+    const char *sldr = "{\"id\":\"sl\",\"width\":220,\"items\":[{\"type\":\"slider\",\"id\":\"vs\","
+                       "\"label\":\"VeryLongSliderLabelText\",\"min\":0,\"max\":100,\"step\":1,\"value\":50}]}";
+    rbui_resize(ui, 480, 320);
+    CHECK(set(ui, sldr) == 0, "narrow slider doc");
+    int srect[4];
+    CHECK(widget_rect(ui, "vs", srect), "slider track rect");
+    uint32_t *sp = calloc(480 * 320, 4);
+    rbui_render(ui, sp, 480, RBUI_BG_CHECKERBOARD, NULL, 0, 1);
+    CHECK(srect[0] + srect[2] <= ui->content.x + ui->content.w - RB_MARGIN, "narrow slider track stays inside dialog");
+    free(sp);
+
+    /* #34b: smooth scrollbar thumb drag inside damage bounds. */
+    char sdoc[8192];
+    int so = snprintf(sdoc, sizeof sdoc, "{\"id\":\"sb\",\"items\":[{\"type\":\"list\",\"id\":\"L\",\"rows\":4,\"items\":[");
+    for (int i = 0; i < 8; ++i)
+        so += snprintf(sdoc + so, sizeof sdoc - (size_t)so, "%s{\"id\":\"i%d\",\"label\":\"Item %d\"}", i ? "," : "", i, i);
+    snprintf(sdoc + so, sizeof sdoc - (size_t)so, "]}]}");
+    rbui_resize(ui, 640, 480);
+    CHECK(set(ui, sdoc) == 0, "listbar thumb drag doc");
+    int lr[4];
+    CHECK(widget_rect(ui, "L", lr), "list rect");
+    int bx = lr[0] + lr[2] - 8, ty0 = lr[1] + 24;
+    uint32_t *f0 = malloc(640 * 480 * 4), *f1 = malloc(640 * 480 * 4);
+    rbui_render(ui, f0, 640, RBUI_BG_CHECKERBOARD, NULL, 0, 1);
+    rbui_pointer(ui, bx, ty0, 1);
+    rbui_render(ui, f0, 640, RBUI_BG_CHECKERBOARD, NULL, 0, 1);
+    rbui_pointer(ui, bx, ty0 + 2, 1);
+    CHECK(damage_ok(ui, f0, f1, 640, 480, "smooth thumb 2px drag"), "smooth thumb drag passes damage check");
+    rbui_pointer(ui, bx, ty0 + 2, 0);
+    free(f0);
+    free(f1);
+    ev_clear(&e);
+    rbui_free(ui);
+}
+
 int main(int argc, char **argv)
 {
     /* Goldens use the original MIT fonts and icons, never a bundle on this machine. */
@@ -1653,7 +1804,7 @@ int main(int argc, char **argv)
         {"assets", test_assets}, {"click_list", test_click_list}, {"icon_view", test_icon_view},
         {"about_items", test_about_items},
         {"band_bevels_slider", test_band_bevels_slider}, {"reveal", test_reveal},
-        {"controls9", test_controls9}, {"feedback", test_feedback},
+        {"controls9", test_controls9}, {"feedback", test_feedback}, {"ui_310", test_ui_310},
     };
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
         if (only && strcmp(only, tests[i].name) != 0) continue;

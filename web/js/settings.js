@@ -242,6 +242,7 @@ function renderField(key) {
         focusEl: input,
       };
     } else {
+      const compactDpi = key === 'input.mouse_dpi';
       const input = h('input', {
         type: def.type === 'int' || def.type === 'number' ? 'number' : 'text',
         id: controlId(key),
@@ -255,10 +256,15 @@ function renderField(key) {
         autocapitalize: 'off',
         spellcheck: 'false',
         'aria-describedby': describedBy,
-        oninput: (e) => onValue(def.type === 'int' || def.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value),
+        oninput: (e) => {
+          const raw = e.target.value.trim();
+          onValue(def.type === 'int' || def.type === 'number' ? (raw === '' ? (compactDpi ? 0 : '') : Number(raw)) : e.target.value);
+        },
       });
       labelEl = h('label', { class: 'setting-label', for: input.id }, def.label);
-      body = h('div', { class: 'text-wrap' }, input);
+      body = compactDpi
+        ? h('div', { class: 'text-wrap text-wrap-compact' }, input, h('span', { class: 'inline-hint' }, '0 = automatic'))
+        : h('div', { class: 'text-wrap' }, input);
       control = {
         set: (v) => {
           if (document.activeElement !== input) input.value = v == null ? '' : String(v);
@@ -267,12 +273,15 @@ function renderField(key) {
         focusEl: input,
       };
     }
+    const helpText = key === 'update.url' && def.help
+      ? def.help.replace(/\s*Empty on a computer signed in to RetroBoot downloads uses its update list\.?/i, ' Leave empty to use the built-in RetroBoot update list.')
+      : def.help;
     const head = h('div', { class: 'setting-head' }, labelEl, h('span', { class: 'setting-tags' }));
     el.replaceChildren();
     append(el, [
       head,
       body,
-      def.help ? h('p', { class: 'setting-help', id: ids.help }, def.help) : null,
+      helpText ? h('p', { class: 'setting-help', id: ids.help }, helpText) : null,
       h('p', { class: 'setting-unavailable', hidden: def.available }, h('span', { class: 'mini-icon', html: pixelIcon('note', 16) }), `Unavailable: ${def.reason || ''}`),
       h('p', { class: 'setting-state', id: ids.state, hidden: true }),
       h('p', { class: 'setting-warning', id: ids.warn, hidden: true }),

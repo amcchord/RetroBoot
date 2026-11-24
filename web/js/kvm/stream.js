@@ -11,6 +11,7 @@ import { store } from '../store.js';
 import { get, setCsrf } from '../api.js';
 
 const FRAME_MAGIC = 0x46;
+const AUDIO_MAGIC = 0x41;
 const ENC_ZLIB = 1;
 const ENC_PNG = 2;
 // Close codes and error codes after which reconnecting cannot help.
@@ -66,6 +67,84 @@ export function parseFrame(buf) {
   return frame;
 }
 
+/** Parse binary PCM audio frame: 'A' (0x41), uint32be sampleRate, uint8 channels, int16le PCM. */
+export function parseAudioFrame(buf) {
+  const dv = new DataView(buf);
+  if (dv.byteLength < 6 || dv.getUint8(0) !== AUDIO_MAGIC) return null;
+  const sampleRate = dv.getUint32(1, false);
+  const channels = dv.getUint8(5);
+  if (!sampleRate || !channels || channels > 8) return null;
+  const sampleFrames = Math.floor((dv.byteLength - 6) / (channels * 2));
+  if (sampleFrames <= 0) return null;
+  return { sampleRate, channels, sampleFrames, dv, offset: 6 };
+}
+
+/** Plays decoded 0x41 int16le PCM audio frames via Web Audio API. */
+export class WebAudioSink {
+  constructor() {
+    this.ctx = null;
+    this.gain = null;
+    this.enabled = false;
+    this.nextTime = 0;
+  }
+
+  async enable() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    if (!this.ctx || this.ctx.state === 'closed') {
+      this.ctx = new AC();
+      this.gain = this.ctx.createGain();
+      this.gain.connect(this.ctx.destination);
+    }
+    this.nextTime = 0;
+    this.enabled = true;
+    this.gain.gain.value = 1;
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+    return true;
+  }
+
+  disable() {
+    this.enabled = false;
+    this.nextTime = 0;
+    if (this.gain && this.ctx && this.ctx.state !== 'closed') {
+      this.gain.gain.value = 0;
+    }
+    if (this.ctx && this.ctx.state === 'running') {
+      this.ctx.suspend().catch(() => {});
+    }
+  }
+
+  feed(frame) {
+    if (!this.enabled || !this.ctx || this.ctx.state === 'closed' || !frame) return;
+    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    const { sampleRate, channels, sampleFrames, dv, offset } = frame;
+    const buf = this.ctx.createBuffer(channels, sampleFrames, sampleRate);
+    for (let c = 0; c < channels; c++) {
+      const ch = buf.getChannelData(c);
+      for (let i = 0; i < sampleFrames; i++) {
+        ch[i] = dv.getInt16(offset + (i * channels + c) * 2, true) / 32768;
+      }
+    }
+    const now = this.ctx.currentTime;
+    if (this.nextTime < now || this.nextTime > now + 0.35) this.nextTime = now + 0.04;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.gain);
+    src.start(this.nextTime);
+    this.nextTime += buf.duration;
+  }
+
+  destroy() {
+    this.enabled = false;
+    this.nextTime = 0;
+    if (this.ctx && this.ctx.state !== 'closed') {
+      this.ctx.close().catch(() => {});
+    }
+    this.ctx = null;
+    this.gain = null;
+  }
+}
+
 /**
  * @param {object} o
  * @param {HTMLCanvasElement} o.canvas
@@ -75,17 +154,19 @@ export function parseFrame(buf) {
  * @param {(surface: object) => void} [o.onResize]  the canvas took a new picture size (called before it is painted)
  */
 export class ScreenStream {
-  constructor({ canvas, onState, onMessage, onFrame, onResize, source = 'composed' }) {
+  constructor({ canvas, onState, onMessage, onFrame, onResize, onAudio, source = 'composed' }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.onState = onState || (() => {});
     this.onMessage = onMessage || (() => {});
     this.onFrame = onFrame || (() => {});
     this.onResize = onResize || (() => {});
+    this.onAudio = onAudio || (() => {});
     this.resizeTo = null;     // a new picture size, applied with that picture's first frame
     this.source = source;
     this.platform = browserPlatform();
     this.swap = null;
+    this.audioWanted = false;
     this.ws = null;
     this.wanted = false;
     this.retry = 0;
@@ -150,6 +231,11 @@ export class ScreenStream {
     this.send({ t: 'options', swap });
   }
 
+  setAudio(on) {
+    this.audioWanted = !!on;
+    this.send({ t: 'audio', on: this.audioWanted });
+  }
+
   connect() {
     clearTimeout(this.timer);
     this.timer = null;
@@ -181,6 +267,7 @@ export class ScreenStream {
         if (msg.t === 'hello') {
           this.hello = msg;
           this.retry = 0;
+          if (this.audioWanted) this.send({ t: 'audio', on: true });
           this.setState('live', msg);
         } else if (msg.t === 'surface') {
           this.queue = this.queue.then(() => this.applySurface(msg));
@@ -188,6 +275,11 @@ export class ScreenStream {
           refused = msg;
         }
         this.onMessage(msg);
+        return;
+      }
+      if (ev.data instanceof ArrayBuffer && ev.data.byteLength >= 1 && new DataView(ev.data).getUint8(0) === AUDIO_MAGIC) {
+        const audio = parseAudioFrame(ev.data);
+        if (audio) this.onAudio(audio);
         return;
       }
       const frame = parseFrame(ev.data);
