@@ -5,8 +5,8 @@
   only when there is a sign-in; the installer keeps the sign-in of its installation medium
   (or one typed with "Remember on this computer") on the installed system, so another Mac
   can be downloaded later.  The password goes to the log redactor and nowhere else.
-* **Internet** (``internet``): hostd's ``catalog_url``, or the board's public catalog
-  unless that is the lab catalog itself.
+* **Internet** (``internet``): hostd's ``catalog_url``, or the public RetroBoot Mac library
+  (``RETROBOOT_CATALOG``, every board) unless that is the lab catalog itself.
 
 :func:`arrange` merges the catalogs the way the installer's Choose Macs window, the local
 panel's Install a Mac window and the web page show them: an id listed by both appears once
@@ -126,6 +126,36 @@ def entry_family(entry: dict) -> str:
     if entry.get("machineFamily") == OSX_TEMPLATE_FAMILY:
         return OSX_CATALOG_FAMILY
     return TEMPLATE_FAMILIES.get(entry.get("machineFamily"), POWERMAC)
+
+
+EDITION_RE = re.compile(r"deluxe|edition|activities|period", re.I)
+
+
+def _os_version_key(version) -> tuple[int, ...]:
+    """"9.2.2" -> (9, 2, 2); "Mac OS 9.2.1" -> (9, 2, 1); text without digits -> ()."""
+    return tuple(int(n) for n in re.findall(r"\d+", str(version or ""))[:4])
+
+
+def recommended(items):
+    """The Mac to offer first on a new computer: the newest standard classic Mac OS it can
+    start (Mac OS 9.2.2 on a PC or a Raspberry Pi 4/5, the newest 68k system on a Zero 2 W),
+    not an edition with extra software and not Mac OS X.  ``items`` are already filtered to
+    this computer's kinds of Mac (``Listed`` or the installer's ``Choice``: ``entry`` and
+    ``older``, optionally ``known``); None when every candidate is installed or older."""
+    from .machines import POWERMAC, QUADRA800
+    best, best_score = None, None
+    for it in items:
+        e = getattr(it, "entry", None)
+        if not isinstance(e, dict) or getattr(it, "known", False) or getattr(it, "older", False):
+            continue
+        family = entry_family(e)
+        if family not in (POWERMAC, QUADRA800):
+            continue
+        standard = not EDITION_RE.search(str(e.get("name", ""))) and not EDITION_RE.search(str(e.get("id", "")))
+        score = (family == POWERMAC, standard, _os_version_key(e.get("osVersion")))
+        if best_score is None or score > best_score:
+            best, best_score = it, score
+    return best
 
 
 def runnable_families(paths, platform=None) -> set[str]:

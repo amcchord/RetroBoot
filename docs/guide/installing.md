@@ -1,15 +1,15 @@
-# Install RetroBoot 3.0.3
+# Install RetroBoot 3.0.6
 
-Select the installer for your computer and download its checksum. The same page has the Mac disk library and a catalog URL you can add during setup. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#installers)
+Select the installer for your computer and download its checksum. The same page has the Mac disk library, which RetroBoot lists in the installer and in **Download a Mac**. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#installers)
 
 If RetroBoot already runs on the device, use the [upgrade guide](upgrading.md). A fresh install to a selected PC disk or SD card erases that disk or card.
 
 ## x86-64 PC
 
-1. Verify the ISO against its SHA-256 checksum. Write it to a USB stick with a raw disk-image writer, or attach the ISO to a virtual machine.
+1. Verify the ISO against its SHA-256 checksum. Write it to a USB stick as a raw disk image with balenaEtcher, `dd` or Rufus in **DD Image** mode, or attach the ISO to a virtual machine. The ISO also starts from a DVD.
 2. Boot the installer in UEFI or legacy BIOS mode. Secure Boot must be off.
-3. Choose the destination disk. Select a Mac from an available source, or add your catalog through **Image Servers…**. Choose **Install RetroBoot Only…** if you want to add a Mac later.
-4. Review the erase confirmation. Complete installation, remove the installer and restart.
+3. Choose the destination disk. The installer lists the RetroBoot Mac library and checks a recommended Mac, such as Mac OS 9.2.2. Check other Macs, add your own catalog through **Image Servers…**, or choose **Install RetroBoot Only…** to add a Mac later.
+4. Type your city in **Time Zone**. Review the erase confirmation, complete the installation, remove the USB stick or disc and restart.
 
 ![Choose a Disk shows the empty virtual disk in the running PC installer](../images/pc-install-disk.png)
 
@@ -38,4 +38,4 @@ sudo sh gemini-install.sh --activate
 
 ## Add your first Mac
 
-Open **Download a Mac**, or import a machine archive from USB. If you host your own library, add the catalog URL under **Image Servers…**. Use **Startup Disk** to choose the default Mac. [Image server setup](image-servers.md) · [Mac disk library](disk-library.md) · [Pair a browser](web-management.md#pair-a-browser)
+Press **Ctrl+Alt+Delete** and open **Download a Mac**, or import a machine archive from USB. The list shows the RetroBoot Mac library with a recommended Mac selected. **Stop Download** pauses a download, and the next **Download** continues it. If you host your own library, add the catalog URL under **Image Servers…**. Use **Startup Disk** to choose the default Mac. [Image server setup](image-servers.md) · [Mac disk library](disk-library.md) · [Pair a browser](web-management.md#pair-a-browser)

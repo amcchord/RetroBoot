@@ -6,7 +6,7 @@ RetroBoot downloads, the Internet catalog and on USB disks; one or more, and the
 one that starts first: :mod:`.picker`) -> display check -> optional network/web
 access -> install with progress (Macs to download are downloaded straight onto the
 new disk; a failed download offers Retry or Skip, the other Macs stay installed)
--> "Remove the installation disc, then click Restart."
+-> "Remove the installation USB stick or disc, then click Restart."
 
 Networks: the hardware check names the Wi-Fi adapter and offers "Wi-Fi…" while
 the computer is offline; ``retroboot/network.conf`` on the installation media
@@ -99,7 +99,7 @@ class InstallerState:
         # Raspberry Pi: why the installer's own card isn't offered (list-disks' free_space),
         # how the installation medium is named, and what install-to-disk did with it.
         self.free_note: str | None = None
-        self.medium_name = "installation disc"
+        self.medium_name = "installation USB stick or disc"   # the PC's boot medium, when list-disks names it
         self.medium: str | None = None          # "released" | "kept" | "in-use" (--board rpi)
 
     @property
@@ -211,6 +211,8 @@ class InstallerPanel(Panel):
                     "contents": str(contents.get("summary") or "")[:60],
                     "retroboot": contents.get("os") == "RetroBoot", "key": d["path"], "mode": "disk"}
             disks.append(disk)
+            if disk["is_boot_medium"] and self.board != "rpi":
+                self.st.medium_name = f"installation {medium_name(disk)}"
             if disk["is_boot_medium"] and self.board == "rpi":
                 free = self.free_space_target(disk, d.get("free_space"))
                 if free:
@@ -240,11 +242,13 @@ class InstallerPanel(Panel):
 
 
 def medium_name(d: dict) -> str:
-    """"SD card", "USB stick" or "disk", for the Raspberry Pi windows."""
+    """"SD card", "USB stick", "disc" or "disk": the installation medium, in the windows."""
     if d["path"].startswith("/dev/mmcblk"):
         return "SD card"
     if d.get("transport") == "usb":
         return "USB stick"
+    if d["path"].startswith("/dev/sr"):
+        return "disc"
     return "disk"
 
 
@@ -529,7 +533,7 @@ class Updated(IScreen):
 
     def doc(self):
         return ui.alert(self.doc_id, "note", "RetroBoot is updated.",
-                        "Remove the installation disc, then click Restart. Mac OS starts as before.",
+                        f"Remove the {self.st.medium_name}, then click Restart. Mac OS starts as before.",
                         ui.buttons(ui.btn("restart", "Restart", default=True)))
 
     async def action(self, id, values):
@@ -545,8 +549,10 @@ class EraseConfirm(IScreen):
         if d.get("mode") == "free-space":
             return self.free_space_doc(d)
         holds = f" It contains: {d['contents']}." if d.get("contents") and d["contents"] != "Empty" else ""
+        twins = [x for x in self.st.disks or [] if x.get("model") == d["model"] and x.get("size_bytes") == d["size_bytes"]]
+        which = f" (serial number ending {d['serial'][-4:]})" if len(twins) > 1 and d.get("serial") else ""
         return ui.alert(self.doc_id, "caution", f"Erase “{d['model']}” ({ui.human_bytes(d['size_bytes'])})?",
-                        f"Everything on this disk ({d['path']}) will be permanently erased and replaced with "
+                        f"Everything on this disk{which} will be permanently erased and replaced with "
                         f"RetroBoot.{holds} This cannot be undone.",
                         ui.buttons(ui.btn("cancel", "Cancel", default=True), ui.btn("erase", "Erase and Continue")))
 
@@ -555,13 +561,13 @@ class EraseConfirm(IScreen):
         name, size = d.get("medium_name") or "card", ui.human_bytes(d["size_bytes"])
         if d.get("existing") == "RetroBoot":
             return ui.alert(self.doc_id, "caution", f"Replace RetroBoot on this {name}?",
-                            f"The RetroBoot installed after the installer on this {name} ({d['path']}) will be "
+                            f"The RetroBoot installed after the installer on this {name} will be "
                             f"permanently erased, with its Macs, documents and settings, and installed again in the "
                             f"same {size}. The installer stays on the {name}. This cannot be undone.",
                             ui.buttons(ui.btn("cancel", "Cancel", default=True), ui.btn("erase", "Erase and Continue")))
         return ui.alert(self.doc_id, "caution", f"Install in the free space on this {name}?",
-                        f"RetroBoot uses only the {size} of free space after the installer on this {name} "
-                        f"({d['path']}). The installer stays on the {name} and nothing before it is changed. "
+                        f"RetroBoot uses only the {size} of free space after the installer on this {name}. "
+                        f"The installer stays on the {name} and nothing before it is changed. "
                         f"Afterwards the {name} starts RetroBoot; Recovery’s Start Installer… opens the installer "
                         "again.",
                         ui.buttons(ui.btn("cancel", "Cancel", default=True), ui.btn("erase", "Use Free Space")))
@@ -658,8 +664,9 @@ class NetworkStep(IScreen):
 
     def doc(self):
         items = [ui.text("Network and web access (optional)", "emphasis"),
-                 ui.text("Mac OS starts without a network. You can also set up Wi-Fi and web access later from "
-                         "RetroBoot Recovery.")]
+                 ui.text("RetroBoot uses a network to download Macs and updates, and shares it with Mac OS. "
+                         "Mac OS also works without one. To join Wi-Fi later, press Control-Alt-Delete and "
+                         "open Network & Web Access.")]
         url = self.app.web.url_for(self.primary)
         if url:
             code, _ = self.app.pairing.current_code()
@@ -796,7 +803,7 @@ class DownloadProblem(IScreen):
                  for m in failed[:4]]
         detail = ("RetroBoot is installed" + (f" with {join_names(done)}" if done else "") +
                   ". Try again, or skip " + ("it" if len(failed) == 1 else "them") +
-                  " and add " + ("it" if len(failed) == 1 else "them") + " later in RetroBoot Setup.")
+                  " and add " + ("it" if len(failed) == 1 else "them") + " later with Download a Mac.")
         return ui.alert(self.doc_id, "caution", msg, detail,
                         ui.buttons(ui.btn("wifi", "Wi-Fi…", align="left"), ui.btn("skip", "Skip"),
                                    ui.btn("retry", "Try Again", default=True)), extra=lines, width=460)
@@ -1114,14 +1121,14 @@ class Done(IScreen):
         res = st.results
         missing = [m["name"] for m in st.plan if res.get(m["key"], {}).get("state") in ("skipped", "failed")]
         installed = [m for m in st.plan if res.get(m["key"], {}).get("state") == "installed"]
-        detail = "Remove the installation disc, then click Restart."
+        detail = f"Remove the {st.medium_name}, then click Restart."
         button = ui.btn("restart", "Restart", default=True)
         extra = []
         if self.panel.board == "rpi":
             detail, button, extra = self.pi_finish()
         if missing and installed:
             extra.append(ui.text(f"{join_names(missing)} {'was' if len(missing) == 1 else 'were'} not installed. "
-                                 "You can add Macs later in RetroBoot Setup.", "small"))
+                                 "You can add Macs later with Download a Mac (Control-Alt-Delete).", "small"))
         elif missing or st.host_only:
             extra.append(ui.text("No Mac OS system was installed. RetroBoot asks for one when it starts.", "small"))
         return ui.alert(self.doc_id, "note", "RetroBoot is installed.", detail, ui.buttons(button), extra=extra)

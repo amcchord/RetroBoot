@@ -153,10 +153,13 @@ class Hostd:
         self.lab_auth = labauth.load(cfg.lab_http_auth_file or (self.paths.data / "config" / "lab-auth.env"))
         if self.lab_auth is not None:
             self.redactor.add(self.lab_auth.secrets()[1])
-        from .catalogs import CLASSICMAC_CATALOG, RETROBOOT_CATALOG, Catalogs
+        from .catalogs import RETROBOOT_CATALOG, Catalogs
+        # The public RetroBoot Mac library on every board (D078, D085); the runtime filter
+        # (catalogs.runnable) hides the Macs this computer can't start.  ClassicMac's
+        # catalog stays available as an image server.
         catalog_url = cfg.catalog_url
         if catalog_url is None:
-            catalog_url = RETROBOOT_CATALOG if self.platform.is_zero2w else CLASSICMAC_CATALOG
+            catalog_url = RETROBOOT_CATALOG
         self.catalog = CatalogClient(catalog_url, self.paths.downloads, ca_file=cfg.catalog_ca_file,
                                      auth=self.lab_auth)
         self.catalogs = Catalogs(self)    # RetroBoot downloads (with a sign-in) and the Internet catalog
@@ -897,7 +900,12 @@ class Hostd:
                         raise JobFailed(UNRUNNABLE.get(family, "This kind of Mac can't start on this RetroBoot."),
                                         None, "unsupported")
                     job.update(0.0, "Downloading…")
-                    archive = await client.download(entry, lambda f, m: job.update(f * 0.5 if f else None, m))
+                    self._check_import_room(client, entry)
+                    job.cancellable = True       # a stopped download resumes from its .part file
+                    try:
+                        archive = await client.download(entry, lambda f, m: job.update(f * 0.5 if f else None, m))
+                    finally:
+                        job.cancellable = False
                     limits = ExtractLimits(entry["installedBytes"], entry.get("requiredStorageBytes"))
                     name, osv = spec.get("name") or entry["name"], entry["osVersion"]
                     dl = download_of(entry)
@@ -976,6 +984,27 @@ class Hostd:
         if spec["source"] == "catalog":
             params.update(id=spec["id"], catalog=spec.get("catalog"))
         return self.jobs.start("machines.import", body, resources=("machines",), params=params)
+
+    def _check_import_room(self, client, entry: dict) -> None:
+        """Refuse a catalog download before it starts when the archive and the Mac it unpacks
+        into can't both fit (install_machine checks again after the download)."""
+        from .catalog import RESERVE, download_of
+        dl = download_of(entry)
+        cached = client.downloads / f"{dl['sha256']}.tar.gz"
+        part = client.downloads / f"{dl['sha256']}.part"
+        have = cached.stat().st_size if cached.exists() else part.stat().st_size if part.exists() else 0
+        remaining = max(0, int(dl["archiveBytes"]) - have)
+        installed = int(entry.get("requiredStorageBytes") or entry.get("installedBytes") or 0)
+        try:
+            free = shutil.disk_usage(self.paths.machines if self.paths.machines.exists() else self.paths.data).free
+        except OSError:
+            return
+        need = remaining + installed + RESERVE
+        if free < need:
+            from .panel.ui import human_bytes
+            raise JobFailed(f"{entry.get('name') or 'This Mac'} needs {human_bytes(need)} of free space to download "
+                            f"and install, but this computer has {human_bytes(free)} free. Delete a Mac in "
+                            "Startup Disk, or choose a smaller one.", None, "no_space")
 
     def adopt_rom(self, machine) -> str | None:
         """An imported 68k Mac: keep its ROM in the ROM store ("stored"), or give it the store's

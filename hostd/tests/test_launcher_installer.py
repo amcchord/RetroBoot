@@ -239,7 +239,7 @@ class InstallerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_install(self):
         await self.walk_to_install()
-        await self.doc("installer-done", "Remove the installation disc", 20)
+        await self.doc("installer-done", "Remove the installation", 20)
         args = json.loads(Path(self.record).read_text())
         mdir = str(self.app.paths.installer_dir / "embedded/machine")
         self.assertEqual(args, ["--target", "/dev/vda", "--machine-dir", mdir,
@@ -269,7 +269,7 @@ class InstallerBluetoothTests(InstallerTests):
 
     async def test_full_install(self):
         await self.walk_to_install()
-        await self.doc("installer-done", "Remove the installation disc", 20)
+        await self.doc("installer-done", "Remove the installation", 20)
         args = json.loads(Path(self.record).read_text())
         self.assertEqual(args[-2:], ["--bluetooth", str(self.app.paths.bluetooth_storage)])
         self.assertEqual(helpers.events(self.app, "install_started")[0]["bluetooth_pairings"], 1)
@@ -312,7 +312,8 @@ class InstallerTwinDiskTests(InstallerTests):
         await helpers.wait_for(lambda: state() == ("/dev/nvme1n1", False), 5, what="Continue enabled")
         self.fp.click("continue", {"disk": "/dev/nvme1n1"})
         await self.doc("installer-erase", "It contains: Windows.")
-        self.assertIn("/dev/nvme1n1", json.dumps(self.fp.doc))
+        self.assertIn("serial number ending 018R", json.dumps(self.fp.doc))   # look-alike disks, no device path
+        self.assertNotIn("/dev/", json.dumps(self.fp.doc))
 
 
 class InstalledSeedTests(unittest.IsolatedAsyncioTestCase):

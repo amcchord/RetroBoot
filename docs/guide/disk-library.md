@@ -2,7 +2,7 @@
 
 Download a current Mac archive and its SHA-256 checksum. Keep the archive intact when copying it to a USB disk for import. The library includes Internet Archive references for the original install media and updates. [Public Mac disk library](https://mcchord.net/retroboot-downloads/#macs)
 
-The Raspberry Pi Zero 2 W uses this catalog by default in 3.0.3 and ships with the two standard 68k editions installed. On other boards and earlier builds, open **Startup Disk → Install Another… → Download a Mac → Image Servers…** and add `https://mcchord.net/retroboot-downloads/catalog.json`. You can also add it under **Storage & Media → Image Servers** in a paired browser. [Add an image server](image-servers.md)
+RetroBoot lists this library in the PC installer and in **Download a Mac** (**Ctrl+Alt+Delete**) on every computer, with no setup. The Raspberry Pi Zero 2 W has used it since 3.0.3 and ships with the two standard 68k editions installed. On RetroBoot 3.0.5 and earlier on other computers, press **Ctrl+Alt+Delete**, open **Download a Mac**, choose **Image Servers…** and add `https://mcchord.net/retroboot-downloads/catalog.json`. You can also add it under **Storage & Media → Image Servers** in a paired browser. [Add an image server](image-servers.md)
 
 ![Download a Mac with System 7.5.5 selected from the public RetroBoot catalog](../images/download-a-mac.png)
 

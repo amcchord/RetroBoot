@@ -88,6 +88,7 @@ class Job:
     started: str | None = None
     finished: str | None = None
     preemptible: bool = False
+    cancellable: bool = False      # the body can be stopped now without leaving a half-made result
     task: asyncio.Task | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -156,11 +157,19 @@ class JobManager:
         self.last_created = True
         return job
 
-    def _cancel(self, job: Job, message: str) -> None:
+    def cancel(self, job: Job, message: str) -> bool:
+        """Stop a job whose body marked itself ``cancellable`` (a download, which resumes
+        later); False when it can't be stopped now."""
+        if job.done.is_set() or not job.cancellable:
+            return False
+        self._cancel(job, message, code="cancelled")
+        return True
+
+    def _cancel(self, job: Job, message: str, code: str = "superseded") -> None:
         if job.task and not job.task.done():
             job.task.cancel()
         job.state = FAILED
-        job.error = {"code": "superseded", "message": message}
+        job.error = {"code": code, "message": message}
         job.message = message
         job.finished = wall()
         job.done.set()

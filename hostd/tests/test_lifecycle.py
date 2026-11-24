@@ -872,6 +872,39 @@ class FirstTimeSetup(Base):
         launch = [r for r in helpers.fake_qemu_log(self.pkg) if "argv" in r][0]
         self.assertEqual(launch["tz"], ":America/New_York")
 
+    async def test_typed_city_is_the_choice_and_the_list_has_no_aliases(self):
+        await self.until_doc("setup-welcome")
+        self.fp.change("source", "usb")
+        self.fp.click("continue", {"source": "usb"})
+        await self.until_doc("timezone")
+        doc = json.dumps(self.fp.doc)
+        for alias in ('"ROK"', '"UCT"', '"US/Eastern"', '"Etc/GMT+5"'):
+            self.assertNotIn(alias, doc)
+        self.fp.change("search", "new york")
+        # The only match becomes the selection: Return (no list click) sets it.
+        await helpers.wait_for(lambda: "Selected: America/New York" in json.dumps(self.fp.doc), 5, what="selected")
+        self.fp.click("set", {})
+        await self.until_doc("setup-usb")
+        self.assertEqual(self.app.settings.applied["system.timezone"], "America/New_York")
+
+
+class FirstTimeSetupAfterInstaller(FirstTimeSetup):
+    """The installer's Time Zone step already chose a zone: first-time setup doesn't ask again."""
+
+    def before_start(self):
+        super().before_start()
+        self.app.settings.set_desired_and_applied({"system.timezone": "Europe/Paris"}, self.app.validation_context())
+
+    async def test_local_setup_from_archive_with_time_zone(self):
+        await self.until_doc("setup-welcome")
+        self.fp.change("source", "usb")
+        self.fp.click("continue", {"source": "usb"})
+        await self.until_doc("setup-usb")
+        self.assertEqual(self.app.settings.applied["system.timezone"], "Europe/Paris")
+
+    async def test_typed_city_is_the_choice_and_the_list_has_no_aliases(self):
+        pass
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -228,6 +228,8 @@ class Picker:
                                         "usb": {"state": "loading"}, "disc": {"state": "loading"}}
         self.checked: set[str] = set()
         self.defaults_done = False
+        self.touched = False                  # the user checked or unchecked a Mac
+        self.recommended: str | None = None   # the download checked for a new computer
         self.startup: str | None = None
         self.show_older = False
         self.lab_client: CatalogClient | None = None
@@ -321,7 +323,25 @@ class Picker:
             self.status.update({src: {"state": "offline"} for src in self.custom})
         self._rebuild_hosted()
         self._prune()
+        self._recommend()
         await self._changed()
+
+    def _recommend(self) -> None:
+        """Check the recommended download (the newest standard Mac OS this computer runs)
+        once, while no Mac is checked and the user hasn't changed a check, when it fits."""
+        if self.touched or self.checked or self.recommended is not None:
+            return
+        from ..catalogs import recommended
+        hosted = [c for src in ("lab", "catalog", *self.custom) for c in self.found.get(src, [])]
+        pick = recommended(hosted)
+        if pick is None:
+            return
+        target = self.st.target
+        if target and (pick.size or 0) + pick.download + DOWNLOAD_RESERVE > room_for_macs(target):
+            return
+        self.recommended = pick.key
+        self.checked.add(pick.key)
+        self._fix_startup()
 
     async def _fetch_custom(self, src, client):
         try:
@@ -361,6 +381,7 @@ class Picker:
         self.raw["lab"] = (entries, url, auth)
         self._rebuild_hosted()
         self.status["lab"] = {"state": "ready"}
+        self._recommend()
         return None
 
     async def _changed(self) -> None:
@@ -414,6 +435,7 @@ class Picker:
     def toggle(self, key: str) -> None:
         if not self.get(key):
             return
+        self.touched = True
         self.checked ^= {key}
         self._fix_startup()
 
@@ -488,7 +510,8 @@ class ChooseMacs(Screen):
     def doc(self):
         ps, d = self.ps, self.st.target
         chosen = ps.chosen()
-        rows = [ui.row(c.key, c.name, c.detail(), SOURCE_ICON.get(c.source, "web"), checked=c.key in ps.checked)
+        rows = [ui.row(c.key, c.name, recommended_detail(c.detail()) if c.key == ps.recommended else c.detail(),
+                       SOURCE_ICON.get(c.source, "web"), checked=c.key in ps.checked)
                 for c in ps.visible()]
         rows += self.status_rows()
         if not rows:
@@ -519,7 +542,7 @@ class ChooseMacs(Screen):
         for note in self.notes():
             items.append(ui.text(note, "small"))
         items.append(ui.buttons(ui.btn("servers", "Image Servers…", align="left"),
-                                ui.btn("host-only", "Install RetroBoot Only…") if not chosen else None))
+                                ui.btn("host-only", "Install RetroBoot Only…")))
         sel_c = ps.get(sel)
         buttons = [ui.btn("toggle", "Remove" if sel_c and sel_c.key in ps.checked else "Add",
                           disabled=sel_c is None, align="left")]
@@ -579,7 +602,10 @@ class ChooseMacs(Screen):
                 await p.show(self)
                 await ps.load_hosted()
             await p.show(ImageServers(p, back))
-        elif id == "host-only" and not ps.chosen():
+        elif id == "host-only":
+            ps.checked.clear()          # RetroBoot alone: the Mac comes later (first-time setup)
+            ps.touched = True
+            ps._fix_startup()
             self.st.plan = []
             self.st.host_only = True
             await p.show(DisplayCheck(p))
@@ -599,6 +625,12 @@ class ChooseMacs(Screen):
                                      startup=next((m["id"] for m in self.st.plan if m["startup"]), None),
                                      needed_bytes=ps.needed(), room_bytes=room_for_macs(self.st.target))
             await p.show(DisplayCheck(p))
+
+
+def recommended_detail(detail: str) -> str:
+    """"Internet · 420 MB" -> "Internet · Recommended · 420 MB"."""
+    where, _, rest = detail.partition(" · ")
+    return f"{where} · Recommended" + (f" · {rest}" if rest else "")
 
 
 def plan_install(ps: Picker, app) -> list[dict]:

@@ -8,7 +8,9 @@ RetroBoot runs Mac OS on a dedicated PC, Raspberry Pi or Planet Computers Gemini
 
 *RetroBoot 3.0.0 cold-booting to Mac OS 9.2.1 Finder in Proxmox. Playback is shortened.*
 
-## RetroBoot 3.0.5
+## RetroBoot 3.0.6
+
+First-time setup is simpler. The installer and **Download a Mac** list the whole RetroBoot Mac library on every computer, and a recommended Mac, such as Mac OS 9.2.2 on a PC, is checked to begin with. Type a city in **Time Zone** to choose it. **Stop Download** pauses a download, and the next **Download** continues where it stopped.
 
 The Zero 2 W image includes System 7.5.5 and Mac OS 8.1. System 7.5.5 starts by default. Choose Mac OS 8.1 in **Startup Disk**. The web and local interfaces open in Platinum before Mac OS is installed.
 
@@ -33,10 +35,11 @@ Download the installer or update for your computer without signing in. Consult t
 
 ## Start using it
 
-1. Install RetroBoot on the machine you want to use.
-2. In **Startup Disk**, choose **Install Another…**. Select an available image, add your own catalog, or import a machine archive from USB.
-3. Choose the Mac that starts by default. Use the Mac OS **Shut Down** and **Restart** commands for normal guest operation.
-4. For browser management, open **Network & Web Access** on RetroBoot and pair the browser using the displayed address and code.
+1. Install RetroBoot on the machine you want to use. The PC installer checks a recommended Mac, such as Mac OS 9.2.2, and the computer restarts straight into it.
+2. On a computer with no Mac yet, **RetroBoot Setup** opens at the first start. Choose **The Internet** or **A USB disk**, then pick a Mac in **Download a Mac**. RetroBoot asks for your time zone first if the installer didn't.
+3. To add another Mac later, press **Ctrl+Alt+Delete** and open **Download a Mac**. It lists the RetroBoot Mac library. **Image Servers…** adds your own catalog, and **From a USB Disk…** imports a machine archive.
+4. Choose the Mac that starts by default in **Startup Disk**. Use the Mac OS **Shut Down** and **Restart** commands for normal guest operation.
+5. For browser management, press **Ctrl+Alt+Delete**, open **Network & Web Access**, and pair the browser using the displayed address and code.
 
 ## Screenshots
 

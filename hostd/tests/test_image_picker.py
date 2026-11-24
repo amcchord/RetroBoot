@@ -110,6 +110,7 @@ def entry(mid: str, name: str, url: str, payload: bytes, installed: int, os_vers
 class PickerBase(unittest.IsolatedAsyncioTestCase):
     disk_size = 42949672960
     media_auth = True          # retroboot/lab-auth.env with the sign-in (else only the base URL)
+    embedded_macs = True       # the installer's disc carries two Macs (the public ISO carries none)
     remember = False
 
     async def asyncSetUp(self):
@@ -169,9 +170,10 @@ class PickerBase(unittest.IsolatedAsyncioTestCase):
         paths = Paths(self.root)
         paths.ensure()
         inst = paths.installer_dir
-        embedded(inst, "os922-deluxe-v4", "Mac OS 9.2.2 Deluxe v4")
-        embedded(inst, "os922-full-v5", "Mac OS 9.2.2 (v5)")
-        (inst / "embedded/machines/order").write_text("os922-deluxe-v4\nos922-full-v5\n")
+        if self.embedded_macs:
+            embedded(inst, "os922-deluxe-v4", "Mac OS 9.2.2 Deluxe v4")
+            embedded(inst, "os922-full-v5", "Mac OS 9.2.2 (v5)")
+            (inst / "embedded/machines/order").write_text("os922-deluxe-v4\nos922-full-v5\n")
         medium = paths.run / "live/medium/retroboot"
         medium.mkdir(parents=True)
         text = f"RB_LAB_BASE_URL={self.base}/lab/\n"
@@ -180,6 +182,7 @@ class PickerBase(unittest.IsolatedAsyncioTestCase):
         (medium / "lab-auth.env").write_text(text + "GEMINI_PASS=ignored-other-key\n")
         self.data = self.root / "target-data"
         self.record = self.root / "install-calls.jsonl"
+        inst.mkdir(parents=True, exist_ok=True)
         (inst / "list-disks").write_text(LIST_DISKS.format(py=sys.executable, size=self.disk_size))
         (inst / "install-to-disk").write_text(INSTALL.format(py=sys.executable, rec=str(self.record),
                                                              data=str(self.data)))
@@ -317,7 +320,7 @@ class PickerTests(PickerBase):
         self.assertIn("to download during installation", json.dumps(self.fp.doc, ensure_ascii=False))
         ready = await self.to_install({"startup": "lab:os921-full-v4"})
         self.assertIn("downloaded onto the disk", ready)
-        await self.doc("installer-done", "Remove the installation disc", 30)
+        await self.doc("installer-done", "Remove the installation", 30)
         calls = self.calls()
         main = calls[0]
         inst = str(self.app.paths.installer_dir / "embedded/machines")
@@ -349,7 +352,7 @@ class PickerTests(PickerBase):
         await self.to_macs()
         await self.doc("installer-macs", "Mac OS 9.2.1 (v4)")
         await self.to_install()
-        await self.doc("installer-done", "Remove the installation disc", 30)
+        await self.doc("installer-done", "Remove the installation", 30)
         calls = self.calls()
         self.assertEqual([("--mount-data" in a, "--unmount-data" in a) for a in calls[1:]],
                          [(True, False), (False, True)])
@@ -396,7 +399,7 @@ class PickerTests(PickerBase):
         await self.to_install({"startup": "lab:os921-full-v4"})
         await self.doc("installer-download-problem", None, 30)
         self.fp.click("retry")
-        await self.doc("installer-done", "Remove the installation disc", 30)
+        await self.doc("installer-done", "Remove the installation", 30)
         self.assertNotIn("not installed", json.dumps(self.fp.doc, ensure_ascii=False))
         self.assertEqual(self.seed()["machine.active"], "mac-os-9-2-1-v4")
         self.assertEqual(len(list((self.data / "machines").iterdir())), 3)
@@ -424,7 +427,7 @@ class PickerSignInTests(PickerBase):
         self.fp.click("macs", {"macs": "lab:os921-full-v4"})
         await helpers.wait_for(lambda: self.rows()["lab:os921-full-v4"]["checked"], 5, what="checked")
         await self.to_install()
-        await self.doc("installer-done", "Remove the installation disc", 30)
+        await self.doc("installer-done", "Remove the installation", 30)
         self.assert_sign_in_kept()
         self.assertEqual(self.seed()["machine.active"], "os922-deluxe-v4")   # the default startup Mac
         signins = helpers.events(self.app, "installer_lab_signin")
@@ -466,6 +469,40 @@ class PickerSpaceTests(PickerBase):
             await helpers.wait_for(lambda k=key: not self.rows()[k]["checked"], 5, what="unchecked")
         await self.doc("installer-macs", "Choose a Mac now, or add one after installing RetroBoot.")
         self.assertTrue(self.button("continue")["disabled"])
+
+
+class PickerRecommendedTests(PickerBase):
+    """The public ISO carries no Mac: a new computer gets the newest standard Mac OS checked."""
+    embedded_macs = False
+
+    async def test_recommended_mac_is_checked_once_and_install_only_stays_available(self):
+        await self.doc("installer-welcome")
+        self.fp.click("continue")
+        await self.doc("installer-hardware", "1 disk available")
+        self.fp.click("continue")
+        await self.doc("installer-destination")
+        self.fp.click("continue", {"disk": "/dev/vda"})
+        await self.doc("installer-erase")
+        self.assertNotIn("/dev/", json.dumps(self.fp.doc))          # no device path in the alert
+        self.fp.click("erase")
+        await self.doc("installer-macs", "Recommended")
+        rows = self.rows()
+        self.assertEqual([k for k, r in rows.items() if r.get("checked")], ["lab:os922-full-v5"])
+        self.assertIn("Recommended", rows["lab:os922-full-v5"]["detail"])
+        self.assertFalse(self.button("continue").get("disabled"))
+        self.assertIsNotNone(self.button("host-only"))
+        # Unchecked by the user, it stays unchecked when the catalogs load again.
+        self.fp.click("macs", {"macs": "lab:os922-full-v5"})
+        await helpers.wait_for(lambda: not self.rows()["lab:os922-full-v5"]["checked"], 5, what="unchecked")
+        await self.app.panel.st.picker.load_hosted()
+        await asyncio.sleep(0.2)
+        self.assertFalse(self.rows()["lab:os922-full-v5"]["checked"])
+        # Install RetroBoot Only… with a Mac checked installs RetroBoot alone.
+        self.fp.click("macs", {"macs": "lab:os921-full-v4"})
+        await helpers.wait_for(lambda: self.rows()["lab:os921-full-v4"]["checked"], 5, what="checked")
+        await self.to_install(button="host-only")
+        await self.doc("installer-done", "No Mac OS system was installed")
+        self.assertNotIn("machine.active", self.seed())
 
 
 class PickerUnitTests(unittest.TestCase):

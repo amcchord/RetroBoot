@@ -113,7 +113,7 @@ export function render({ onPaired, message }) {
         }
       },
     },
-    h('div', { class: 'field' }, h('label', { for: codeId }, 'Pairing code'), code, h('p', { class: 'hint', id: `${codeId}-hint` }, `Shown on ${hw().its} RetroBoot panel under web management. Codes change every 5 minutes.`)),
+    h('div', { class: 'field' }, h('label', { for: codeId }, 'Pairing code'), code, h('p', { class: 'hint', id: `${codeId}-hint` }, `On ${hw().the}, press Ctrl+Alt+Delete and open Network & Web Access (the installer shows it on its Network step). Codes change every 5 minutes.`)),
     h('div', { class: 'field' }, h('label', { for: nameId }, 'Name this device'), name, h('p', { class: 'hint' }, 'Helps you recognize it later in Paired Devices.')),
     err,
     h('div', { class: 'pair-buttons' }, submit),

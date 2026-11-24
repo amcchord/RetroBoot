@@ -85,11 +85,11 @@ def zero_profile(root):
 
 
 class ZeroCatalogDefaults(unittest.TestCase):
-    def test_public_retroboot_catalog_on_zero_only(self):
+    def test_public_retroboot_catalog_on_every_board(self):
         td, root = helpers.scratch()
         with td:
             config = helpers.make_config(root, catalog_url=Config().catalog_url)
-            self.assertEqual(Hostd(config).catalog.url, catalogs.CLASSICMAC_CATALOG)
+            self.assertEqual(Hostd(config).catalog.url, catalogs.RETROBOOT_CATALOG)     # a PC (D085)
             zero_profile(root)
             helpers.make_m68k_package(root)
             app = Hostd(config)

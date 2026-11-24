@@ -10,6 +10,7 @@ choices (registered machines, the presenter's mode list) arrive through a
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
@@ -68,6 +69,42 @@ def available_timezones() -> set[str]:
         zones.add("UTC")
         _TZ_CACHE = zones
     return _TZ_CACHE
+
+
+TZ_REGIONS = ("Africa", "America", "Antarctica", "Arctic", "Asia", "Atlantic", "Australia", "Europe", "Indian",
+              "Pacific")
+
+
+def listed_timezones(zoneinfo_dir: Path | None = None) -> set[str]:
+    """The zones the classic panel lists: tzdata's per-country tables (zone.tab, zone1970.tab)
+    plus UTC, without backward-compatible aliases such as "ROK", "UCT", "US/Eastern" or
+    "Etc/GMT+5".  Every name in available_timezones() stays valid as a setting."""
+    every = available_timezones()
+    listed: set[str] = set()
+    for base in ([zoneinfo_dir] if zoneinfo_dir else []) + [Path(p) for p in _tzpath()]:
+        for name in ("zone.tab", "zone1970.tab"):
+            try:
+                text = (base / name).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                cols = line.split("\t")
+                if line and not line.startswith("#") and len(cols) >= 3:
+                    listed.add(cols[2].strip())
+        if listed:
+            break
+    listed &= every
+    if not listed:
+        listed = {z for z in every if z.split("/", 1)[0] in TZ_REGIONS}
+    return listed | {"UTC"}
+
+
+def _tzpath() -> tuple[str, ...]:
+    try:
+        import zoneinfo
+        return tuple(zoneinfo.TZPATH) or ("/usr/share/zoneinfo",)
+    except Exception:
+        return ("/usr/share/zoneinfo",)
 
 
 def timezone_regions(zones: set[str] | None = None) -> dict[str, list[str]]:

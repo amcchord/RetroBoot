@@ -163,10 +163,11 @@ class Panel:
         await self.show(MessageAlert(self, icon, message, detail, then, button, auto_seconds))
 
     async def run_job(self, job: Job, title: str, then: Callable[[Job], Awaitable[None]],
-                      allow_force: bool = False) -> None:
+                      allow_force: bool = False, allow_cancel: bool = False) -> None:
         """Show progress and call ``then`` when the job ends, even if the job's own flow
-        dismissed the progress window (a clean shutdown switches to the guest scene)."""
-        screen = JobScreen(self, job, title, then, allow_force)
+        dismissed the progress window (a clean shutdown switches to the guest scene).
+        ``allow_cancel``: a Stop button while the job says it can stop (a download)."""
+        screen = JobScreen(self, job, title, then, allow_force, allow_cancel)
         await self.show(screen)
         self.app.loop.create_task(self._watch(job, screen))
 
@@ -181,14 +182,14 @@ class Panel:
             log.exception("panel job continuation failed")
 
     async def start_job(self, starter: Callable[[], Job], title: str, then: Callable[[Job], Awaitable[None]],
-                        allow_force: bool = False) -> None:
+                        allow_force: bool = False, allow_cancel: bool = False) -> None:
         try:
             job = starter()
         except Busy as exc:
             await self.message("caution", "RetroBoot is busy.", f"Wait for “{exc.job.kind}” to finish, then try again.",
                                then=self.show_recovery)
             return
-        await self.run_job(job, title, then, allow_force)
+        await self.run_job(job, title, then, allow_force, allow_cancel)
 
     async def show_startup_options(self, notice: str | None = None) -> None:
         await self.show(RetroBootWindow(self, notice, kind="startup"))
@@ -281,9 +282,10 @@ class JobScreen(Screen):
     tick = 0.5
     guest_background_ok = True
 
-    def __init__(self, panel, job: Job, title: str, then, allow_force: bool):
+    def __init__(self, panel, job: Job, title: str, then, allow_force: bool, allow_cancel: bool = False):
         super().__init__(panel)
         self.job, self.title, self.then, self.allow_force = job, title, then, allow_force
+        self.allow_cancel = allow_cancel
         self.handled = False
 
     def doc(self):
@@ -293,6 +295,9 @@ class JobScreen(Screen):
             items.append(ui.text("If Mac OS is not responding, you can force it to stop. Unsaved changes may be lost.",
                                  "small"))
             items.append(ui.buttons(ui.btn("force", "Force Stop…")))
+        if self.allow_cancel and j.cancellable and not j.done.is_set():
+            items.append(ui.text("A stopped download continues where it left off next time.", "small"))
+            items.append(ui.buttons(ui.btn("cancel", "Stop Download")))
         return ui.window(self.doc_id, "RetroBoot", items, width=420)
 
     async def on_tick(self):
@@ -302,6 +307,8 @@ class JobScreen(Screen):
     async def action(self, id, values):
         if id == "force":
             await self.panel.show(ConfirmForce(self.panel, "restart", back=self))
+        elif id == "cancel" and self.allow_cancel:
+            self.app.jobs.cancel(self.job, "The download was stopped.")
 
 
 # --- normal-mode screens ---------------------------------------------------------------
@@ -2053,8 +2060,8 @@ class SetupWelcome(Screen):
                  ui.text("RetroBoot needs a Mac OS system to start. Choose where to get one."),
                  ui.radio("source", "Install from:", [("catalog", "RetroBoot downloads or the Internet"
                                                       if self.app.lab_auth is not None else
-                                                      "The Internet (ClassicMac catalog)"),
-                                                      ("usb", "A USB disk or the installer")], self.source),
+                                                      "The Internet (RetroBoot Mac library)"),
+                                                      ("usb", "A USB disk")], self.source),
                  ui.buttons(ui.btn("bluetooth", "Bluetooth…")) if self.app.bluetooth.capable() else None,
                  ui.buttons(ui.btn("network", "Network…"),
                             ui.btn("cancel", "Back") if self.back else ui.btn("poweroff", "Shut Down"),
@@ -2071,7 +2078,9 @@ class SetupWelcome(Screen):
         if id == "continue":
             src = values.get("source") or self.source
             nxt = lambda: p.show(CatalogList(p, back=me) if src == "catalog" else UsbList(p, back=me))
-            if not self.app.machines.list():
+            if not self.app.machines.list() and self.app.settings.desired.get("system.timezone", "UTC") == "UTC":
+                # A new computer whose clock zone nobody chose yet; the installer's Time Zone
+                # step (or an earlier visit) already set one otherwise.
                 await p.show(TimeZone(p, back=me, next_=nxt))
             else:
                 await nxt()
@@ -2168,6 +2177,7 @@ class CatalogList(Screen):
         self.show_older = False
         self.on_installed = on_installed
         self.then = then
+        self.recommended = None
         self.app.loop.create_task(self._load())
 
     async def _load(self):
@@ -2180,7 +2190,10 @@ class CatalogList(Screen):
         except Exception:  # noqa: BLE001 -- shown as a catalog error, never a crash
             log.exception("catalog listing failed")
             self.items, self.errors, self.error = [], {}, "The catalog could not be loaded."
-        first = next((it for it in self.visible() if not it.known), None) or next(iter(self.visible()), None)
+        from ..catalogs import recommended
+        self.recommended = recommended(self.items or [])
+        first = (self.recommended or next((it for it in self.visible() if not it.known), None)
+                 or next(iter(self.visible()), None))
         self.selected = first.key if first else None
         if self.panel.screen is self:
             await self.panel.refresh()
@@ -2203,7 +2216,9 @@ class CatalogList(Screen):
             parts.append(osl)
         if entry_family(e) == QUADRA800:
             parts.append(FAMILY_LABELS[QUADRA800])
-        parts.append(ui.human_bytes(download_of(e)['archiveBytes']))
+        if it is self.recommended:
+            parts.append("Recommended")
+        parts.append(ui.human_bytes(download_of(e)['archiveBytes']) + " download")
         if it.known:
             parts.append("Installed")
         return " · ".join(parts)
@@ -2214,7 +2229,9 @@ class CatalogList(Screen):
         if self.items is None:
             items += [ui.text("Loading the catalog…"), ui.progress(None)]
         elif self.error:
-            items += [ui.text(self.error, "emphasis"), ui.text("Check the network connection, then try again.")]
+            items.append(ui.text(self.error, "emphasis"))
+            if "network" not in self.error.lower():
+                items.append(ui.text("Check the network connection, then try again."))
         else:
             rows = [ui.row(it.key, it.entry["name"], self.detail(it), "mac")
                     for it in self.visible()]
@@ -2223,10 +2240,11 @@ class CatalogList(Screen):
                 items.append(ui.checkbox("older", "Show older versions", self.show_older))
             sel = self.find(self.selected)
             if sel:
-                items.append(ui.text(sel.entry["summary"][:300], "small"))
+                items.append(ui.text(ui.clip_words(sel.entry["summary"], 300), "small"))
             for sid, why in self.errors.items():
                 items.append(ui.text(f"{self.app.catalogs.label(sid)}: {why}", "small"))
-        items.append(ui.buttons(ui.btn("servers", "Image Servers…", align="left")))
+        items.append(ui.buttons(ui.btn("servers", "Image Servers…", align="left"),
+                                ui.btn("network", "Network…") if self.error or self.errors else None))
         items.append(ui.buttons(ui.btn("usb", "From a USB Disk…", align="left"),
                                 ui.btn("retry", "Try Again") if self.error or self.errors else None,
                                 ui.btn("cancel", "Cancel" if self.then else "Back"),
@@ -2257,16 +2275,26 @@ class CatalogList(Screen):
             self.items, self.error, self.errors = None, None, {}
             await p.refresh()
             await self._load()
+        elif id == "network":
+            async def back():
+                self.items, self.error, self.errors = None, None, {}
+                await p.show(self)
+                await self._load()
+            await p.show(NetworkWeb(p, back=back))
         elif id == "install":
             it = self.find(values.get("entry") or self.selected)
             if not it:
                 return
             spec = {"source": "catalog", "id": it.entry["id"], "catalog": it.source}
             then = self.then
+            # A failed or stopped download comes back to this list (Try Again, another Mac);
+            # after a download that worked, Not Now goes where the list came from.
+            back = lambda job: self.back if job.state == SUCCEEDED else (lambda: p.show(self))
             await p.start_job(lambda: self.app.import_job(spec, origin="panel"),
                               f"Downloading “{it.entry['name']}”",
-                              (lambda job: then(p, job, self.back)) if then else
-                              (lambda job: after_import(p, job, self.back, self.on_installed)))
+                              (lambda job: then(p, job, back(job))) if then else
+                              (lambda job: after_import(p, job, back(job), self.on_installed)),
+                              allow_cancel=True)
 
 
 class UsbList(Screen):
@@ -2293,10 +2321,10 @@ class UsbList(Screen):
             items += [ui.text("Looking for machine archives…"), ui.progress(None)]
         elif not self.items:
             items += [ui.text("No machine archives found.", "emphasis"),
-                      ui.text("Insert a USB disk containing a RetroBoot or ClassicMac machine archive (.tar.gz), "
+                      ui.text("Insert a USB disk containing a RetroBoot machine archive (.tar.gz), "
                               "then click Look Again.")]
         else:
-            rows = [ui.row(a["id"], a["name"], f"{ui.human_bytes(a['bytes'])} · {a['origin']}", "disk")
+            rows = [ui.row(a["id"], a["name"], f"{ui.human_bytes(a['bytes'])} · {archive_origin(a['origin'])}", "disk")
                     for a in self.items]
             items.append(ui.lst("archive", rows, self.selected, rows=5))
         items.append(ui.buttons(ui.btn("rescan", "Look Again"), ui.btn("cancel", "Back"),
@@ -2322,7 +2350,22 @@ class UsbList(Screen):
                               (lambda job: after_import(p, job, self.back, self.on_installed)))
 
 
+def archive_origin(origin: str) -> str:
+    """"usb:STICK" -> "USB disk “STICK”"; "embedded" -> "the installer"."""
+    kind, _, label = str(origin or "").partition(":")
+    if kind == "usb":
+        return f"USB disk “{label[:24]}”" if label else "USB disk"
+    return {"embedded": "the installer", "upload": "uploaded"}.get(kind, kind or "disk")
+
+
+def stopped_by_user(job: Job) -> bool:
+    return (job.error or {}).get("code") == "cancelled"
+
+
 async def after_import(panel: Panel, job: Job, back, on_installed=None):
+    if stopped_by_user(job):
+        await back()
+        return
     if job.state != SUCCEEDED:
         await panel.message("stop", "Mac OS could not be installed.", job.message, then=back)
         return
@@ -2338,6 +2381,9 @@ async def after_import(panel: Panel, job: Job, back, on_installed=None):
 async def after_download(panel: Panel, job: Job, back) -> None:
     """After Download a Mac (or a USB disk's archive) on a computer that already has Macs:
     offer to start up with the new one now."""
+    if stopped_by_user(job):
+        await back()
+        return
     if job.state != SUCCEEDED:
         await panel.message("stop", "The Mac could not be downloaded.", job.message, then=back)
         return
@@ -2405,7 +2451,8 @@ class Installed(Screen):
 
     def doc(self):
         return ui.alert(self.doc_id, "note", f"{self.name} is installed.",
-                        "Mac OS will start now. Next time, it starts automatically when you turn this computer on.",
+                        "Click Start Mac OS to start it. From now on, it starts automatically when you turn "
+                        "this computer on.",
                         ui.buttons(ui.btn("setup", "More Setup…"), ui.btn("start", "Start Mac OS", default=True)))
 
     async def action(self, id, values):
@@ -2452,8 +2499,9 @@ class TimeZone(Screen):
     def __init__(self, panel, back, next_=None, title: str = "Time Zone"):
         super().__init__(panel)
         self.back, self.next_, self.title = back, next_, title
-        self.regions = schema.timezone_regions()
         cur = self.app.settings.desired.get("system.timezone", "UTC")
+        # Real places only (no "ROK", "UCT" or "US/Eastern"); a current alias stays listed.
+        self.regions = schema.timezone_regions(schema.listed_timezones() | {cur})
         self.selected = cur
         self.region = cur.split("/", 1)[0] if "/" in cur and cur.split("/", 1)[0] in self.regions else "Other"
         self.search = ""
@@ -2473,7 +2521,8 @@ class TimeZone(Screen):
         osx = (machine is not None and machine.osx) or (getattr(self.app, "mode", None) == "installer"
                                                        and self.app.startup.style() == "macosx")
         intro = ("Choose RetroBoot's time zone. Mac OS X keeps its own time zone in "
-                 "System Preferences → Date & Time." if osx else "Choose the time zone for the Mac clock.")
+                 "System Preferences → Date & Time." if osx else
+                 "Choose the time zone for the Mac clock. Type a city, or choose a region.")
         items = [ui.text(intro),
                  ui.columns(ui.popup("region", "Region:", [(r, r) for r in self.regions], self.region,
                                      disabled=bool(self.search.strip())),
@@ -2491,9 +2540,14 @@ class TimeZone(Screen):
             self.region = value
         elif id == "search":
             self.search = str(value or "")[:40]
+            zones = self.zones()
+            if self.search.strip() and zones and self.selected not in zones:
+                # The first match is the choice, so Return after typing a city sets it.
+                self.selected = zones[0]
         elif id == "zone" and isinstance(value, str):
-            self.selected = value
-            return
+            if value == self.selected:
+                return
+            self.selected = value      # and the "Selected:" line follows
         else:
             return
         await self.panel.refresh()

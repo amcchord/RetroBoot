@@ -237,6 +237,18 @@ def columns(*items: dict) -> dict:
     return {"type": "columns", "items": [i for i in items if i]}
 
 
+def clip_words(text: str, limit: int) -> str:
+    """``text`` cut to at most ``limit`` characters at a word boundary, with an ellipsis."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    space = cut.rfind(" ")
+    if space > limit // 2:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:.–-") + "…"
+
+
 def human_bytes(n: int | None) -> str:
     if n is None:
         return "unknown size"

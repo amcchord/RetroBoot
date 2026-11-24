@@ -310,7 +310,7 @@ class DeviceWithoutSignInTests(DeviceCatalogBase):
         self.assertEqual(doc["title"], "Download a Mac")
         lst = next(i for i in doc["items"] if i.get("type") == "list")
         detail = lst["items"][0]["detail"]
-        self.assertRegex(detail, r"^Mac OS 9\.2\.1 · [0-9.]+ [KMG]B$")
+        self.assertRegex(detail, r"^Mac OS 9\.2\.1 · Recommended · [0-9.]+ [KMG]B download$")
         self.assertFalse(any(p.startswith("/lab/") for p, _ in self.seen))
         status, res = await self.post("/api/v1/machines/import", {"catalog_id": "mac-os-9", "catalog": "lab"})
         self.assertEqual(status, 422)
