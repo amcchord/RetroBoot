@@ -14,7 +14,7 @@ Choose the method for the computer running RetroBoot. Shut down your Macs cleanl
 2. Choose **Restart to Update** when staging finishes. RetroBoot tries the new system slot and keeps the previous one. The Macs, profiles and device settings stay on the data partition.
 3. Once the machine is running, open an existing Mac and check a saved document. The update appears under **This RetroBoot**.
 
-For an offline update, download the matching **3.1.0 product** or **3.1.0 debug** `.rbu` and its checksum. Select the bundle in **Software Update → Choose Update File…** or put it on a USB drive and open Software Update in the local control panel. If you installed a pre-A/B development image, use the installer’s **Update RetroBoot on This Disk** action when it recognizes the installed layout. Keep a full backup before opening an installer with an older system. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#updates)
+For an offline update, download the matching **3.1.0 product** or **3.1.0 debug** `.rbu` and its checksum. Select the bundle in **Software Update → Choose Update File…** or put it on a USB drive and open Software Update in the local control panel. If you installed a pre-A/B development image, use the installer’s **Update RetroBoot on This Disk** action when it recognizes the installed layout. Keep a full backup before opening an installer with an older system. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#advanced)
 
 ## Raspberry Pi
 

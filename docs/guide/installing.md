@@ -1,6 +1,6 @@
 # Install RetroBoot 3.1.0
 
-Select the installer for your computer and download its checksum. The same page includes step-by-step flashing instructions, the Raspberry Pi Imager custom JSON repository, and the Mac disk library. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#installers)
+Select the installer for your computer and download its checksum. The same page includes step-by-step flashing instructions, the Raspberry Pi Imager custom JSON repository, and the Mac disk library. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#devices)
 
 If RetroBoot already runs on the device, use the [upgrade guide](upgrading.md). A fresh install to a selected PC disk or SD card erases that disk or card.
 
