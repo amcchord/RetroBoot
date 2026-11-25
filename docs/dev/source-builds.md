@@ -52,7 +52,7 @@ The source firmware route runs the pinned OpenBIOS toolchain in a chroot. Use a 
 
 ## Appliance image inputs
 
-`image/build.sh` assembles the PC system. Set `RB_WORK_ROOT` to a local build directory, `RB_ARTIFACTS` to the staged package directory, and optionally `RB_CHIMES_DIR` to a directory of normalized `48 kHz` 16-bit stereo startup chimes (`os9.wav`, `quadra.wav`, `powermac.wav`, `macii.wav`, `se.wav`) kept outside Git. Place emulator packages in `$RB_ARTIFACTS/qemu/<package-name>` and use `RB_QEMU_PACKAGE` to select the Classic PowerPC package.
+`image/build.sh` assembles the PC system. Set `RB_WORK_ROOT` to a local build directory and `RB_ARTIFACTS` to the staged package directory. Place emulator packages in `$RB_ARTIFACTS/qemu/<package-name>` and use `RB_QEMU_PACKAGE` to select the Classic PowerPC package.
 
 The builder reads component checkouts under `$RB_WORK_ROOT/src/components`. Each directory holds a `component.json` recording the source revision, plus the source paths below. The installer stage reads the same layout for both x86 and Pi builds.
 

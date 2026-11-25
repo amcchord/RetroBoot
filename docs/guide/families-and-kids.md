@@ -2,11 +2,11 @@
 
 RetroBoot 3.4.1 is built to turn any spare laptop, mini PC, or Raspberry Pi into an approachable, joyful classic Macintosh that kids and families can explore right away.
 
-## Recommended first pick: Mega Deluxe v5 vs. Clean Mac OS 9.2.2
+## Recommended first pick: Mega Deluxe v6 vs. Clean Mac OS 9.2.2
 
 When setting up a PC or choosing a system in **Download a Mac** (`Ctrl+Alt+Delete`), RetroBoot highlights two great starting points right at the top:
 
-- **Kids & Family: Mac OS 9.2.2 Mega Deluxe v5** — Packed with **all 146 classic games, creative programs, and utilities across 8 Launcher tabs** and the **ACTION GoMac** bar (2-second bottom-edge delay), with a clean desktop and classic Apple menu. Favorites include **Kid Pix Studio Deluxe**, **Logical Journey of the Zoombinis**, **The Oregon Trail**, **SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, and **ClarisWorks 5**.
+- **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6** — Packed with **all 146 unique apps, games, and creative programs across 8 tabs in a 4-row Launcher**, **ACTION Menus™**, on-demand Virtual CDs (0 mounted at boot), and the **ACTION GoMac** bar (2-second bottom-edge delay). Favorites include **Kid Pix Studio Deluxe**, **Logical Journey of the Zoombinis**, **The Oregon Trail**, **SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, and **ClarisWorks 5**.
 - **Clean Mac OS 9.2.2** — A fast, minimal system with classic browsers, QuickTime 6, AirPort, and plenty of room to install your own favorite discs.
 
 If you have a **Raspberry Pi Zero 2 W**, choose **Mac OS 7.5.5 Deluxe v2** or **Mac OS 8.1 Deluxe v2** for 23 great 68k games (including After Dark Flying Toasters and ClarisWorks 5) tuned for 512 MB boards.

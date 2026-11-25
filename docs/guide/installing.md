@@ -1,6 +1,6 @@
 # Installing RetroBoot
 
-Turn a spare x86-64 PC, Intel Mac, or Raspberry Pi into a classic Macintosh in three simple steps: download, flash to USB or microSD, and choose **Kids & Family Mega Deluxe** or **Clean Mac OS 9.2.2**.
+Turn a spare x86-64 PC, Intel Mac, or Raspberry Pi into a classic Macintosh in three simple steps: download, flash to USB or microSD, and choose **Kids & Family Mega Deluxe v6** or **Clean Mac OS 9.2.2**.
 
 All **13 ready-to-run Macs** are built into RetroBoot's catalog—no extra setup is required.
 
@@ -32,7 +32,7 @@ All **13 ready-to-run Macs** are built into RetroBoot's catalog—no extra setup
 
 Start the computer from your USB stick (or DVD). You will see the checkerboard and then the classic welcome window—no Linux console or text prompts appear.
 
-<img src="../screenshots/installer/installer-01-welcome.png" width="508" alt="RetroBoot Installer: Welcome to RetroBoot. This installer sets up RetroBoot and Mac OS on this computer, or updates RetroBoot on a disk that already has it. You choose the disk; nothing is erased until you confirm. Shut Down / Continue">
+<img src="../images/manual/installer-welcome.png" width="508" alt="RetroBoot Installer: Welcome to RetroBoot. This installer sets up RetroBoot and Mac OS on this computer, or updates RetroBoot on a disk that already has it. You choose the disk; nothing is erased until you confirm. Shut Down / Continue">
 
 Nothing is erased until you explicitly confirm. **Shut Down** turns the computer off safely.
 
@@ -40,23 +40,23 @@ Nothing is erased until you explicitly confirm. **Shut Down** turns the computer
 
 RetroBoot checks the display, keyboard, disks, and network, naming your Wi-Fi adapter if present. While offline, click the **Wi-Fi…** button right in the installer to join your wireless network (any network joined during install carries over automatically to the installed system).
 
-<img src="../screenshots/installer/installer-02-hardware.png" width="548" alt="Hardware Check: This computer is ready. Back / Check Again / Continue">
+<img src="../images/manual/installer-hardware.png" width="548" alt="Hardware Check: This computer is ready. Back / Check Again / Continue">
 
 ### 3. Choose a disk, and confirm the erase
 
 Choose your destination drive. The installer's own USB stick, read-only media, and disks under 8 GiB are excluded. Existing OS partitions are labeled (`Windows`, **`Windows (encrypted)`** for BitLocker/Device Encryption, `Mac OS`, `Linux`, or `RetroBoot`).
 
-<img src="../images/pc-install-disk.png" width="544" alt="Choose a Disk with an available hard disk selected in the PC installer">
+<img src="../images/manual/installer-disk.png" width="544" alt="Choose a Disk with an available hard disk selected in the PC installer">
 
 If the chosen disk already holds RetroBoot, the installer offers **Update** instead, preserving your Macs, documents, checkpoints, and settings ([Software Update](software-update.md#updating-with-the-installer-usb-disk)).
 
 On erase confirmation, **Cancel** is always the default safe button:
 
-<img src="../screenshots/installer/installer-04-erase.png" width="428" alt="Erase disk confirmation alert with Cancel as the default button">
+<img src="../images/manual/installer-erase.png" width="428" alt="Erase disk confirmation alert with Cancel as the default button">
 
 ### 4. Choose the Macs to install
 
-**Choose Macs to Install** lists all 13 Macs from the built-in RetroBoot catalog (plus any **Image Servers…** or **USB disk** archives you add). Right near the top you can choose between **Kids & Family: Mac OS 9.2.2 Mega Deluxe v4** (111 games, Kid Pix Studio Deluxe, Zoombinis) or **Clean Mac OS 9.2.2**, or check multiple Macs and set **Starts first**.
+**Choose Macs to Install** lists all 13 Macs from the built-in RetroBoot catalog (plus any **Image Servers…** or **USB disk** archives you add). Right near the top you can choose between **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6** (146 unique apps across 8 tabs in a 4-row Launcher, Kid Pix Studio Deluxe, Zoombinis, ACTION Menus™, 2-second GoMac bar delay, and on-demand Virtual CDs with 0 mounted at boot) or **Clean Mac OS 9.2.2**, or check multiple Macs and set **Starts first**.
 
 | Source | Where the Mac comes from |
 | --- | --- |
@@ -65,7 +65,7 @@ On erase confirmation, **Cancel** is always the default safe button:
 | Image Servers… | Additional custom HTTPS catalogs (such as ClassicMac) |
 | USB disk | `.tar.gz` machine archives on an attached USB stick |
 
-<img src="../images/pc-install-machines.png" width="586" alt="Choose Macs to Install lists available Macs, Image Servers and Install RetroBoot Only">
+<img src="../images/manual/installer-macs.png" width="586" alt="Choose Macs to Install lists available Macs, Image Servers and Install RetroBoot Only">
 
 If you want to set up the computer first and download Macs later, choose **Install RetroBoot Only…** (RetroBoot Setup runs on first boot).
 
@@ -73,27 +73,27 @@ If you want to set up the computer first and download Macs later, choose **Insta
 
 RetroBoot picks the largest integer pixel scale (`1×`–`4×`) that keeps the Mac screen at least 720 × 540. You can test another resolution with **Try Resolution** (auto-reverts in 14 seconds if not kept), then confirm your auto-detected city or pick another region in **Time Zone** (with a **Detect** button and live local time preview).
 
-<img src="../screenshots/installer/installer-06-display.png" width="528" alt="Display check showing current resolution and pixel scale">
+<img src="../images/manual/installer-display.png" width="528" alt="Display check showing current resolution and pixel scale">
 
-<img src="../screenshots/installer/installer-07-timezone.png" width="548" alt="Time Zone selector with region filter and city search">
+<img src="../images/manual/installer-timezone.png" width="548" alt="Time Zone selector with region filter and city search">
 
 ### 6. Network & Web Access (optional)
 
-When connected, the installer's **Network** screen shows a local HTTPS URL, a 6-digit pairing code, a **QR code**, and the certificate SHA-256 fingerprint so you can monitor progress from a phone camera.
+When connected, the installer's **Network** screen (matching **Network & Web Access** shown below) displays a local HTTPS URL, a 6-digit pairing code, a **QR code**, and the certificate SHA-256 fingerprint so you can monitor progress from a phone camera.
 
-<img src="../screenshots/installer/installer-08-network.png" width="548" alt="Network and web access window showing local pairing details">
+<img src="../images/manual/panel-network-web-access.png" width="588" alt="Network and web access window showing local HTTPS URL, example pairing code, QR code, and certificate SHA-256 fingerprint">
 
 ### 7. Install & Restart
 
-RetroBoot formats five partitions (`RBEFI` 256 MiB, `BIOSBOOT` 1 MiB, `RBROOT_A` 3 GiB, `RBROOT_B` 3 GiB for seamless OTA updates, and `RBDATA` XFS reflink for Macs, checkpoints, and `RetroBoot Share`). Every imported Mac automatically gets a golden **Fresh Install** checkpoint.
+RetroBoot formats five partitions (`RBEFI` 256 MiB, `BIOSBOOT` 1 MiB, `RBROOT_A` 3 GiB, `RBROOT_B` 3 GiB for seamless OTA updates, and `RBDATA` XFS reflink for Macs, checkpoints, and `RetroBoot Share`) and shows live transfer speed and remaining time while copying and unpacking Macs. Every imported Mac automatically gets a golden **Fresh Install** checkpoint.
 
-<img src="../screenshots/installer/installer-09-ready.png" width="428" alt="Ready to install confirmation with safe Back default">
+<img src="../images/manual/installer-progress.png" width="520" alt="RetroBoot Installer progress showing partition setup, download speed, and remaining time">
 
 When installation completes, pull the USB stick out and click **Restart** to boot directly into your Mac Finder!
 
-<img src="../screenshots/installer/installer-11-done.png" width="428" alt="RetroBoot is installed: remove installation media and restart">
+<img src="../images/manual/installer-done.png" width="428" alt="RetroBoot is installed: remove installation media and restart">
 
-<img src="../screenshots/installer/installer-12-first-finder.png" width="640" alt="First Mac OS Finder startup after installation">
+<img src="../images/manual/finder-mega-deluxe-v6.png" width="640" alt="Mac OS 9.2.2 Mega Deluxe v6 Finder with 4-row 8-tab Launcher and ACTION Menus">
 
 ## Installing on Raspberry Pi
 

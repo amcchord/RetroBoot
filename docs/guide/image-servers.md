@@ -1,6 +1,6 @@
 # Host your own image catalog
 
-An image server publishes a small JSON catalog and downloadable machine archives. In RetroBoot 3.0.0, you can add up to eight additional catalogs. Each server has its own list of images and versions.
+An image server publishes a small JSON catalog and downloadable machine archives. RetroBoot supports adding up to eight additional custom HTTPS catalogs alongside the built-in 13-Mac RetroBoot library.
 
 ## Add a server
 
@@ -10,7 +10,7 @@ An image server publishes a small JSON catalog and downloadable machine archives
 
 ![The Image Servers panel shows the public RetroBoot catalog URL](../images/image-servers.png)
 
-RetroBoot lists the public RetroBoot Mac library (`https://mcchord.net/retroboot-downloads/catalog.json`) without being asked, so you don't need to add it. On RetroBoot 3.0.5 and earlier, only the Raspberry Pi Zero 2 W lists it by itself; add it here on other computers, as in the picture. To see the ClassicMac catalog as well, add `https://mcchord.net/classicmac/catalog.json`.
+RetroBoot already includes the built-in 13-Mac library (`https://mcchord.net/retroboot-downloads/catalog.json`) out of the box—nothing extra is required. To also browse ClassicMac's catalog, add `https://mcchord.net/classicmac/catalog.json`.
 
 Use addresses such as `https://macs.example.org/catalog.json` with a certificate trusted by RetroBoot. URLs accept no embedded credentials, query strings or fragments. Custom servers do not receive your RetroBoot downloads sign-in. Removing a server removes its listings. Macs already imported from it stay on your disk.
 
