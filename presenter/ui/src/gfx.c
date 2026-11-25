@@ -331,6 +331,7 @@ static const char *const kIconNames[] = {
     "mac", "disk", "cd", "folder", "network", "wifi", "web", "wrench", "stop", "caution", "note",
     "display", "sound", "power", "usb", "lock", "bluetooth",
     "startup", "update", "clock", "profiler",          /* the RetroBoot window's panes */
+    "printer",                                         /* Printers pane & dialog */
     "chip",                                            /* its processor meter */
     "monitor_page", "sound_page", "keyboard",          /* Display & Sound's bevel buttons */
     "speaker_low", "speaker_high",                     /* its volume slider (feedback art) */

@@ -23,7 +23,7 @@ const ICON_MAP = {
   mac: 'overview', overview: 'overview', machine: 'machine', display: 'display', sound: 'sound', storage: 'storage',
   network: 'network', wifi: 'network', web: 'network', diagnostics: 'diagnostics', recovery: 'recovery',
   devices: 'devices', note: 'note', caution: 'caution', stop: 'stop', folder: 'folder', disk: 'disk', cd: 'cd',
-  document: 'document', trash: 'trash',
+  document: 'document', trash: 'trash', printer: 'printer',
 };
 
 function url(rel) {

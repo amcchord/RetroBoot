@@ -41,6 +41,7 @@ static const struct { const char *name, *bundle; } kIcons[] = {
     {"lock", "lock"},   /* 16 px only: the Keychain control strip's padlock (rbplatinum 3) */
     /* The RetroBoot window's panes: the matching control panels (update, datetime: rbplatinum 4) */
     {"startup", "machine"}, {"profiler", "diagnostics"}, {"update", "update"}, {"clock", "datetime"},
+    {"printer", "printer"},
     {"chip", "memory"},   /* the computer's processors (About This Computer's meters): Memory's chip */
     /* Display & Sound (rbplatinum 6): Monitors' bevel buttons (40 px) and its display (64 px,
      * as "display"), the Keyboard control panel, Sound's volume slider ends. */

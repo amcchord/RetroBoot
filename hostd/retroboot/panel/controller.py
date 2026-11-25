@@ -518,7 +518,7 @@ class RetroBootWindow(Screen):
                 ui.row("display", "Display & Sound", self._display_summary(), "display"),
                 ui.row("keyboard", "Keyboard & Mouse", self._keyboard_summary(), "keyboard"),
                 ui.row("network", "Network & Web Access", self._network_summary(), "network"),
-                ui.row("printers", "Printers…", self._printer_summary(), "note")]
+                ui.row("printers", "Printers…", self._printer_summary(), "printer")]
         if webproxy and webproxy.available():
             rows.append(ui.row("webhelper", "Modern Web Helper", self._webhelper_summary(), "web"))
         if self.app.bluetooth.capable():
@@ -1592,14 +1592,14 @@ class Printers(Screen):
         active_label = self._active_output_label(target)
 
         rows = [ui.row("pdf", "Save as PDF (RetroBoot Share)",
-                       "Saves PDFs into RetroBoot Share/Printed PDFs", "note", checked=(target == "pdf"))]
+                       "Saves PDFs into RetroBoot Share/Printed PDFs", "printer", checked=(target == "pdf"))]
         for p in self.printers:
             tid = f"cups:{p['name']}"
             label = str(p.get("description") or p["name"])
             state = p.get("state") or "idle"
             uri = p.get("uri") or ""
             detail = f"{state} · {uri}" if uri else str(state)
-            rows.append(ui.row(tid, label, detail, "note", checked=(target == tid)))
+            rows.append(ui.row(tid, label, detail, "printer", checked=(target == tid)))
 
         valid_ids = {r["id"] for r in rows}
         if self.selected not in valid_ids:
@@ -1607,10 +1607,11 @@ class Printers(Screen):
 
         items = [
             ui.columns(
-                ui.icon("note", 32),
+                ui.icon("printer", 32),
                 ui.stack(
-                    ui.text(f"Virtual LaserWriter: {status_word}", "emphasis"),
+                    ui.text(f"Color LaserWriter 12/600 PS: {status_word}", "emphasis"),
                     ui.text(f"Active output: {active_label}", "small"),
+                    ui.text("Mac OS 9 auto-adds “RetroBoot Printer” (10.0.2.2, AppleTalk off).", "small"),
                 ),
             ),
             ui.lst("target", rows, self.selected, rows=5),
@@ -1726,7 +1727,7 @@ class PrinterDiscover(Screen):
                 self.items = []
             else:
                 try:
-                    found = await _maybe_await(cups.discover(timeout=5.0))
+                    found = await _maybe_await(cups.discover(timeout=8.0))
                 except TypeError:
                     found = await _maybe_await(cups.discover())
                 self.items = [dict(d) for d in (found or []) if isinstance(d, dict)]
@@ -1765,7 +1766,7 @@ class PrinterDiscover(Screen):
                     parts.append(str(d["uri"]))
                 if d.get("already_added"):
                     parts.append("Added")
-                rows.append(ui.row(iid, name, " · ".join(parts), "note", disabled=bool(d.get("already_added"))))
+                rows.append(ui.row(iid, name, " · ".join(parts), "printer", disabled=bool(d.get("already_added"))))
             items.append(ui.lst("printer", rows, self.selected, rows=5))
             items.append(ui.checkbox("set_target", "Use as Mac OS default printer", self.set_target))
         else:
@@ -1816,7 +1817,7 @@ class PrinterDiscover(Screen):
                     cups,
                     name=qname,
                     uri=str(sel.get("uri") or ""),
-                    driver=str(sel.get("driver_hint") or "auto"),
+                    driver="auto",
                     description=str(sel.get("model") or sel.get("name") or qname),
                 )
                 if self.set_target:

@@ -36,10 +36,23 @@ DEFAULT_PORTS = {"ipp": 631, "ipps": 631, "lpd": 515, "socket": 9100}
 FORBIDDEN_LOOPBACK_PORTS = frozenset({515, 631, 9100})
 IPP_USB_MIN_PORT = 60000
 SHELL_META_RE = re.compile(r"[;|&$`<>(){}\\\'\"!\x00\r\n\t]")
+SHELL_META_QUERY_RE = re.compile(r"[;|$`<>(){}\\\'\"!\x00\r\n\t]")
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 AVAHI_ESC_RE = re.compile(rb"\\([0-9]{3})")
 AVAHI_SERVICES = ("_ipp._tcp", "_ipps._tcp", "_pdl-datastream._tcp", "_printer._tcp")
 DRIVERS = ("auto", "everywhere", "generic_ps", "generic_pcl", "raw")
+TRANSPORT_PRIORITY = {"ipp": 4, "ipps": 3, "socket": 2, "lpd": 1, "usb": 2, "dnssd": 0}
+
+
+def _is_ipp_uri(uri: str) -> bool:
+    """Return True only when ``uri`` uses an IPP/IPPS transport compatible with ``-m everywhere``."""
+    low = (uri or "").strip().lower()
+    scheme = urlsplit(low).scheme
+    if scheme in ("ipp", "ipps"):
+        return True
+    if scheme == "dnssd":
+        return "._ipp._tcp" in low or "._ipps._tcp" in low
+    return False
 
 
 class CupsError(Exception):
@@ -93,7 +106,13 @@ def validate_printer_uri(uri: str) -> str:
         raise CupsError("Printer URI must be a string.", "invalid_uri")
     if not uri or len(uri) > 512:
         raise CupsError("Printer URI must be between 1 and 512 characters.", "invalid_uri")
-    if any(ch.isspace() for ch in uri) or CONTROL_CHAR_RE.search(uri) or SHELL_META_RE.search(uri):
+    head, has_q, query = uri.partition("?")
+    if (
+        any(ch.isspace() for ch in uri)
+        or CONTROL_CHAR_RE.search(uri)
+        or SHELL_META_RE.search(head)
+        or (has_q and SHELL_META_QUERY_RE.search(query))
+    ):
         raise CupsError("Printer URI contains unsupported whitespace or special characters.", "invalid_uri")
     if "://" not in uri:
         raise CupsError("Printer URI must include a scheme such as ipp:// or socket://.", "invalid_uri")
@@ -282,7 +301,11 @@ showpage
 
 
 async def _exec_subprocess(
-    cmd: list[str], *, timeout: float = 15.0, env: dict[str, str] | None = None
+    cmd: list[str],
+    *,
+    timeout: float = 15.0,
+    env: dict[str, str] | None = None,
+    partial_on_timeout: bool = False,
 ) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -294,16 +317,59 @@ async def _exec_subprocess(
         )
     except FileNotFoundError:
         return 127, "", f"{cmd[0]}: not found"
+
+    if not partial_on_timeout:
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            return 124, "", f"{cmd[0]}: timed out"
+        return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.2, float(timeout))
+    chunks: list[bytes] = []
+    timed_out = False
+    assert proc.stdout is not None
+    while True:
+        rem = deadline - loop.time()
+        if rem <= 0:
+            timed_out = True
+            break
+        try:
+            chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=rem)
+        except asyncio.TimeoutError:
+            timed_out = True
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+
+    out_text = b"".join(chunks).decode("utf-8", "replace")
+    if timed_out:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        return 124, out_text, f"{cmd[0]}: timed out"
+
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        rem = max(0.5, deadline - loop.time())
+        _, err_b = await asyncio.wait_for(proc.communicate(), timeout=rem)
+        err_text = err_b.decode("utf-8", "replace")
     except asyncio.TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
             pass
         await proc.wait()
-        return 124, "", f"{cmd[0]}: timed out"
-    return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+        return 124, out_text, f"{cmd[0]}: timed out"
+    return proc.returncode, out_text, err_text
 
 
 class CupsManager:
@@ -324,18 +390,25 @@ class CupsManager:
         env["LC_ALL"] = "C"
         return env
 
-    async def _run(self, cmd: list[str], timeout: float = 15.0) -> tuple[int, str, str]:
+    async def _run(
+        self, cmd: list[str], timeout: float = 15.0, *, partial_on_timeout: bool = False
+    ) -> tuple[int, str, str]:
         env = self._env()
         if self._runner is None:
-            return await _exec_subprocess(cmd, timeout=timeout, env=env)
+            return await _exec_subprocess(
+                cmd, timeout=timeout, env=env, partial_on_timeout=partial_on_timeout
+            )
         try:
             sig = inspect.signature(self._runner)
-            if "env" in sig.parameters or any(
+            has_varkw = any(
                 p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-            ):
-                res = self._runner(cmd, timeout=timeout, env=env)
-            else:
-                res = self._runner(cmd, timeout=timeout)
+            )
+            kwargs: dict[str, Any] = {"timeout": timeout}
+            if "env" in sig.parameters or has_varkw:
+                kwargs["env"] = env
+            if partial_on_timeout and ("partial_on_timeout" in sig.parameters or has_varkw):
+                kwargs["partial_on_timeout"] = True
+            res = self._runner(cmd, **kwargs)
         except (TypeError, ValueError):
             res = self._runner(cmd, timeout=timeout)
         if inspect.isawaitable(res):
@@ -411,12 +484,12 @@ class CupsManager:
     async def discover(self, timeout: float = 6.0) -> list[dict]:
         timeout = max(1.0, min(float(timeout), 30.0))
         tasks = [
-            self._run(["avahi-browse", "-rtpk", svc], timeout=timeout)
+            self._run(["avahi-browse", "-rtpk", svc], timeout=timeout, partial_on_timeout=True)
             for svc in AVAHI_SERVICES
         ]
-        tasks.append(self._run(["lpinfo", "-h", self.socket_path, "-v"], timeout=timeout))
+        tasks.append(self._run(["lpinfo", "-h", self.socket_path, "-v"], timeout=timeout, partial_on_timeout=True))
         if self._runner is not None or shutil.which("driverless"):
-            tasks.append(self._run(["driverless"], timeout=timeout))
+            tasks.append(self._run(["driverless"], timeout=timeout, partial_on_timeout=True))
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         avahi_results = results[:len(AVAHI_SERVICES)]
@@ -426,15 +499,23 @@ class CupsManager:
         by_uri: dict[str, dict] = {}
         seen_service_proto: dict[tuple[str, str], dict] = {}
 
+        def _candidate_rank(item: dict) -> tuple[int, int, int]:
+            transport = str(item.get("transport") or "").lower()
+            t_prio = TRANSPORT_PRIORITY.get(transport, 0)
+            addr = str(item.get("address") or "").lower()
+            host = (urlsplit(item["uri"]).hostname or "").lower()
+            is_concrete = 1 if (addr and addr != "usb" and not host.endswith(".local")) else 0
+            return (t_prio, is_concrete, int(item.get("_prio", 1)))
+
         def add_candidate(item: dict, *, priority: int = 1) -> None:
             uri = item["uri"]
             try:
                 validate_printer_uri(uri)
             except CupsError:
                 return
+            item["_prio"] = priority
             existing = by_uri.get(uri)
-            if existing is None or priority > existing.get("_prio", 0):
-                item["_prio"] = priority
+            if existing is None or _candidate_rank(item) > _candidate_rank(existing):
                 by_uri[uri] = item
 
         # 1. Parse Avahi resolved rows ('=')
@@ -442,7 +523,9 @@ class CupsManager:
             if isinstance(res, BaseException):
                 continue
             rc, out, _ = res
-            if rc != 0 or not out:
+            if not out:
+                continue
+            if rc not in (0, 124) and "=;" not in out:
                 continue
             for line in out.splitlines():
                 if not line.startswith("=;"):
@@ -453,7 +536,7 @@ class CupsManager:
                 _, iface, proto, raw_name, svc_type, _domain, host, addr, port_str = parts[:9]
                 txt = _parse_avahi_txt(parts[9] if len(parts) > 9 else "")
                 name = _unescape_avahi(raw_name).strip()
-                if not name or "retroboot" in name.lower() and _is_loopback_host(addr):
+                if not name or ("retroboot" in name.lower() and _is_loopback_host(addr)):
                     continue
                 try:
                     port = int(port_str)
@@ -505,13 +588,7 @@ class CupsManager:
                 model = txt.get("ty") or txt.get("usb_mdl") or txt.get("product") or name
                 if model.startswith("(") and model.endswith(")") and len(model) > 2:
                     model = model[1:-1]
-                pdl = txt.get("pdl", "").lower()
-                if transport in ("ipp", "ipps") or any(
-                    fmt in pdl for fmt in ("application/pdf", "image/pwg-raster", "image/urf")
-                ):
-                    driver_hint = "everywhere"
-                else:
-                    driver_hint = "generic_ps"
+                driver_hint = "everywhere" if _is_ipp_uri(uri) else "generic_ps"
 
                 cand = {
                     "id": hashlib.sha1(uri.encode("utf-8")).hexdigest()[:12],
@@ -537,7 +614,7 @@ class CupsManager:
         # 2. Parse lpinfo -v (USB and direct backends)
         if lpinfo_res is not None and not isinstance(lpinfo_res, BaseException):
             rc, out, _ = lpinfo_res
-            if rc == 0 and out:
+            if out and (rc in (0, 124) or "://" in out):
                 for line in out.splitlines():
                     parts = line.strip().split(None, 1)
                     if len(parts) != 2 or "://" not in parts[1]:
@@ -556,7 +633,7 @@ class CupsManager:
                     else:
                         label = unquote(parsed.hostname or uri).split("._", 1)[0]
                         address = parsed.hostname or ""
-                        driver_hint = "everywhere" if scheme in ("ipp", "ipps", "dnssd") else "generic_ps"
+                        driver_hint = "everywhere" if _is_ipp_uri(uri) else "generic_ps"
                     add_candidate({
                         "id": hashlib.sha1(uri.encode("utf-8")).hexdigest()[:12],
                         "name": label,
@@ -571,7 +648,7 @@ class CupsManager:
         # 3. Parse driverless
         if driverless_res is not None and not isinstance(driverless_res, BaseException):
             rc, out, _ = driverless_res
-            if rc == 0 and out:
+            if out and (rc in (0, 124) or "://" in out):
                 for line in out.splitlines():
                     uri = line.strip()
                     if not uri or "://" not in uri:
@@ -591,10 +668,47 @@ class CupsManager:
                         "model": label,
                         "uri": uri,
                         "transport": scheme,
-                        "driver_hint": "everywhere",
+                        "driver_hint": "everywhere" if _is_ipp_uri(uri) else "generic_ps",
                         "address": "USB" if (_is_loopback_host(host) and (parsed.port or 0) >= IPP_USB_MIN_PORT) else host,
                         "already_added": False,
                     }, priority=3 if scheme in ("ipp", "ipps") and not _is_loopback_host(host) else 2)
+
+        # Collapse duplicate network advertisements for the same physical printer
+        # (prefer ipp > ipps > socket > lpd > dnssd, concrete IP over .local).
+        collapsed: list[dict] = []
+        net_by_name: dict[str, int] = {}
+        net_by_addr: dict[str, int] = {}
+        for item in by_uri.values():
+            transport = str(item.get("transport") or "").lower()
+            addr = str(item.get("address") or "").strip().lower()
+            is_usb = transport == "usb" or addr == "usb"
+            if is_usb:
+                collapsed.append(item)
+                continue
+            name_key = slugify_printer_name(item["name"]).lower()
+            addr_key = ""
+            if addr and not addr.endswith(".local"):
+                try:
+                    ipaddress.ip_address(addr.split("%", 1)[0])
+                    addr_key = addr
+                except ValueError:
+                    addr_key = ""
+            match_idx = net_by_addr.get(addr_key) if addr_key else None
+            if match_idx is None:
+                match_idx = net_by_name.get(name_key)
+            if match_idx is None:
+                idx = len(collapsed)
+                collapsed.append(item)
+                net_by_name[name_key] = idx
+                if addr_key:
+                    net_by_addr[addr_key] = idx
+            else:
+                prev = collapsed[match_idx]
+                if _candidate_rank(item) > _candidate_rank(prev):
+                    collapsed[match_idx] = item
+                net_by_name[name_key] = match_idx
+                if addr_key:
+                    net_by_addr[addr_key] = match_idx
 
         try:
             configured = await self.list_printers()
@@ -605,7 +719,7 @@ class CupsManager:
             existing_names = set()
 
         out_list: list[dict] = []
-        for item in by_uri.values():
+        for item in collapsed:
             clean = {k: v for k, v in item.items() if not k.startswith("_")}
             clean["already_added"] = (
                 clean["uri"] in existing_uris
@@ -639,27 +753,34 @@ class CupsManager:
         if clean_loc:
             base += ["-L", clean_loc]
 
-        used_driver = drv
-        if drv == "auto":
-            if scheme in ("ipp", "ipps", "dnssd"):
-                rc, out, err = await self._run(base + ["-m", "everywhere"], timeout=20.0)
-                if rc == 0:
-                    used_driver = "everywhere"
-                else:
-                    log.info("lpadmin everywhere failed for %s (%s); falling back to generic.ppd", queue, err.strip())
-                    rc, out, err = await self._run(base + ["-m", "drv:///sample.drv/generic.ppd"], timeout=20.0)
-                    used_driver = "generic_ps"
-            else:
-                rc, out, err = await self._run(base + ["-m", "drv:///sample.drv/generic.ppd"], timeout=20.0)
-                used_driver = "generic_ps"
-        elif drv == "everywhere":
-            rc, out, err = await self._run(base + ["-m", "everywhere"], timeout=20.0)
+        ipp_ok = _is_ipp_uri(valid_uri)
+        if drv in ("auto", "everywhere"):
+            if drv == "everywhere" and not ipp_ok:
+                log.info("IPP Everywhere requested for non-IPP URI %s (%s); using generic PostScript", queue, scheme)
+            models = (
+                [
+                    ("everywhere", "everywhere"),
+                    ("lsb/usr/cupsfilters/Generic-PDF_Printer-PDF.ppd", "generic_ps"),
+                    ("drv:///sample.drv/generic.ppd", "generic_ps"),
+                ]
+                if ipp_ok
+                else [("drv:///sample.drv/generic.ppd", "generic_ps")]
+            )
         elif drv == "generic_ps":
-            rc, out, err = await self._run(base + ["-m", "drv:///sample.drv/generic.ppd"], timeout=20.0)
+            models = [("drv:///sample.drv/generic.ppd", "generic_ps")]
         elif drv == "generic_pcl":
-            rc, out, err = await self._run(base + ["-m", "drv:///sample.drv/generpcl.ppd"], timeout=20.0)
+            models = [("drv:///sample.drv/generpcl.ppd", "generic_pcl")]
         else:  # raw
-            rc, out, err = await self._run(base + ["-m", "raw"], timeout=20.0)
+            models = [("raw", "raw")]
+
+        rc, out, err = 1, "", ""
+        used_driver = drv
+        for model_arg, label in models:
+            rc, out, err = await self._run(base + ["-m", model_arg], timeout=20.0)
+            if rc == 0:
+                used_driver = label
+                break
+            log.info("lpadmin -m %s failed for %s (%s)", model_arg, queue, err.strip() or out.strip())
 
         if rc != 0:
             raise CupsError(err.strip() or out.strip() or f"Failed to add printer {queue}.", "add_failed")

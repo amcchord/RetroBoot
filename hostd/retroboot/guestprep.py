@@ -64,6 +64,7 @@ class GuestPrep:
         self.options_provider = None
         self.airport_module = None          # rbguestprep.airport (imported on first use)
         self.control_strip_module = None    # rbguestprep.controlstrip (tests inject a fake)
+        self.printer_module = None          # rbguestprep.printer (tests inject a fake)
 
     def module(self):
         if self._mod is None and self._load_error is None:
@@ -321,3 +322,37 @@ class GuestPrep:
             return {"result": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}",
                     "seconds": round(time.monotonic() - t0, 3)}
         return {**res, "seconds": round(time.monotonic() - t0, 3)}
+
+    def _printer_module(self):
+        if self.printer_module is not None:                      # tests inject a fake
+            return self.printer_module
+        if self.module() is None or getattr(self._mod, "RETROBOOT_TEST_FAKE", False):
+            return None
+        try:
+            return importlib.import_module("rbguestprep.printer")
+        except Exception:                                        # an older library
+            return None
+
+    async def ensure_printer(self, image: Path, **kw) -> dict:
+        """Provision the default LPR Desktop Printer on a stopped Mac OS 9 disk
+        (rbguestprep.printer.ensure_printer), preserving any user-created printer.
+        Never raises."""
+        ok, why = self.available()
+        mod = self._printer_module() if ok else None
+        if mod is None:
+            return {"result": UNAVAILABLE, "reason": why or "rbguestprep.printer not available"}
+        t0 = time.monotonic()
+        if hasattr(mod, "state"):
+            try:
+                state_kw = {k: kw[k] for k in ("name",) if k in kw}
+                st = await asyncio.to_thread(mod.state, str(image), **state_kw)
+                if isinstance(st, dict) and st.get("result") in ("retroboot-configured", "existing-printer-kept"):
+                    return {**st, "seconds": round(time.monotonic() - t0, 3)}
+            except Exception:
+                pass
+        res, failed = await self._on_copy(image, mod.ensure_printer, **kw)
+        if failed is not None:
+            return failed
+        if isinstance(res, dict):
+            return {**res, "seconds": round(time.monotonic() - t0, 3)}
+        return {"result": str(res), "seconds": round(time.monotonic() - t0, 3)}

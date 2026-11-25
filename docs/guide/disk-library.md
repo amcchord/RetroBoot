@@ -1,6 +1,6 @@
 # Mac disk library
 
-RetroBoot 3.4.0 includes all **13 ready-to-run Macs** right out of the box—built into both the installer and **Ctrl+Alt+Delete → Download a Mac** with no account, password, or server configuration needed. You can also download archives manually with SHA-256 verification from the [RetroBoot downloads portal](https://mcchord.net/retroboot-downloads/#advanced).
+RetroBoot 3.4.1 includes all **13 ready-to-run Macs** right out of the box—built into both the installer and **Ctrl+Alt+Delete → Download a Mac** with no account, password, or server configuration needed. You can also download archives manually with SHA-256 verification from the [RetroBoot downloads portal](https://mcchord.net/retroboot-downloads/#advanced).
 
 ![Download a Mac catalog selector](../images/download-a-mac.png)
 

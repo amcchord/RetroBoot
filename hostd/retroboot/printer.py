@@ -516,8 +516,10 @@ class PrintServer:
                     sub = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=60)
                 except asyncio.IncompleteReadError:
                     break
-                if not sub:
-                    break
+                # Classic Mac OS 9 Desktop PrintMonitor can emit leading NUL padding before subcommands.
+                sub = sub.lstrip(b"\x00")
+                if not sub or sub == b"\n":
+                    continue
                 stype = sub[0]
                 if stype == 1:  # abort
                     writer.write(b"\x00")
@@ -545,10 +547,44 @@ class PrintServer:
                 writer.write(b"\x00")
                 await writer.drain()
                 if count == 0:
-                    data = await reader.read(MAX_JOB_BYTES)
+                    chunks = []
+                    total = 0
+                    while True:
+                        chunk = await asyncio.wait_for(reader.read(65536), timeout=30)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > MAX_JOB_BYTES:
+                            raise PrintError("LPD print job exceeded size limit")
+                    data = b"".join(chunks)
                 else:
-                    data = await asyncio.wait_for(reader.readexactly(count), timeout=120)
-                    term = await asyncio.wait_for(reader.readexactly(1), timeout=15)
+                    buf = bytearray()
+                    eof_early = False
+                    while len(buf) < count:
+                        ch = await asyncio.wait_for(reader.read(min(65536, count - len(buf))), timeout=120)
+                        if not ch:
+                            eof_early = True
+                            break
+                        # Classic Mac OS 9 Desktop PrintMonitor can re-send the subcommand header line
+                        # right after receiving 0x00 and wait for a second 0x00 ACK before sending data.
+                        if not buf and ch.startswith(sub):
+                            writer.write(b"\x00")
+                            await writer.drain()
+                            rest = ch[len(sub):]
+                            if rest:
+                                buf += rest
+                            continue
+                        buf += ch
+                    if len(buf) != count and eof_early:
+                        raise asyncio.IncompleteReadError(bytes(buf), count)
+                    data = bytes(buf)
+                    try:
+                        term = await asyncio.wait_for(reader.readexactly(1), timeout=15)
+                    except asyncio.IncompleteReadError as exc:
+                        if exc.partial:
+                            raise
+                        term = b"\x00"
                     if term != b"\x00":
                         writer.write(b"\x01")
                         await writer.drain()
@@ -562,7 +598,7 @@ class PrintServer:
             if payloads:
                 await self.process_job(b"".join(payloads), job_name, source="lpd", queue=queue)
         except Exception as exc:
-            log.warning("LPD print error: %s", exc)
+            log.warning("LPD print error: %r", exc)
         finally:
             try:
                 writer.close()

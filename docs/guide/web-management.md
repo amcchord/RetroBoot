@@ -42,7 +42,7 @@ The window on the left (or the **Go** menu on a phone) lists the pages:
 | **Machine & Startup** | Default Mac, per-Mac memory & graphics defaults, processor, time zone, battery display, automatic start and startup indicator |
 | **Display & Input** | Display scaling, pixel size, graphics card (3D acceleration), rotation, resolution, keyboard swaps, gamepad preset (`Arrows` / `WASD` / `Off`), natural scrolling and mouse DPI |
 | **Sound** | Volume, mute, startup chime style (**Automatic**, **Mac OS 9**, **Quadra**, **Power Mac**, **Mac II**, **Macintosh SE**, **Off**), output selector & **Test Sound** |
-| **Printers** | Configure physical/network/USB **CUPS** printers, switch Mac output between **Save as PDF** and a printer queue, optional PDF copy, and test pages |
+| **Printers** | Configure physical/network/USB **CUPS** printers, switch Mac output between **Save as PDF** and a printer queue, optional PDF copy, and test pages (Mac OS 9 automatically configures **RetroBoot Printer** as an **Apple Color LaserWriter 12/600 PS** over TCP/IP LPR `10.0.2.2` with AppleTalk kept off) |
 | **Storage & Media** | Your Macs, automatic **Fresh Install** & manual checkpoints, 13-Mac catalog imports, USB drive sharing, and CD-ROM disc |
 | **Network** | Quick-jump sections, **Modern Web Helper** with **Sites not to help (whitelist)** passthrough, Wi-Fi, Mac OS AirPort networking, and the remote screen |
 | **Diagnostics** | Versions, screenshots, the startup timeline, logs and evidence bundles |

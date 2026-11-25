@@ -82,7 +82,9 @@ class ValidationTests(unittest.TestCase):
             "socket://192.168.1.51:9100",
             "lpd://192.168.1.52/BINARY_P1",
             "usb://HP/LaserJet%20P1102w?serial=0000123",
+            "usb://Brother/MFC-L8900CDW%20series?serial=XYZ&interface=1",
             "dnssd://Brother%20HL._ipp._tcp.local/?uuid=1234-5678",
+            "dnssd://Brother%20MFC-L8900CDW%20series._ipp._tcp.local/?uuid=1234-5678&mdl=MFC-L8900CDW",
             "ipp://127.0.0.1:60000/ipp/print",
             "ipps://localhost:60001/ipp/print",
         ):
@@ -272,6 +274,95 @@ class CupsManagerTests(unittest.IsolatedAsyncioTestCase):
             await mgr.remove_printer("Missing")
         self.assertEqual(ctx.exception.code, "not_found")
 
+    async def test_brother_mfc_l8900cdw_dedup_everywhere_guard_and_partial_timeout(self):
+        calls: list[list[str]] = []
+
+        avahi_ipp = (
+            "=;eth0;IPv4;Brother\\032MFC-L8900CDW\\032series;_ipp._tcp;local;"
+            "brother-mfc.local;192.168.1.88;631;\"rp=ipp/print\" \"ty=Brother MFC-L8900CDW series\" "
+            "\"pdl=application/pdf,image/pwg-raster,image/urf\"\n"
+        )
+        avahi_ipps = (
+            "=;eth0;IPv4;Brother\\032MFC-L8900CDW\\032series;_ipps._tcp;local;"
+            "brother-mfc.local;192.168.1.88;443;\"rp=ipp/print\" \"ty=Brother MFC-L8900CDW series\"\n"
+        )
+        avahi_pdl = (
+            "=;eth0;IPv4;Brother\\032MFC-L8900CDW\\032series;_pdl-datastream._tcp;local;"
+            "brother-mfc.local;192.168.1.88;9100;\"ty=Brother MFC-L8900CDW series\" "
+            "\"pdl=application/pdf,application/postscript\"\n"
+        )
+        avahi_lpd = (
+            "=;eth0;IPv4;Brother\\032MFC-L8900CDW\\032series;_printer._tcp;local;"
+            "brother-mfc.local;192.168.1.88;515;\"rp=BINARY_P1\" \"ty=Brother MFC-L8900CDW series\"\n"
+        )
+        lpinfo_partial = (
+            "network dnssd://Brother%20MFC-L8900CDW%20series._pdl-datastream._tcp.local/?uuid=abc&mdl=MFC-L8900CDW\n"
+            "network dnssd://Brother%20MFC-L8900CDW%20series._ipp._tcp.local/?uuid=abc&mdl=MFC-L8900CDW\n"
+        )
+
+        async def fake_run(cmd, timeout=15.0, env=None, partial_on_timeout=False):
+            calls.append(list(cmd))
+            prog = cmd[0]
+            if prog == "lpstat":
+                return 1, "", "lpstat: No destinations added."
+            if prog == "avahi-browse":
+                svc = cmd[-1]
+                if svc == "_ipp._tcp":
+                    return 0, avahi_ipp, ""
+                if svc == "_ipps._tcp":
+                    return 0, avahi_ipps, ""
+                if svc == "_pdl-datastream._tcp":
+                    return 0, avahi_pdl, ""
+                if svc == "_printer._tcp":
+                    return 0, avahi_lpd, ""
+            if prog == "lpinfo":
+                # Simulate snmp backend timing out AFTER emitting partial output
+                return (124 if partial_on_timeout else 0), lpinfo_partial, "lpinfo: timed out"
+            if prog == "driverless":
+                return 124, "ipp://Brother%20MFC-L8900CDW%20series._ipp._tcp.local/ipp/print\n", "driverless: timed out"
+            if prog == "lpadmin":
+                if "-m" in cmd:
+                    model = cmd[cmd.index("-m") + 1]
+                    uri = cmd[cmd.index("-v") + 1]
+                    if model == "everywhere" and not uri.startswith(("ipp://", "ipps://")):
+                        return 1, "", "lpadmin: IPP Everywhere driver requires an IPP connection."
+                return 0, "", ""
+            if prog in ("cupsenable", "cupsaccept"):
+                return 0, "", ""
+            return 0, "", ""
+
+        mgr = cups.CupsManager(socket_path="/run/cups/cups.sock", runner=fake_run)
+        found = await mgr.discover(timeout=5.0)
+        # Collapsed into ONE single best IPP candidate for MFC-L8900CDW!
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["uri"], "ipp://192.168.1.88/ipp/print")
+        self.assertEqual(found[0]["transport"], "ipp")
+        self.assertEqual(found[0]["driver_hint"], "everywhere")
+
+        # Even if lpinfo/driverless timed out (rc=124) without avahi, partial discovery still succeeds:
+        async def avahi_timeout_run(cmd, timeout=15.0, env=None, partial_on_timeout=False):
+            if cmd[0] == "avahi-browse":
+                return 124, "", "avahi-browse: timed out"
+            return await fake_run(cmd, timeout=timeout, env=env, partial_on_timeout=partial_on_timeout)
+
+        mgr_partial = cups.CupsManager(socket_path="/run/cups/cups.sock", runner=avahi_timeout_run)
+        found_partial = await mgr_partial.discover(timeout=5.0)
+        self.assertEqual(len(found_partial), 1)
+        self.assertEqual(found_partial[0]["transport"], "ipp")
+
+        # Requesting driver="everywhere" on a socket:// or non-IPP dnssd:// URI must NEVER fail with IPP error:
+        res_sock = await mgr.add_printer("MFC_Socket", "socket://192.168.1.88:9100", driver="everywhere")
+        self.assertEqual(res_sock["driver"], "generic_ps")
+        res_dnssd = await mgr.add_printer(
+            "MFC_DNSSD",
+            "dnssd://Brother%20MFC-L8900CDW%20series._pdl-datastream._tcp.local/?uuid=abc&mdl=MFC-L8900CDW",
+            driver="everywhere",
+        )
+        self.assertEqual(res_dnssd["driver"], "generic_ps")
+        # Confirm `-m everywhere` was never even passed for those non-IPP URIs
+        lp_models = [c[c.index("-m") + 1] for c in calls if c[0] == "lpadmin" and "-m" in c]
+        self.assertEqual(lp_models, ["drv:///sample.drv/generic.ppd", "drv:///sample.drv/generic.ppd"])
+
 
 class PrintServerRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_lpd_raw_ipp_eot_and_cups_routing(self):
@@ -413,6 +504,74 @@ class PrintServerRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(test_res["source"], "test")
         self.assertGreaterEqual(len(srv.list_jobs()), 4)
         self.assertEqual(srv.public()["target"], "cups:Brother_HL")
+
+    async def test_lpd_macos9_duplicate_subcommand_and_count_zero_streaming(self):
+        td, root = helpers.scratch()
+        self.addCleanup(td.cleanup)
+        converted: list[bytes] = []
+
+        async def mock_conv(ps: bytes, out_pdf: Path):
+            converted.append(ps)
+            out_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+        srv = printer.PrintServer(root, enabled=True, lpd_port=0, ipp_port=0, converter=mock_conv)
+        await srv.start()
+        self.addCleanup(srv.stop)
+
+        # 1. Simulate Mac OS 9 Desktop PrintMonitor re-sending subcommands after 0x00 ACK
+        r, w = await asyncio.open_connection("127.0.0.1", srv.bound_lpd_port)
+        w.write(b"\x02retroboot\n")
+        await w.drain()
+        self.assertEqual(await r.readexactly(1), b"\x00")
+
+        ctrl = b"H\nP\nldfA254\nUdfA254\nNPrintQA.txt\nJPrintQA.txt\n"
+        cf_sub = f"\x02{len(ctrl)} cfA254\n".encode()
+        w.write(cf_sub)
+        await w.drain()
+        self.assertEqual(await r.readexactly(1), b"\x00")
+        w.write(cf_sub)
+        await w.drain()
+        self.assertEqual(await r.readexactly(1), b"\x00")
+        w.write(ctrl + b"\x00")
+        await w.drain()
+        self.assertEqual(await r.readexactly(1), b"\x00")
+
+        ps_body = b"%!PS-Adobe-3.0\n%%Title: PrintQA\nshowpage\n%%EOF\n"
+        df_sub = f"\x03{len(ps_body)} dfA254\n".encode()
+        w.write(df_sub)
+        await w.drain()
+        self.assertEqual(await r.readexactly(1), b"\x00")
+        w.write(df_sub)
+        await w.drain()
+        self.assertEqual(await r.readexactly(1), b"\x00")
+        w.write(ps_body + b"\x00")
+        await w.drain()
+        self.assertEqual(await r.readexactly(1), b"\x00")
+        w.write(b"\x00")  # trailing NUL before FIN
+        w.close()
+        await w.wait_closed()
+        await helpers.wait_for(lambda: srv.jobs_count >= 1, 5, 0.02, "Mac OS 9 LPD dup-sub")
+        self.assertIn(b"PrintQA", converted[0])
+
+        # 2. Simulate count == 0 multi-chunk EOF streaming
+        r2, w2 = await asyncio.open_connection("127.0.0.1", srv.bound_lpd_port)
+        w2.write(b"\x02retroboot\n")
+        await w2.drain()
+        self.assertEqual(await r2.readexactly(1), b"\x00")
+        w2.write(b"\x030 dfA255\n")
+        await w2.drain()
+        self.assertEqual(await r2.readexactly(1), b"\x00")
+        w2.write(b"%!PS-Adobe-3.0\n" + b"%chunk1\n" * 5000)
+        await w2.drain()
+        await asyncio.sleep(0.02)
+        w2.write(b"%chunk2\n" * 5000 + b"\n%%EOF\n")
+        await w2.drain()
+        w2.write_eof()
+        self.assertEqual(await r2.readexactly(1), b"\x00")
+        w2.close()
+        await w2.wait_closed()
+        await helpers.wait_for(lambda: srv.jobs_count >= 2, 5, 0.02, "LPD count=0 EOF streaming")
+        self.assertIn(b"%chunk2", converted[1])
 
 
 class PrinterWebApiTests(unittest.IsolatedAsyncioTestCase):

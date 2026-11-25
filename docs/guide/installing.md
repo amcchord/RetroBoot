@@ -8,10 +8,10 @@ All **13 ready-to-run Macs** are built into RetroBoot's catalog—no extra setup
 
 ## Quick 3-step overview
 
-1. **Download:** Pick your installer from the [RetroBoot 3.4.0 downloads portal](https://mcchord.net/retroboot-downloads/):
-   - **x86-64 PC or Intel Mac:** download `retroboot-installer-3.4.0-product.iso` (USB/DVD) or `retroboot-installer-3.4.0-universal-product.img.xz` (universal USB/SD image for both x86 PCs and Raspberry Pi 4/5).
-   - **Raspberry Pi 4, Pi 5, Pi 400, CM4:** open **Raspberry Pi Imager**, add custom repository URL `https://mcchord.net/retroboot-downloads/rpi-imager.json` (or download `retroboot-3.4.0-rpi-product.img.xz` directly).
-   - **Raspberry Pi Zero 2 W:** download `retroboot-3.4.0-rpi-zero2w-product.img.xz` (tuned for 512 MB boards with System 7.5.5 and Mac OS 8.1; requires a USB OTG adapter/hub for keyboard & mouse).
+1. **Download:** Pick your installer from the [RetroBoot 3.4.1 downloads portal](https://mcchord.net/retroboot-downloads/):
+   - **x86-64 PC or Intel Mac:** download `retroboot-installer-3.4.1-product.iso` (USB/DVD) or `retroboot-installer-3.4.1-universal-product.img.xz` (universal USB/SD image for both x86 PCs and Raspberry Pi 4/5).
+   - **Raspberry Pi 4, Pi 5, Pi 400, CM4:** open **Raspberry Pi Imager**, add custom repository URL `https://mcchord.net/retroboot-downloads/rpi-imager.json` (or download `retroboot-3.4.1-rpi-product.img.xz` directly).
+   - **Raspberry Pi Zero 2 W:** download `retroboot-3.4.1-rpi-zero2w-product.img.xz` (tuned for 512 MB boards with System 7.5.5 and Mac OS 8.1; requires a USB OTG adapter/hub for keyboard & mouse).
 2. **Flash to USB or SD:** Use **balenaEtcher**, **Raspberry Pi Imager**, `dd` ([terminal examples](../dev/testing-other-hardware.md#write-the-stick)), or **Rufus in DD Image mode**.
    - **Windows Rufus tip:** When Rufus prompts for image mode, always select **Write in DD Image mode** (ISO mode breaks dual UEFI/BIOS boot and the `RBINSTEFI` setup folder).
    - **macOS popup warning:** Right after flashing finishes, macOS may say *"The disk you inserted was not readable by this computer."* Always click **Ignore** (or **Eject**) — **never click Initialize**, or it will erase the card/USB stick.

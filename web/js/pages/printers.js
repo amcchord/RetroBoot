@@ -180,7 +180,8 @@ export function render() {
       h(
         'div',
         { class: 'state-line' },
-        h('span', null, 'Virtual LaserWriter:'),
+        h('span', null, 'Emulated Printer:'),
+        h('strong', null, 'Color LaserWriter 12/600 PS'),
         v.running ? badge('Running', 'ok') : badge('Off', 'off'),
         v.jobs ? h('span', { class: 'muted small' }, `${v.jobs} job${v.jobs === 1 ? '' : 's'} processed`) : null,
       ),
@@ -207,16 +208,30 @@ export function render() {
         { class: 'printer-toggles' },
         settingToggle('printer.enabled', 'Enable Mac printing', v.enabled !== false),
         settingToggle('printer.keep_pdf', 'Also save a PDF copy in RetroBoot Share', v.keep_pdf),
+        settingToggle(
+          'printer.mac_auto_setup',
+          'Auto-configure Mac OS 9 Desktop Printer',
+          true,
+          'Creates “RetroBoot Printer” (Color LaserWriter 12/600 PS via TCP/IP LPR, keeping AppleTalk off for fast boot).',
+        ),
+      ),
+      h(
+        'div',
+        { class: 'subsection' },
+        h('h4', { class: 'sub-title' }, 'How to print from Mac OS'),
+        h('p', { class: 'muted small' }, 'Mac OS 9 starts with “RetroBoot Printer” (Color LaserWriter 12/600 PS) already selected — just choose File → Print. AppleTalk stays off so startup stays fast.'),
+        h('p', { class: 'muted small' }, `Mac OS X: Printer Setup Utility → Add → IP Printer → HP JetDirect - Socket (or IPP) at ${guestIp}, model Apple Color LaserWriter 12/600 PS.`),
       ),
       h(
         'details',
         { class: 'disclosure' },
-        h('summary', null, 'Manual setup info (Desktop Printer Utility)'),
+        h('summary', null, 'Manual setup addresses & Desktop Printer Utility'),
         h(
           'div',
           { class: 'disclosure-body' },
           kv(
             [
+              ['Emulated model', h('strong', null, 'Apple Color LaserWriter 12/600 PS')],
               ['Printer address', h('span', { class: 'with-copy' }, h('code', null, guestIp), copyButton(guestIp, 'Copy', { what: 'address', compact: true }))],
               ['LPD queue', h('span', null, h('code', null, queue), h('span', { class: 'muted small' }, ` (port ${lpdPort})`))],
               ['IPP URL', h('span', { class: 'with-copy' }, h('code', null, ippUrl), copyButton(ippUrl, 'Copy', { what: 'IPP URL', compact: true }))],
@@ -224,7 +239,7 @@ export function render() {
             ],
             'kv-compact',
           ),
-          h('p', { class: 'muted small' }, `In Mac OS 9, open Desktop Printer Utility → Printer (LPR), select a PostScript printer, and enter ${guestIp} with queue ${queue}.`),
+          h('p', { class: 'muted small' }, `If setting up manually in Mac OS 9: open Desktop Printer Utility → Printer (LPR), click Change under PostScript Printer Description (PPD) and pick LaserWriter Color 12/600 PS, then click Change under Internet Printer and enter ${guestIp} with queue ${queue}.`),
         ),
       ),
     );
@@ -529,7 +544,7 @@ export function render() {
         name: d.name,
         description: d.model || d.name,
         uri: d.uri,
-        driver: d.driver_hint || 'auto',
+        driver: 'auto',
       };
       await post('/api/v1/printers', body);
       toast(`Added printer “${d.name || d.model}”.`, { level: 'ok' });

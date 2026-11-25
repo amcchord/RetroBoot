@@ -526,6 +526,12 @@ class Supervisor:
         await self.app.graphics.place_control_strip(machine)   # the strip follows a new Mac screen
         await self.app.ensure_guest_isolation()          # Mac OS can't reach this computer's services
         await self.app.platinum.ensure(machine.disk)     # Platinum web/panel assets, once, disk idle
+        if not getattr(machine, "osx", False) and not getattr(machine, "quadra", False):
+            applied = getattr(getattr(self.app, "settings", None), "applied", {}) or {}
+            if applied.get("printer.enabled", True) and applied.get("printer.mac_auto_setup", True):
+                gp = getattr(self.app, "guestprep", None)
+                if gp is not None and hasattr(gp, "ensure_printer"):
+                    await gp.ensure_printer(machine.disk)
         return notice
 
     async def _copy_pre_fsck_disk(self, src: Path, dst: Path) -> str:

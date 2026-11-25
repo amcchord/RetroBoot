@@ -62,9 +62,10 @@ ICONS = {
     "general": ("file", CP + ":General Controls", "APPC"),
     "appearance": ("file", CP + ":Appearance", "APPC"),
     "memory": ("file", CP + ":Memory", "APPC"),
-    # The classic panel's RetroBoot window (rbplatinum 4): Software Update and Date & Time.
+    # The classic panel's RetroBoot window (rbplatinum 4): Software Update, Date & Time, Printers (7).
     "update": ("file", CP + ":Software Update", "APPC"),
     "datetime": ("file", CP + ":Date & Time", "APPC"),
+    "printer": ("file", "System Folder:Extensions:LaserWriter 8", "PRER"),
     "folder": ("icns", SYSRES, -3999),
     "document": ("icns", SYSRES, -4000),
     "disk": ("icns", SYSRES, -3995),
