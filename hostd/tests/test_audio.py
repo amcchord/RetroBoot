@@ -1044,3 +1044,86 @@ class Retroboot310MixerAndOutputTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(audio.choose(root, output="bluetooth", bluetooth_sinks=bt)["pw_sink"],
                              "bluez_output.AA_BB_CC.1")
             self.assertTrue(audio.supports_48khz(audio.choose(root, output="speakers"), root))
+
+    async def test_mixerless_hdmi_and_usb_use_softvol(self):
+        from retroboot.network import AudioMixer
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            sysfs = make_z13(root)
+            asound = root / "asound"
+
+            def no_hw_mixer(card_id):
+                return card_id == "Generic_1"  # analog ALC287 has Master; HDMI Generic does not
+
+            hdmi = audio.choose(asound, sys_root=sysfs, output="hdmi",
+                                has_hw_mixer=no_hw_mixer, softvol_ok=True)
+            self.assertEqual(hdmi["alsa"], "rb_softvol_keepalive:CARD=Generic,DEV=7")
+            self.assertTrue(hdmi["needs_softvol"])
+
+            spk = audio.choose(asound, sys_root=sysfs, output="speakers",
+                               has_hw_mixer=no_hw_mixer, softvol_ok=True)
+            self.assertEqual(spk["alsa"], "rb_keepalive:CARD=Generic_1,DEV=0")
+            self.assertFalse(spk.get("needs_softvol"))
+
+            usb_root = root / "usb"
+            usb_root.mkdir()
+            make_tree(usb_root, hdmi_sink=False, analog=False, usb_playback=True)
+            usb = audio.choose(usb_root, output="usb",
+                               has_hw_mixer=lambda _cid: False, softvol_ok=True)
+            self.assertEqual(usb["alsa"], "rb_softvol:CARD=POROSVOC,DEV=0")
+            self.assertTrue(usb["needs_softvol"])
+
+        # card_has_hw_mixer ignores RetroBoot softvol control itself so later launches keep softvol.
+        import subprocess
+
+        def fake_run(argv, **kw):
+            if "scontrols" in argv:
+                return subprocess.CompletedProcess(argv, 0, "Simple mixer control 'IEC958',0\nSimple mixer control 'RetroBoot',0\n", "")
+            if argv[-2:] == ["sget", "RetroBoot"]:
+                return subprocess.CompletedProcess(argv, 0, "Simple mixer control 'RetroBoot',0\n  Capabilities: volume\n", "")
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        self.assertFalse(audio.card_has_hw_mixer("Generic_1", run=fake_run))
+
+        # ensure_softvol primes the control once via aplay -D rb_softvol_keepalive:...
+        audio._rb_softvol_done.clear()
+        primed = []
+        seen = {"created": False}
+
+        def prime_run(argv, **kw):
+            primed.append(argv)
+            if argv[0] == "aplay":
+                seen["created"] = True
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if "scontrols" in argv:
+                out = "Simple mixer control 'IEC958',0\n"
+                if seen["created"]:
+                    out += "Simple mixer control 'RetroBoot',0\n"
+                return subprocess.CompletedProcess(argv, 0, out, "")
+            return subprocess.CompletedProcess(argv, 1, "", "")
+
+        self.assertTrue(audio.ensure_softvol({"card_id": "Generic_1", "alsa": "rb_softvol_keepalive:CARD=Generic_1,DEV=7"},
+                                             run=prime_run))
+        self.assertTrue(any(c[0] == "aplay" and "rb_softvol_keepalive:CARD=Generic_1,DEV=7" in c for c in primed))
+
+        # AudioMixer probes RetroBoot softvol control with -M dB scaling and 0% mute.
+        amixer_calls = []
+
+        async def run_amixer(argv, timeout=None):
+            amixer_calls.append(argv)
+            if argv[-2:] == ["sget", "RetroBoot"]:
+                return 0, ("Simple mixer control 'RetroBoot',0\n"
+                           "  Capabilities: volume\n"
+                           "  Limits: 0 - 255\n"
+                           "  Front Left: 255 [100%] [0.00dB]\n"), ""
+            return 0, "", ""
+
+        m = AudioMixer(runner=run_amixer)
+        self.assertTrue(await m.probe("Generic_1", "RetroBoot", detect_switch=True))
+        self.assertTrue(m.mapped)
+        self.assertFalse(m.has_switch)
+        await m.set_volume(70)
+        self.assertEqual(amixer_calls[-1], ["amixer", "-c", "Generic_1", "-M", "-q", "sset", "RetroBoot", "70%"])
+        await m.set_mute(True)
+        self.assertEqual(amixer_calls[-1], ["amixer", "-c", "Generic_1", "-M", "-q", "sset", "RetroBoot", "0%"])
+        await m.set_mute(False)
+        self.assertEqual(amixer_calls[-1], ["amixer", "-c", "Generic_1", "-M", "-q", "sset", "RetroBoot", "70%"])

@@ -44,6 +44,10 @@ CARRY_FILES = ("etc/hostname", "etc/hosts", "etc/machine-info", "etc/machine-id"
                "var/lib/alsa/asound.state")
 CARRY_GLOBS = ("etc/ssh/ssh_host_*",)
 CARRY_DIRS = ("var/lib/NetworkManager", "var/lib/systemd/backlight", "var/lib/systemd/rfkill", "root/.ssh")
+CLEAN_CARRY_FILES = ("etc/machine-id", "var/lib/systemd/random-seed", "var/lib/systemd/timesync/clock")
+CLEAN_CARRY_DIRS = ("var/lib/NetworkManager", "root/.ssh")
+DEFAULT_HOSTNAME = "retroboot"
+DEFAULT_HOSTS = "127.0.0.1\tlocalhost\n127.0.1.1\tretroboot\n::1\t\tlocalhost ip6-localhost ip6-loopback\n"
 # Copied only when the target slot has none (an image that ships its own keeps it).  hostd moves
 # per-device keys into its RBDATA overlay (config.py), so this is belt and braces for tools that
 # read /etc/retroboot/hostd.json directly.
@@ -51,6 +55,11 @@ CARRY_IF_ABSENT = ("etc/retroboot/hostd.json",)
 NM_LEGACY_DIR = "etc/NetworkManager/system-connections"
 NM_CONF_DIR = "etc/NetworkManager/conf.d"
 DATA_MOUNT = "/var/lib/retroboot"
+
+CLEAN_CLEAR_DIRS = ("machines", "checkpoints", "share", "media", "roms", "downloads", "assets", "cache",
+                    "bluetooth", "cups", "logs/evidence", "logs/bundles", "update/settings", "update/incoming")
+CLEAN_KEEP_CONFIG = frozenset({"lab-auth.env", "hostd.local.json", "hostd.local.migrated"})
+CLEAN_KEEP_STATE = frozenset({"growdata.done", "microcode.json", "boot-network.json"})
 
 
 class WriteError(Exception):
@@ -233,11 +242,31 @@ def _merge_authorized_keys(ssh_dir: Path, shipped: list[str]) -> None:
         pass
 
 
-def carry_state(src_root: Path, dst_root: Path, data_dir: Path = Path(DATA_MOUNT)) -> list[str]:
+def _remove_entry(p: Path) -> None:
+    if p.is_dir() and not p.is_symlink():
+        shutil.rmtree(p)
+    elif p.is_symlink() or p.exists():
+        p.unlink()
+
+
+def _clear_dir_contents(path: Path) -> bool:
+    """Remove every child inside ``path`` while keeping ``path`` itself (and any mountpoint)."""
+    if not path.is_dir() or path.is_symlink():
+        return False
+    removed = False
+    for child in list(path.iterdir()):
+        _remove_entry(child)
+        removed = True
+    return removed
+
+
+def carry_state(src_root: Path, dst_root: Path, data_dir: Path = Path(DATA_MOUNT), *, clean: bool = False) -> list[str]:
     """Copy this computer's host state from src_root into dst_root.  Returns what was copied."""
     src_root, dst_root = Path(src_root), Path(dst_root)
     done = []
-    for rel in CARRY_FILES:
+    files = CLEAN_CARRY_FILES if clean else CARRY_FILES
+    dirs = CLEAN_CARRY_DIRS if clean else CARRY_DIRS
+    for rel in files:
         s = src_root / rel
         if s.is_symlink() or s.is_file():
             _copy_entry(s, dst_root / rel)
@@ -253,7 +282,7 @@ def carry_state(src_root: Path, dst_root: Path, data_dir: Path = Path(DATA_MOUNT
             if fnmatch.fnmatch(s.name, os.path.basename(pattern)):
                 _copy_entry(s, dst_root / d / s.name)
                 done.append(f"{d}/{s.name}")
-    for rel in CARRY_DIRS:
+    for rel in dirs:
         s = src_root / rel
         if s.is_dir() and not s.is_symlink():
             shipped = _authorized_keys(dst_root / rel) if rel == "root/.ssh" else []
@@ -267,7 +296,56 @@ def carry_state(src_root: Path, dst_root: Path, data_dir: Path = Path(DATA_MOUNT
             _copy_entry(s, d)
             done.append(rel)
     done += merge_wifi(src_root, dst_root, data_dir)
+    if clean:
+        etc = dst_root / "etc"
+        etc.mkdir(parents=True, exist_ok=True)
+        (etc / "hostname").write_text(DEFAULT_HOSTNAME + "\n")
+        (etc / "hosts").write_text(DEFAULT_HOSTS)
+        _remove_entry(etc / "machine-info")
+        (etc / "timezone").write_text("Etc/UTC\n")
+        _remove_entry(etc / "localtime")
+        os.symlink("/usr/share/zoneinfo/Etc/UTC", etc / "localtime")
+        for rel in ("var/lib/alsa/asound.state", "var/lib/systemd/backlight", "var/lib/systemd/rfkill"):
+            _remove_entry(dst_root / rel)
     return done
+
+
+def clean_reset_data(data_dir: Path, esp: Path | None = None, *, boot_mode: str = "grub") -> dict:
+    """Erase machines, settings, pairings, media, caches, and display state on RBDATA/ESP
+    while keeping saved Wi-Fi networks, update state, lab-auth, device overlay, and journals."""
+    data_dir = Path(data_dir)
+    cleared_dirs: list[str] = []
+    removed_config: list[str] = []
+    removed_state: list[str] = []
+    removed_esp: list[str] = []
+    for rel in CLEAN_CLEAR_DIRS:
+        if _clear_dir_contents(data_dir / rel):
+            cleared_dirs.append(rel)
+    cfg_dir = data_dir / "config"
+    if cfg_dir.is_dir() and not cfg_dir.is_symlink():
+        for child in sorted(cfg_dir.iterdir()):
+            if child.name not in CLEAN_KEEP_CONFIG:
+                _remove_entry(child)
+                removed_config.append(child.name)
+    state_dir = data_dir / "state"
+    if state_dir.is_dir() and not state_dir.is_symlink():
+        for child in sorted(state_dir.iterdir()):
+            if child.name not in CLEAN_KEEP_STATE:
+                _remove_entry(child)
+                removed_state.append(child.name)
+    if esp is not None and boot_mode == "grub":
+        rbdir = Path(esp) / "grub" / "retroboot"
+        if rbdir.is_dir() and not rbdir.is_symlink():
+            for child in sorted(rbdir.iterdir()):
+                name = child.name
+                is_generated_checker = (name.startswith("checker-") and name.endswith(".png")
+                                        and not name.startswith("checker-default"))
+                is_startup_art = name.startswith("startup-") and (name.endswith(".cpio") or name.endswith(".rbi"))
+                if name == "display.cfg" or is_generated_checker or is_startup_art:
+                    _remove_entry(child)
+                    removed_esp.append(name)
+    return {"cleared_dirs": cleared_dirs, "removed_config": removed_config,
+            "removed_state": removed_state, "removed_esp": removed_esp}
 
 
 def merge_wifi(src_root: Path, dst_root: Path, data_dir: Path = Path(DATA_MOUNT)) -> list[str]:
@@ -562,7 +640,7 @@ class SlotWriter:
             raise WriteError("RetroBoot isn't running from one of its system slots.", "no-slot")
         return slotenv.other(cur)
 
-    def write(self, bundle: Bundle, progress: Progress) -> dict:
+    def write(self, bundle: Bundle, progress: Progress, *, clean: bool = False) -> dict:
         """The verified bundle's root into the other slot."""
         m = bundle.manifest
         if not m:
@@ -573,16 +651,17 @@ class SlotWriter:
             self.ops.mount_squashfs(str(bundle.path), off, sz, path)
             return path
         return self._write(mount_source, True, bundle.file_list(), m["version"], m["build_id"], m["flavor"],
-                           m["kernel"]["cmdline"], m["root"]["installed_bytes"], progress)
+                           m["kernel"]["cmdline"], m["root"]["installed_bytes"], progress, clean=clean)
 
     def write_tree(self, src: Path, entries: list, release: dict, cmdline: str, installed_bytes: int,
-                   progress: Progress) -> dict:
+                   progress: Progress, *, clean: bool = False) -> dict:
         """A root directory (the installer's own live root) into the other slot."""
         return self._write(lambda path: str(src), False, entries, release.get("version", ""),
-                           release.get("build_id", ""), release.get("flavor", ""), cmdline, installed_bytes, progress)
+                           release.get("build_id", ""), release.get("flavor", ""), cmdline, installed_bytes,
+                           progress, clean=clean)
 
     def _write(self, mount_source, unmount_source: bool, entries: list, version: str, build_id: str, flavor: str,
-               cmdline: str, installed_bytes: int, progress: Progress) -> dict:
+               cmdline: str, installed_bytes: int, progress: Progress, *, clean: bool = False) -> dict:
         target = self.target()
         dev = self.lay[target]
         size = self.ops.size_bytes(dev)
@@ -617,7 +696,7 @@ class SlotWriter:
                 raise WriteError("The new system didn't verify after it was written.", "verify-failed")
             progress(0.92, "Finishing…")
             set_fstab_root(Path(slot_mnt), slotenv.SLOT_LABEL[target])
-            carried = carry_state(self.running_root, Path(slot_mnt), self.data_dir)
+            carried = carry_state(self.running_root, Path(slot_mnt), self.data_dir, clean=clean)
             new_root_boot = self.work / "boot"
             if new_root_boot.exists():
                 shutil.rmtree(new_root_boot)
@@ -644,7 +723,7 @@ class SlotWriter:
         return {"slot": target, "carried": carried, "converted_grub": converted,
                 "version": version, "build_id": build_id, "flavor": flavor}
 
-    def resync_state(self, slot: str) -> list[str]:
+    def resync_state(self, slot: str, *, clean: bool = False) -> list[str]:
         """Copy host state into ``slot`` again (right before switching to it)."""
         if slot == self.lay.get("current"):
             return []
@@ -652,7 +731,7 @@ class SlotWriter:
         self.ops.mount(self.lay[slot], mnt)
         try:
             set_fstab_root(Path(mnt), slotenv.SLOT_LABEL[slot])
-            return carry_state(self.running_root, Path(mnt), self.data_dir)
+            return carry_state(self.running_root, Path(mnt), self.data_dir, clean=clean)
         finally:
             self.ops.umount(mnt)
 

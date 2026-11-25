@@ -54,6 +54,7 @@ class PairingService:
         self.global_fails: list[float] = []
         self.data = self._load()
         self.on_change = []
+        self.frozen = False
 
     def _load(self) -> dict:
         try:
@@ -132,6 +133,8 @@ class PairingService:
         return None
 
     def touch(self, dev: dict) -> None:
+        if self.frozen:
+            return
         # Persist last_seen at most once a minute.
         now = wall()
         if dev.get("last_seen", "")[:16] != now[:16]:

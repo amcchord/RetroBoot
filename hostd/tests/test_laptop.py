@@ -424,3 +424,28 @@ def test_volume_hotkey_reprobes_unprobed_mixer_and_bypasses_capability_gate(tmp_
         assert ["amixer", "-M", "-q", "sset", "Master", "64%", "unmute"] in calls
 
     run(go())
+
+
+def test_push_volume_clears_laptop_muted(tmp_path):
+    from retroboot.apply import ApplyEngine
+    from retroboot.network import AudioMixer
+    app = FakeApp(tmp_path, [])
+
+    async def amixer_run(argv, timeout=None):
+        if "scontrols" in argv:
+            return 0, "Simple mixer control 'RetroBoot',0\n", ""
+        if argv[-2:] == ["sget", "RetroBoot"]:
+            return 0, "Simple mixer control 'RetroBoot',0\n  Capabilities: volume\n  Front Left: 255 [100%] [0.00dB]\n", ""
+        return 0, "", ""
+
+    app.mixer = AudioMixer(runner=amixer_run)
+    app.laptop = SimpleNamespace(muted=True)
+    app.settings.applied["audio.volume"] = 70
+    engine = ApplyEngine(app)
+
+    async def go():
+        await app.mixer.probe("Generic_1", "RetroBoot", detect_switch=True)
+        assert await engine.push_volume() is True
+        assert app.laptop.muted is False
+
+    run(go())

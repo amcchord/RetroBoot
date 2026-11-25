@@ -310,7 +310,7 @@ class PanelPairing(BTBase):
         await self.app.panel.show_recovery()
         await self.until_doc("recovery-main")
         panes = [row["id"] for row in self.items(kind="list")[0]["items"]]
-        self.assertEqual(panes[3:7], ["network", "bluetooth", "download", "update"])
+        self.assertEqual(panes[3:8], ["network", "printers", "bluetooth", "download", "update"])
         self.fp.click("pane", {"pane": "bluetooth"})            # one click on its row
         await self.until_doc("bluetooth")
         self.fp.click("cancel")

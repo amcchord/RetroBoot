@@ -53,6 +53,8 @@ class SoftwareUpdate(Screen):
         super().__init__(panel)
         self.scanning = True
         self.check: Job | None = None
+        self.clean = False
+        self._clean_override: bool | None = None
         self.app.loop.create_task(self._scan())
         self._auto_check()
 
@@ -103,7 +105,9 @@ class SoftwareUpdate(Screen):
         job = self._job()
         last = p.get("last_result") or {}
         st = p.get("staged") or {}
-        found = (p.get("check") or {}).get("found")
+        check = p.get("check") or {}
+        found = check.get("found")
+        latest = check.get("latest")
         usb = p.get("usb") or []
         action = None                   # the main button, the default one
         discard = None                  # Don't Install, at the left of the bottom row
@@ -111,14 +115,28 @@ class SoftwareUpdate(Screen):
             items += [ui.text(job.message or "Downloading…", "emphasis"), ui.progress(job.progress)]
         elif st.get("status") in ("ready", "failed"):
             again = st.get("status") == "failed"
-            items.append(ui.text(f"RetroBoot {st['version']} didn't finish starting last time." if again else
-                                 f"RetroBoot {st['version']} is ready to install.", "emphasis"))
+            clean_mode = self._clean_override if self._clean_override is not None else bool(st.get("clean"))
+            if again:
+                heading = f"RetroBoot {st['version']} didn't finish starting last time."
+            elif clean_mode:
+                heading = f"RetroBoot {st['version']} is ready for a Clean Update."
+            else:
+                heading = f"RetroBoot {st['version']} is ready to install."
+            items.append(ui.text(heading, "emphasis"))
             if st.get("notes"):
                 items.append(ui.text(_short(st["notes"], 300), "small"))
-            items.append(ui.text("Mac OS shuts down first, as if you chose Shut Down. Your Macs, documents and "
-                                 "settings are kept.", "small"))
+            items.append(ui.text(
+                "Mac OS shuts down first. All Macs, disk images, shared files, checkpoints, and settings "
+                "will be erased (Wi-Fi networks are kept), and RetroBoot will start fresh." if clean_mode else
+                "Mac OS shuts down first, as if you chose Shut Down. Your Macs, documents and settings are kept.",
+                "small"))
+            items.append(ui.checkbox("clean", "Clean Update (erase all Macs and settings; keep Wi-Fi)", clean_mode))
             discard = ui.btn("discard", "Don't Install", align="left")
-            action = ui.btn("restart", "Try Again" if again else "Restart to Update", default=True)
+            if clean_mode:
+                label = "Try Clean Update Again" if again else "Restart for Clean Update"
+            else:
+                label = "Try Again" if again else "Restart to Update"
+            action = ui.btn("restart", label, default=True)
         elif job and job.kind == "update.check":
             items += [ui.text("Checking for updates…", "emphasis"), ui.progress(None)]
         elif found:
@@ -127,13 +145,14 @@ class SoftwareUpdate(Screen):
                 items.append(ui.text(_short(found["notes"], 300), "small"))
             items.append(ui.text(f"The download ({ui.human_bytes(found.get('bytes'))}) runs while Mac OS keeps "
                                  "running; then RetroBoot asks to restart.", "small"))
-            action = ui.btn("download", "Download and Install", default=True)
+            items.append(ui.checkbox("clean", "Clean Update (erase all Macs and settings; keep Wi-Fi)", self.clean))
+            action = ui.btn("download", "Download Clean Update" if self.clean else "Download and Install", default=True)
         elif usb:
             b = usb[0]
             items.append(ui.text(f"RetroBoot {b['label']} is on {b.get('disk', 'a USB disk')}.", "emphasis"))
-            action = ui.btn("usb", "Install from USB Disk", default=True)
+            items.append(ui.checkbox("clean", "Clean Update (erase all Macs and settings; keep Wi-Fi)", self.clean))
+            action = ui.btn("usb", "Clean Install from USB" if self.clean else "Install from USB Disk", default=True)
         elif p.get("url"):
-            check = p.get("check") or {}
             failed = self.check is not None and self.check.state == "failed"
             if failed:
                 items.append(ui.text("RetroBoot couldn't check for updates.", "emphasis"))
@@ -145,6 +164,11 @@ class SoftwareUpdate(Screen):
             else:
                 items.append(ui.text("RetroBoot hasn't checked for updates yet.", "emphasis"))
             action = ui.btn("check", "Check Again" if check.get("at") or failed else "Check for Updates")
+            if not failed and latest:
+                items.append(ui.sep())
+                items.append(ui.text(f"Start fresh with RetroBoot {latest['version']}: erases all Macs, disk "
+                                     "images and settings (Wi-Fi is kept).", "small"))
+                items.append(ui.buttons(ui.btn("clean-reinstall", f"Clean Update ({latest['version']})…")))
         elif self.scanning:
             items.append(ui.text("Looking for updates on USB disks…"))
         else:
@@ -167,6 +191,12 @@ class SoftwareUpdate(Screen):
     async def on_tick(self):
         await self.panel.refresh()
 
+    async def change(self, id, value):
+        if id == "clean":
+            self.clean = bool(value)
+            self._clean_override = self.clean
+            await self.panel.refresh()
+
     async def action(self, id, values):
         p, u = self.panel, self.app.updates
         if id == "cancel":
@@ -174,7 +204,9 @@ class SoftwareUpdate(Screen):
         elif id == "usb":
             items = u.public().get("usb") or []
             if items:
-                await p.start_job(lambda: u.install_job({"kind": "usb", "id": items[0]["id"]}, origin="panel"),
+                clean = bool(values.get("clean")) if "clean" in values else self.clean
+                await p.start_job(lambda: u.install_job({"kind": "usb", "id": items[0]["id"]}, origin="panel",
+                                                        clean=clean),
                                   "Software Update", self._after_install)
         elif id == "check":
             try:
@@ -183,13 +215,20 @@ class SoftwareUpdate(Screen):
                 self.check = None
             await p.refresh()
         elif id == "download":
-            await p.start_job(lambda: u.install_job({"kind": "feed"}, origin="panel"), "Software Update",
+            clean = bool(values.get("clean")) if "clean" in values else self.clean
+            await p.start_job(lambda: u.install_job({"kind": "feed"}, origin="panel", clean=clean), "Software Update",
+                              self._after_install)
+        elif id == "clean-reinstall":
+            await p.start_job(lambda: u.install_job({"kind": "feed"}, origin="panel", clean=True), "Software Update",
                               self._after_install)
         elif id == "restart":
             st = u.staged() or {}
-            await p.show(ConfirmRestartUpdate(p, st.get("label") or st.get("version") or ""))
+            clean_mode = (bool(values.get("clean")) if "clean" in values else
+                          (self._clean_override if self._clean_override is not None else bool(st.get("clean"))))
+            await p.show(ConfirmRestartUpdate(p, st.get("label") or st.get("version") or "", clean=clean_mode))
         elif id == "discard":
             u.discard_staged()
+            self._clean_override = None
             await p.refresh()
         elif id == "goback":
             prev = u.public().get("previous")
@@ -207,11 +246,20 @@ class SoftwareUpdate(Screen):
 class ConfirmRestartUpdate(Screen):
     doc_id = "confirm-update-restart"
 
-    def __init__(self, panel, label: str):
+    def __init__(self, panel, label: str, *, clean: bool = False):
         super().__init__(panel)
         self.label = label
+        self.clean = bool(clean)
 
     def doc(self):
+        if self.clean:
+            return ui.alert(self.doc_id, "caution", f"Clean Update to RetroBoot {self.label}?",
+                            "Mac OS shuts down first, then RetroBoot restarts with that version. All Macs, disk "
+                            "images, shared files, checkpoints, and settings (except Wi-Fi) will be erased for a "
+                            "fresh RetroBoot setup. This cannot be undone.",
+                            ui.buttons(ui.btn("cancel", "Cancel", default=True),
+                                       ui.btn("restart", "Erase and Update")),
+                            width=480)
         return ui.alert(self.doc_id, "note", f"Restart to install RetroBoot {self.label}?",
                         "Mac OS shuts down first, as if you chose Shut Down from the Special menu. "
                         "Applications can ask you to save your documents. Your Mac, documents and settings are kept.",
@@ -223,8 +271,8 @@ class ConfirmRestartUpdate(Screen):
         if id == "cancel":
             await p.show(SoftwareUpdate(p))
         elif id == "restart":
-            await p.start_job(lambda: self.app.updates.restart_job(origin="panel"), "Restart to Update", self._after,
-                              allow_force=False)
+            await p.start_job(lambda: self.app.updates.restart_job(origin="panel", clean=self.clean),
+                              "Restart to Update", self._after, allow_force=False)
 
     async def _after(self, job: Job):
         if job.state != SUCCEEDED:

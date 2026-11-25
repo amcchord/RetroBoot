@@ -22,7 +22,7 @@ from retroboot import schema, settings as settings_mod
 from retroboot.hostd import Hostd
 from retroboot.jobs import JobFailed
 from retroboot.update import bundle as B, slotenv, tree
-from retroboot.update.writer import SlotWriter, WriteError, carry_state, set_fstab_root
+from retroboot.update.writer import SlotWriter, WriteError, carry_state, clean_reset_data, set_fstab_root
 from test_lifecycle import Base
 
 LEGACY_CMD = ("quiet loglevel=0 console=ttyS0,115200 video=efifb:off fbcon=map:9 "
@@ -764,6 +764,73 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                                headers=hd)
         self.assertEqual(r.status, 422)
 
+    async def test_clean_update_api_params_and_validation(self):
+        from aiohttp.test_utils import TestClient, TestServer
+        td, root = helpers.scratch()
+        self.addCleanup(td.cleanup)
+        helpers.make_package(root)
+        esp = root / "boot/efi"
+        (esp / "grub/retroboot").mkdir(parents=True)
+        (esp / "grub/grub.cfg").write_text(LEGACY_GRUB)
+        make_root(root, "0.3.0", "0.3.0-20261012T010203Z-abcdef12")
+        slots = {s: root / "slots" / s for s in "ab"}
+        for d in slots.values():
+            d.mkdir(parents=True)
+        make_root(slots["a"], "0.3.0", "0.3.0-20261012T010203Z-abcdef12")
+        cmdline = root / "cmdline"
+        cmdline.write_text("quiet root=PARTLABEL=RBROOT_A\n")
+        cfg = helpers.make_config(root)
+        cfg.update_esp = str(esp)
+        cfg.update_keys_dir = str(root / "keys")
+        (root / "keys").mkdir()
+        key, pem, kid = keypair()
+        (root / "keys/dev.pub").write_bytes(pem)
+        cfg.update_layout = {"current": "a", "a": str(slots["a"]), "b": str(slots["b"]), "esp": "x", "data": "y"}
+        cfg.cmdline_path = str(cmdline)
+        app = Hostd(cfg)
+        app.loop = asyncio.get_running_loop()
+        app.settings.store.load()
+        app.updates.ops = FakeOps()
+        app.web.tls()
+        await app.updates.start()
+        self.addAsyncCleanup(app.updates.stop)
+        client = TestClient(TestServer(app.web.web_app, host="127.0.0.1"))
+        await client.start_server()
+        self.addAsyncCleanup(client.close)
+        code, _ = app.pairing.current_code()
+        r = await client.post("/api/v1/pair", json={"code": code, "device_name": "t"})
+        cookie = r.headers.getall("Set-Cookie")[0].split("rb_session=", 1)[1].split(";", 1)[0]
+        csrf = (await r.json())["csrf"]
+        hd = {"Cookie": f"rb_session={cookie}", "X-RetroBoot-CSRF": csrf}
+
+        # Non-boolean clean rejected with 422
+        r = await client.post("/api/v1/update/install", json={"source": "server", "clean": "yes"}, headers=hd)
+        self.assertEqual(r.status, 422)
+        r = await client.post("/api/v1/update/restart", json={"clean": "yes"}, headers=hd)
+        self.assertEqual(r.status, 422)
+
+        # Same-version upload with ?clean=1 succeeds and stages clean=True
+        same_bundle = make_bundle(root / "same.rbu", make_root(root / "new"), key, kid,
+                                  version="0.3.0", build_id="0.3.0-20261012T010203Z-abcdef12")
+        r = await client.post("/api/v1/update/bundle?clean=1", data=same_bundle.read_bytes(),
+                              headers={**hd, "Content-Type": "application/octet-stream"})
+        self.assertEqual(r.status, 202)
+        job_id = (await r.json())["job"]["id"]
+        job = app.jobs.get(job_id)
+        await job.done.wait()
+        self.assertEqual(job.state, "succeeded", job.error)
+        st = await (await client.get("/api/v1/update", headers=hd)).json()
+        self.assertTrue(st["staged"]["clean"])
+
+        # Restart with {"clean": true} arms clean update
+        r = await client.post("/api/v1/update/restart", json={"clean": True}, headers=hd)
+        self.assertEqual(r.status, 202)
+        rjob = app.jobs.get((await r.json())["job"]["id"])
+        await rjob.done.wait()
+        self.assertEqual(rjob.state, "succeeded", rjob.error)
+        self.assertTrue(app.updates.state["armed"]["clean"])
+        self.assertTrue(app.pairing.frozen)
+
 
 
 class RestartToUpdateFinishedLate(Base):
@@ -1016,6 +1083,224 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(B.BundleError) as e2:
             B.compatibility(m, {"version": "0.2.0", "flavor": "debug", "arch": "arm64", "board": "pc"}, 1)
         self.assertEqual(e2.exception.code, "wrong-board")
+
+
+class CleanUpdateTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.td, self.root = helpers.scratch()
+        self.addCleanup(self.td.cleanup)
+        self.key, self.pem, self.kid = keypair()
+        (self.root / "keys").mkdir()
+        (self.root / "keys/dev.pub").write_bytes(self.pem)
+        self.esp = self.root / "boot/efi"
+        (self.esp / "grub/retroboot").mkdir(parents=True)
+        (self.esp / "grub/grub.cfg").write_text(NEW_GRUB)
+        make_root(self.root, "3.2.0", "3.2.0-20261124T201102Z-6c89b03d")
+        self.slots = {s: self.root / "slots" / s for s in "ab"}
+        for d in self.slots.values():
+            d.mkdir(parents=True)
+        make_root(self.slots["a"], "3.2.0", "3.2.0-20261124T201102Z-6c89b03d")
+        self.cmdline = self.root / "cmdline"
+        self.cmdline.write_text("quiet retroboot.slot=a\n")
+        self.new = make_root(self.root / "newroot", "3.2.0", "3.2.0-20261124T201102Z-6c89b03d",
+                             keyfile_path="/var/lib/retroboot/network/connections")
+        self.bundle = make_bundle(self.root / "same.rbu", self.new, self.key, self.kid,
+                                  version="3.2.0", build_id="3.2.0-20261124T201102Z-6c89b03d")
+
+    async def make_app(self, current="a"):
+        helpers.make_package(self.root)
+        cfg = helpers.make_config(self.root)
+        cfg.update_esp = str(self.esp)
+        cfg.update_keys_dir = str(self.root / "keys")
+        cfg.update_layout = {"current": current, "a": str(self.slots["a"]), "b": str(self.slots["b"]),
+                             "esp": "x", "data": "y"}
+        cfg.cmdline_path = str(self.cmdline)
+        cfg.update_panel_health_s = 0.2
+        app = Hostd(cfg)
+        app.loop = asyncio.get_running_loop()
+        app.settings.store.load()
+        app.updates.ops = FakeOps()
+        await app.updates.start()
+        self.addAsyncCleanup(app.updates.stop)
+        return app
+
+    def test_compatibility_and_carry_state_clean(self):
+        m = B.Bundle(self.bundle).verify(B.trusted_keys(self.root / "keys"))
+        m_newer_schema = dict(m, settings_schema_min=99)
+        inst = {"version": "3.2.0", "flavor": "debug", "build_id": "3.2.0-20261124T201102Z-6c89b03d"}
+        with self.assertRaises(B.BundleError) as e:
+            B.compatibility(m, inst, 1)
+        self.assertEqual(e.exception.code, "same-version")
+        B.compatibility(m_newer_schema, inst, 1, clean=True)
+
+        src = self.root / "src-clean"
+        dst = self.root / "dst-clean"
+        data = self.root / "data-clean"
+        for d in (src / "etc/ssh", src / "var/lib/alsa", src / "var/lib/systemd/backlight",
+                  src / "var/lib/systemd/rfkill", src / "var/lib/NetworkManager",
+                  src / "etc/NetworkManager/system-connections", src / "root/.ssh",
+                  dst / "etc", dst / "root/.ssh", data):
+            d.mkdir(parents=True, exist_ok=True)
+        (src / "etc/hostname").write_text("my-mac\n")
+        (src / "etc/hosts").write_text("127.0.1.1 my-mac\n")
+        (src / "etc/machine-info").write_text("PRETTY_HOSTNAME=MyMac\n")
+        (src / "etc/machine-id").write_text("deadbeef\n")
+        (src / "etc/timezone").write_text("America/New_York\n")
+        os.symlink("/usr/share/zoneinfo/America/New_York", src / "etc/localtime")
+        (src / "etc/ssh/ssh_host_ed25519_key").write_text("HOSTKEY")
+        (src / "var/lib/alsa/asound.state").write_text("ALSA")
+        (src / "var/lib/systemd/backlight/bl").write_text("50")
+        (src / "var/lib/systemd/rfkill/rf").write_text("0")
+        (src / "etc/NetworkManager/system-connections/Home.nmconnection").write_text("ssid=Home\n")
+        (src / "root/.ssh/authorized_keys").write_text("ssh-ed25519 AAAAuser\n")
+        (dst / "etc/machine-info").write_text("old\n")
+        (dst / "var/lib/alsa").mkdir(parents=True)
+        (dst / "var/lib/alsa/asound.state").write_text("old\n")
+        (dst / "var/lib/systemd/backlight").mkdir(parents=True)
+        (dst / "var/lib/systemd/backlight/old").write_text("1")
+        (dst / "root/.ssh/authorized_keys").write_text("ssh-ed25519 AAAAlab\n")
+        (dst / "etc/NetworkManager/conf.d").mkdir(parents=True)
+        (dst / "etc/NetworkManager/conf.d/50.conf").write_text("[keyfile]\npath=/var/lib/retroboot/network/connections\n")
+
+        carry_state(src, dst, data, clean=True)
+        self.assertEqual((dst / "etc/hostname").read_text(), "retroboot\n")
+        self.assertIn("127.0.1.1\tretroboot", (dst / "etc/hosts").read_text())
+        self.assertFalse((dst / "etc/machine-info").exists())
+        self.assertEqual((dst / "etc/machine-id").read_text(), "deadbeef\n")
+        self.assertEqual((dst / "etc/timezone").read_text(), "Etc/UTC\n")
+        self.assertEqual(os.readlink(dst / "etc/localtime"), "/usr/share/zoneinfo/Etc/UTC")
+        self.assertFalse((dst / "var/lib/alsa/asound.state").exists())
+        self.assertFalse((dst / "var/lib/systemd/backlight").exists())
+        self.assertFalse((dst / "var/lib/systemd/rfkill").exists())
+        self.assertEqual((dst / "etc/ssh/ssh_host_ed25519_key").read_text(), "HOSTKEY")
+        self.assertTrue((data / "network/connections/Home.nmconnection").is_file())
+        self.assertEqual((dst / "root/.ssh/authorized_keys").read_text().splitlines(),
+                         ["ssh-ed25519 AAAAuser", "ssh-ed25519 AAAAlab"])
+
+    def test_clean_reset_data_preserves_wifi_and_auth(self):
+        data = self.root / "rbdata"
+        esp = self.root / "esp-clean"
+        for d in ("machines/mac1", "checkpoints/mac1/cp1", "share", "media", "roms", "downloads",
+                  "assets/platinum", "cache/mesa-osx", "bluetooth/AA:BB", "logs/evidence/ev1",
+                  "logs/bundles", "logs/journal", "update/settings/b1", "update/incoming",
+                  "network/connections", "config", "state"):
+            (data / d).mkdir(parents=True, exist_ok=True)
+        (data / "machines/mac1/disk.img").write_bytes(b"disk")
+        (data / "network/connections/Wifi.nmconnection").write_text("ssid=Home\n")
+        (data / "config/settings.json").write_text("{}")
+        (data / "config/settings.json.bak").write_text("{}")
+        (data / "config/install-seed.applied.json").write_text("{}")
+        (data / "config/lab-auth.env").write_text("RB_LAB_HTTP_USER=u\n")
+        (data / "config/hostd.local.json").write_text("{}")
+        (data / "config/hostd.local.migrated").write_text("hash\n")
+        (data / "state/pairing.json").write_text("{}")
+        (data / "state/tls-cert.pem").write_text("cert")
+        (data / "state/known-good.json").write_text("{}")
+        (data / "state/growdata.done").write_text("1")
+        (data / "state/microcode.json").write_text("{}")
+        (data / "state/boot-network.json").write_text("{}")
+        (data / "update/state.json").write_text('{"armed": true}')
+        (data / "logs/lifecycle.jsonl").write_text("{}\n")
+        (data / "logs/journal/j1").write_text("j")
+
+        rb = esp / "grub/retroboot"
+        rb.mkdir(parents=True)
+        (rb / "display.cfg").write_text("set rb_scale=2\n")
+        (rb / "checker-default.png").write_bytes(b"def")
+        (rb / "checker-default-s1.png").write_bytes(b"def1")
+        (rb / "checker-1920x1080-s2.png").write_bytes(b"gen")
+        (rb / "startup-mac.cpio").write_bytes(b"cpio")
+        (rb / "startup-icon.rbi").write_bytes(b"rbi")
+        (rb / "slots.env").write_bytes(b"env")
+        (rb / "slot-a.cfg").write_text("a")
+
+        summary = clean_reset_data(data, esp)
+        self.assertIn("machines", summary["cleared_dirs"])
+        self.assertFalse((data / "machines/mac1").exists())
+        self.assertTrue((data / "machines").is_dir())
+        self.assertTrue((data / "bluetooth").is_dir())
+        self.assertFalse((data / "bluetooth/AA:BB").exists())
+        self.assertTrue((data / "network/connections/Wifi.nmconnection").is_file())
+        self.assertFalse((data / "config/settings.json").exists())
+        self.assertTrue((data / "config/lab-auth.env").is_file())
+        self.assertTrue((data / "config/hostd.local.json").is_file())
+        self.assertFalse((data / "state/pairing.json").exists())
+        self.assertTrue((data / "state/growdata.done").is_file())
+        self.assertTrue((data / "state/microcode.json").is_file())
+        self.assertTrue((data / "state/boot-network.json").is_file())
+        self.assertTrue((data / "update/state.json").is_file())
+        self.assertTrue((data / "logs/lifecycle.jsonl").is_file())
+        self.assertTrue((data / "logs/journal/j1").is_file())
+        self.assertFalse((rb / "display.cfg").exists())
+        self.assertFalse((rb / "checker-1920x1080-s2.png").exists())
+        self.assertFalse((rb / "startup-mac.cpio").exists())
+        self.assertFalse((rb / "startup-icon.rbi").exists())
+        self.assertTrue((rb / "checker-default.png").is_file())
+        self.assertTrue((rb / "checker-default-s1.png").is_file())
+        self.assertTrue((rb / "slots.env").is_file())
+        self.assertTrue((rb / "slot-a.cfg").is_file())
+
+    async def test_same_version_clean_update_flow_and_panel(self):
+        from retroboot.panel.update import ConfirmRestartUpdate, SoftwareUpdate
+        app = await self.make_app()
+        # Feed lists only the already-installed version -> found is None, latest is populated.
+        same = {"version": "3.2.0", "build_id": "3.2.0-20261124T201102Z-6c89b03d", "flavor": "debug",
+                "url": "https://updates.example/retroboot-update-3.2.0-debug.rbu", "sha256": "0" * 64, "bytes": 1000}
+        feed = {"format": "retroboot-feed/1", "updates": [same]}
+        self.assertIsNone(app.updates.pick_from_feed(feed))
+        self.assertEqual(app.updates.pick_latest_from_feed(feed)["build_id"], same["build_id"])
+
+        from retroboot.util import wall
+        app.settings.applied["update.url"] = "https://updates.example/feed.json"
+        app.updates.state["check"] = {"at": wall(), "url": "https://updates.example/feed.json",
+                                      "found": None, "latest": app.updates.pick_latest_from_feed(feed)}
+        app.updates.save()
+        scr = SoftwareUpdate(app.panel)
+        scr.scanning = False
+        txt = json.dumps(scr.doc())
+        self.assertIn("Clean Update (3.2.0)", txt)
+
+        # Populate user data + Wi-Fi
+        (app.paths.machines / "m1").mkdir(parents=True)
+        (app.paths.machines / "m1/disk.img").write_bytes(b"user-mac")
+        (app.paths.nm_connections / "Home.nmconnection").write_text("ssid=Home\n")
+        _, tok = app.pairing.pair(app.pairing.current_code()[0], "browser", "127.0.0.1")
+        dev = app.pairing.device_for_token(tok)
+        self.assertTrue((app.paths.state / "pairing.json").is_file())
+
+        incoming = app.updates.new_incoming()
+        shutil.copy(self.bundle, incoming)
+        job = app.updates.install_job({"kind": "file", "path": str(incoming)}, clean=True)
+        await job.done.wait()
+        self.assertEqual(job.state, "succeeded", job.error)
+        self.assertTrue(app.updates.public()["staged"]["clean"])
+
+        confirm_scr = ConfirmRestartUpdate(app.panel, "3.2.0", clean=True)
+        cdoc = confirm_scr.doc()
+        self.assertEqual(cdoc["alert_icon"], "caution")
+        cancel_btn = next(b for b in cdoc["items"][-1]["items"] if b["id"] == "cancel")
+        self.assertTrue(cancel_btn.get("default"))
+
+        rjob = app.updates.restart_job(origin="panel")
+        await rjob.done.wait()
+        self.assertEqual(rjob.state, "succeeded", rjob.error)
+        self.assertFalse((app.paths.machines / "m1").exists())
+        self.assertFalse((app.paths.state / "pairing.json").exists())
+        self.assertTrue((app.paths.nm_connections / "Home.nmconnection").is_file())
+        # Touching a paired device after clean reset does not recreate pairing.json
+        app.pairing.touch(dev)
+        self.assertFalse((app.paths.state / "pairing.json").exists())
+
+        # Trial boot commits with clean-updated history
+        slotenv.update_env(self.esp, rb_tries="0")
+        self.cmdline.write_text("quiet retroboot.slot=b retroboot.trial=1\n")
+        app2 = await self.make_app(current="b")
+        app2.supervisor.state = "stopped"
+        app2.panel.visible = True
+        app2.presenter.connected.set()
+        await helpers.wait_for(lambda: app2.updates.committed, 5, 0.05, "clean commit")
+        self.assertIn("clean-updated", app2.updates.state["last_result"]["message"])
+        self.assertTrue(app2.updates.state["last_result"]["clean"])
 
 
 if __name__ == "__main__":

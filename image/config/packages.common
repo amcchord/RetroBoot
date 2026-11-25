@@ -50,6 +50,12 @@ hfsprogs
 unar
 # PostScript-to-PDF conversion (ps2pdf) for Print-to-PDF into RetroBoot Share
 ghostscript
+# Physical printer spooling and driverless/IPP printer discovery (hostd owns port 631; CUPS uses Unix socket only)
+cups
+cups-client
+cups-filters
+ipp-usb
+avahi-utils
 # Networking and management
 network-manager
 wpasupplicant

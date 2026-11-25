@@ -265,10 +265,11 @@ class Bundle:
 
 
 def compatibility(manifest: dict, installed: dict, settings_schema: int, *, allow_older: bool = False,
-                  allow_flavor: bool = False, allow_same: bool = False) -> None:
+                  allow_flavor: bool = False, allow_same: bool = False, clean: bool = False) -> None:
     """Raise BundleError when this device should not install the manifest.
 
     installed: the running release (``/usr/lib/retroboot/release.json``)."""
+    allow_same = allow_same or clean
     cur_v, cur_b = installed.get("version", "0.0.0"), installed.get("build_id")
     if version_key(cur_v) < version_key(manifest["min_version"]):
         raise BundleError(f"This update needs RetroBoot {manifest['min_version']} or later first.", "too-old")
@@ -285,6 +286,6 @@ def compatibility(manifest: dict, installed: dict, settings_schema: int, *, allo
     if new < cur and not allow_older:
         raise BundleError("This update is older than the RetroBoot that is installed. "
                           "To go back, use “Go Back to the Previous Version”.", "older")
-    if settings_schema < manifest["settings_schema_min"]:
+    if not clean and settings_schema < manifest["settings_schema_min"]:
         raise BundleError("This update can't read this RetroBoot's settings. Install the updates in between first.",
                           "settings-too-old")

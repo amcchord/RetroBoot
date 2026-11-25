@@ -504,9 +504,9 @@ class RecoveryAndPower(Base):
         self.assertEqual(doc["title"], "RetroBoot")
         lst = next(i for i in doc["items"] if i.get("type") == "list")
         self.assertEqual([r["id"] for r in lst["items"]],
-                         ["disk", "display", "keyboard", "network", "download", "update", "timezone", "diagnostics"])
+                         ["disk", "display", "keyboard", "network", "printers", "download", "update", "timezone", "diagnostics"])
         self.assertEqual((lst["view"], lst["columns"]), ("icons", 4))
-        self.assertTrue(lst["header"].startswith("8 items, Mac OS "), lst["header"])
+        self.assertTrue(lst["header"].startswith("9 items, Mac OS "), lst["header"])
         meters = next(i for i in doc["items"] if i.get("type") == "meters")["items"]
         self.assertEqual([(m["icon"], m["label"]) for m in meters][0], ("mac", self.app.supervisor.machine.name))
         self.assertEqual(meters[1]["icon"], "chip")

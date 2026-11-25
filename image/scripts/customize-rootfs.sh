@@ -277,11 +277,17 @@ in_root python3 -m compileall -q -j 0 --invalidation-mode checked-hash /usr/lib/
 
 # ---- services: presets, masks, flavor ------------------------------------
 log "systemd presets and masks"
+# Disable cups.service and cups.path before enabling cups.socket: Debian's
+# cups.service declares Also=cups.socket, so disabling it afterwards removes
+# sockets.target.wants/cups.socket.
+for unit in cups.service cups.path cups-browsed.service; do
+  in_root systemctl disable "$unit" >/dev/null 2>&1 || true
+done
 for unit in retroboot-presenter.service retroboot-data-layout.service var-log-journal.mount \
             var-lib-bluetooth.mount bluetooth.service \
             retroboot-growdata.service retroboot-bootdisplay.service retroboot-microcode.service retroboot-bootmark.service \
             retroboot-live-toram.service retroboot-bootdiag.service \
-            NetworkManager.service avahi-daemon.service systemd-timesyncd.service; do
+            NetworkManager.service avahi-daemon.service cups.socket systemd-timesyncd.service; do
   [ -e "$root/usr/lib/systemd/system/$unit" ] && in_root systemctl enable "$unit" >/dev/null 2>&1
 done
 [ -e "$root/usr/lib/systemd/system/retroboot-hostd.service" ] && in_root systemctl enable retroboot-hostd.service >/dev/null 2>&1
@@ -290,6 +296,7 @@ masks="getty@.service autovt@.service console-getty.service container-getty@.ser
        systemd-ask-password-console.service systemd-ask-password-wall.path
        systemd-ask-password-wall.service systemd-vconsole-setup.service
        NetworkManager-wait-online.service systemd-networkd-wait-online.service
+       cups-browsed.service
        systemd-firstboot.service e2scrub_reap.service e2scrub_all.timer
        apt-daily.timer apt-daily-upgrade.timer dpkg-db-backup.timer
        console-setup.service keyboard-setup.service setvtrgb.service"

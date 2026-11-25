@@ -157,6 +157,10 @@ HDA_AUTO_MUTE = ("Enabled", "Speaker Only")
 GEMINI_CARD_DRIVERS = {"mt6797-mt6351"}
 GEMINI_PCM = "Playback_1"
 GEMINI_MIXER = "Headphone"
+SOFTVOL_CONTROL = "RetroBoot"
+SOFTVOL_CONF = Path("/etc/alsa/conf.d/50-retroboot.conf")
+_HW_MIXER_CANDIDATES = ("Master", "PCM", "Speaker", "Headphone", "Front", "Line Out", "DAC", "Digital",
+                        "Playback", "Headset")
 _ucm_done: dict[str, dict | None] = {}
 _CARD_LINE = re.compile(r"^\s*(\d+)\s+\[([^\]]+?)\s*\]:\s*(\S+)\s*-\s*(.*)$")
 
@@ -450,6 +454,66 @@ def vc4_pcm(card_id: str, pcms: set[str] | None, cards: Path = ALSA_CARDS) -> st
 
 
 _softvol_done: dict[str, bool] = {}
+_rb_softvol_done: dict[str, bool] = {}
+
+
+def softvol_available(conf: Path = SOFTVOL_CONF) -> bool:
+    """True when RetroBoot's ALSA softvol PCM definitions are installed."""
+    return "pcm.rb_softvol" in _read(conf)
+
+
+def card_has_hw_mixer(card_id: str, run=subprocess.run) -> bool:
+    """True when ``card_id`` exposes a hardware playback volume control (excluding RetroBoot softvol)."""
+    if not card_id:
+        return False
+    try:
+        r = run(["amixer", "-c", card_id, "scontrols"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if r.returncode != 0:
+        return False
+    controls = {m.group(1) for m in _SCONTROL.finditer(r.stdout or "")}
+    for name in _HW_MIXER_CANDIDATES:
+        if name not in controls:
+            continue
+        try:
+            sget = run(["amixer", "-c", card_id, "sget", name], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if sget.returncode != 0:
+            continue
+        caps = re.findall(r"^\s*Capabilities:\s*(.*)$", sget.stdout or "", re.M)
+        if not caps:
+            return True
+        tokens = {tok for line in caps for tok in line.split()}
+        if tokens & {"pvolume", "volume"}:
+            return True
+    return False
+
+
+def ensure_softvol(output: dict | None, run=subprocess.run) -> bool | None:
+    """Create the RetroBoot ALSA softvol control for mixerless outputs by playing 10 ms of silence."""
+    alsa = str((output or {}).get("alsa") or "")
+    card = (output or {}).get("card_id")
+    if not output or not card or not alsa.startswith(("rb_softvol:", "rb_softvol_keepalive:")):
+        return None
+    if _rb_softvol_done.get(card):
+        return True
+
+    def present() -> bool:
+        r = run(["amixer", "-c", card, "scontrols"], capture_output=True, text=True, timeout=5)
+        return r.returncode == 0 and any(m.group(1) == SOFTVOL_CONTROL for m in _SCONTROL.finditer(r.stdout or ""))
+    try:
+        ok = present()
+        if not ok:
+            run(["aplay", "-q", "-D", alsa, "-t", "raw", "-f", "S16_LE", "-r", "48000", "-c", "2",
+                 "-s", "480", "/dev/zero"], capture_output=True, text=True, timeout=10)
+            ok = present()
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if ok:
+        _rb_softvol_done[card] = True
+    return ok
 
 
 def vc4_softvol(output: dict | None, run=subprocess.run) -> bool | None:
@@ -480,13 +544,16 @@ def vc4_softvol(output: dict | None, run=subprocess.run) -> bool | None:
     return ok
 
 
-def alsa_device(output: dict | None, pcms: set[str] | None = None) -> str | None:
+def alsa_device(output: dict | None, pcms: set[str] | None = None, *, softvol: bool = False) -> str | None:
     if not output:
         return None
-    if output.get("keepalive"):
-        return f"rb_keepalive:CARD={output['card_id']},DEV={output['device']}"
     if output.get("vc4"):
         return vc4_pcm(output["card_id"], pcms)
+    if softvol:
+        prefix = "rb_softvol_keepalive" if output.get("keepalive") else "rb_softvol"
+        return f"{prefix}:CARD={output['card_id']},DEV={output['device']}"
+    if output.get("keepalive"):
+        return f"rb_keepalive:CARD={output['card_id']},DEV={output['device']}"
     return f"plughw:CARD={output['card_id']},DEV={output['device']}"
 
 
@@ -816,9 +883,28 @@ def list_outputs(root: Path = ASOUND, driving: list[str] | None = None, drm: Pat
     return items
 
 
+def _with_alsa(out: dict, names: set[str] | None, *, root: Path,
+               has_hw_mixer=None, softvol_ok=None) -> dict:
+    use_softvol = False
+    if (not out.get("vc4") and not out.get("gemini") and not out.get("asoc")
+            and out.get("kind") not in ("bluetooth", "configured") and out.get("card_id")):
+        sv_ok = softvol_ok() if callable(softvol_ok) else (
+            bool(softvol_ok) if softvol_ok is not None else (softvol_available() if root == ASOUND else False)
+        )
+        if sv_ok:
+            hw_ok = (has_hw_mixer(out["card_id"]) if callable(has_hw_mixer)
+                     else (card_has_hw_mixer(out["card_id"]) if root == ASOUND else True))
+            use_softvol = not hw_ok
+    res = dict(out, alsa=alsa_device(out, names, softvol=use_softvol))
+    if use_softvol:
+        res["needs_softvol"] = True
+    return res
+
+
 def choose(root: Path = ASOUND, prefer: str = "hdmi", driving: list[str] | None = None,
            drm: Path = DRM_SYSFS, pcms=list_pcms, sys_root: Path | None = None,
-           output: str = "auto", bluetooth_sinks: list[dict] | None = None) -> dict | None:
+           output: str = "auto", bluetooth_sinks: list[dict] | None = None,
+           has_hw_mixer=None, softvol_ok=None) -> dict | None:
     """The output to use now, with its ALSA device string (None: use ALSA default).
     ``driving`` and ``drm`` matter only for Raspberry Pi HDMI cards (mark_vc4_ports);
     ``pcms`` is a set of PCM names or a function returning one (``aplay -L``), asked
@@ -836,7 +922,7 @@ def choose(root: Path = ASOUND, prefer: str = "hdmi", driving: list[str] | None 
     names = None
     if out.get("vc4"):
         names = pcms() if callable(pcms) else pcms
-    return dict(out, alsa=alsa_device(out, names))
+    return _with_alsa(out, names, root=root, has_hw_mixer=has_hw_mixer, softvol_ok=softvol_ok)
 
 
 def supports_48khz(output: dict | None, root: Path = ASOUND) -> bool:
@@ -930,6 +1016,8 @@ def prepare_output_for_playback(output: dict | None, run=subprocess.run, root: P
             ucm_prepare(output, run=run, asound=root)
         if output.get("vc4"):
             vc4_softvol(output, run=run)
+        if output.get("needs_softvol"):
+            ensure_softvol(output, run=run)
         hda_output_stage(output, run=run)
         alsa = output.get("alsa")
         if output.get("keepalive") and alsa and warm_up_fn is not None:
@@ -1000,7 +1088,7 @@ def test_sound(output: str = "auto", *, audio_out: dict | None = None,
                         "error": f"Selected audio output '{req}' is not available."}
         elif out.get("kind") not in ("bluetooth", "configured"):
             names = (pcms() if callable(pcms) else pcms) if out.get("vc4") else None
-            out = dict(out, alsa=alsa_device(out, names))
+            out = _with_alsa(out, names, root=root)
     if muted:
         return {"ok": False, "output": req, "device": (out or {}).get("alsa") or (out or {}).get("pw_sink"),
                 "player": None, "error": "Sound is muted."}

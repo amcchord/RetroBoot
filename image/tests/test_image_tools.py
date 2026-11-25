@@ -1221,3 +1221,24 @@ class Boot4KAndIsoContinuityTest(unittest.TestCase):
             (root / 'usr/lib/retroboot/rpi-profile.json').write_text('{}')
             self.assertEqual(mu.target_arch('auto', str(root), {}), 'arm64')
             self.assertEqual(mu.target_arch('x86_64', str(root), {}), 'x86_64')
+
+    def test_alsa_softvol_and_cups_socket_only_config(self):
+        alsa_conf = (IMAGE / 'rootfs/etc/alsa/conf.d/50-retroboot.conf').read_text()
+        for pcm in ('pcm.rb_keepalive', 'pcm.rb_softvol_keepalive', 'pcm.rb_softvol'):
+            self.assertIn(pcm, alsa_conf)
+        self.assertIn('RetroBoot Playback Volume', alsa_conf)
+        self.assertIn('ipc_gid audio', alsa_conf)
+        self.assertIn('ipc_perm 0660', alsa_conf)
+
+        cupsd = (IMAGE / 'rootfs/etc/cups/cupsd.conf').read_text()
+        self.assertIn('Listen /run/cups/cups.sock', cupsd)
+        self.assertNotRegex(cupsd, r'(?m)^\s*(Port|Listen)\s+.*631\b')
+        cups_files = (IMAGE / 'rootfs/etc/cups/cups-files.conf').read_text()
+        self.assertIn('ServerRoot /var/lib/retroboot/cups', cups_files)
+        self.assertNotRegex(cups_files, r'(?m)^\s*FontPath\b')
+        cups_sock = (IMAGE / 'rootfs/etc/systemd/system/cups.socket.d/50-retroboot.conf').read_text()
+        self.assertIn('ListenStream=\nListenStream=/run/cups/cups.sock', cups_sock)
+        customize = (IMAGE / 'scripts/customize-rootfs.sh').read_text()
+        disable_pos = customize.index('for unit in cups.service')
+        enable_pos = customize.index('avahi-daemon.service cups.socket')
+        self.assertLess(disable_pos, enable_pos)

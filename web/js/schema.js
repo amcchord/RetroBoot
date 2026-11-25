@@ -14,7 +14,7 @@ export const GROUPS = {
   audio: { page: 'sound', label: 'Sound' },
   catalog: { page: 'storage', label: 'Image Servers' },
   share: { page: 'storage', label: 'Shared Volume' },
-  printer: { page: 'storage', label: 'Shared Volume' },
+  printer: { page: 'printers', label: 'Virtual Mac Printer' },
   usb_share: { page: 'storage', label: 'Shared Volume' },
   media: { page: 'storage', label: 'CD-ROM' },
   bluetooth: { page: 'network', label: 'Bluetooth' },
@@ -28,6 +28,7 @@ export const PAGE_TITLES = {
   machine: 'Machine & Startup',
   display: 'Display & Input',
   sound: 'Sound',
+  printers: 'Printers',
   storage: 'Storage & Media',
   network: 'Network',
 };

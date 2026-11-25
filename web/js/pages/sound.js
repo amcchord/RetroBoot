@@ -14,7 +14,11 @@ export function render() {
   let testBtn = null;
 
   const audioPresent = () => {
-    const cap = store.settings && store.settings.capabilities.get('audio');
+    const caps = store.settings && store.settings.capabilities;
+    if (!caps) return true;
+    const outCap = caps.get('audio_output');
+    if (outCap) return outCap.present !== false;
+    const cap = caps.get('audio');
     return !cap || cap.present !== false;
   };
 
@@ -68,7 +72,7 @@ export function render() {
   );
   const update = () => {
     const m = store.settings;
-    const cap = m && m.capabilities.get('audio');
+    const cap = m && (m.capabilities.get('audio_output') || m.capabilities.get('audio'));
     capEl.replaceChildren();
     if (cap && !cap.present) capEl.append(notice({ level: 'info', title: 'Sound is not available', message: cap.reason || 'This RetroBoot has no supported sound output.' }));
     syncTestBtn();

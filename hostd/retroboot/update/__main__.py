@@ -26,7 +26,7 @@ from pathlib import Path
 
 from . import slotenv
 from .bundle import Bundle, BundleError, compatibility, trusted_keys
-from .writer import RealOps, SlotWriter, WriteError, release_info
+from .writer import RealOps, SlotWriter, WriteError, clean_reset_data, release_info
 
 DATA = Path("/var/lib/retroboot")
 
@@ -107,10 +107,11 @@ def apply(a) -> int:
     b = Bundle(Path(a.bundle))
     m = b.verify(trusted_keys(a.keys), lambda f, msg: emit(phase="verify", progress=round(0.15 * f, 3), message=msg))
     compatibility(m, installed, int(schema_now), allow_older=a.allow_older, allow_flavor=a.allow_flavor,
-                  allow_same=a.allow_older)
+                  allow_same=a.allow_older or a.clean, clean=a.clean)
     write_state({"staged": {"version": m["version"], "build_id": m["build_id"], "flavor": m["flavor"],
                             "status": "writing", "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "notes": str(m.get("notes") or "")[:2000], "settings_schema": m["settings_schema"]}})
+                            "notes": str(m.get("notes") or "")[:2000], "settings_schema": m["settings_schema"],
+                            "clean": bool(a.clean)}})
     writer = SlotWriter(esp, lay, Path("/run/retroboot/update"), ops=RealOps(a.bwlimit))
     last = [0.0]
 
@@ -118,20 +119,25 @@ def apply(a) -> int:
         if f is None or time.monotonic() - last[0] > 1 or f >= 1:
             last[0] = time.monotonic()
             emit(phase="write", progress=round(0.15 + 0.85 * (f or 0), 3), message=msg)
-    res = writer.write(b, prog)
+    res = writer.write(b, prog, clean=a.clean)
     from .bundle import describe_version
     staged = {"version": m["version"], "build_id": m["build_id"], "flavor": m["flavor"], "status": "ready",
               "slot": res["slot"], "label": describe_version(m["version"], m["build_id"]),
               "notes": str(m.get("notes") or "")[:2000], "settings_schema": m["settings_schema"],
-              "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "converted_grub": res["converted_grub"]}
+              "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "converted_grub": res["converted_grub"],
+              "clean": bool(a.clean)}
     write_state({"staged": staged})
     emit(phase="staged", progress=1.0, slot=res["slot"], converted_grub=res["converted_grub"],
-         carried=res["carried"])
+         carried=res["carried"], clean=bool(a.clean))
     if a.arm:
-        writer.resync_state(res["slot"])
-        snapshot_settings(installed.get("build_id") or "unknown")
+        writer.resync_state(res["slot"], clean=a.clean)
+        if a.clean:
+            clean_reset_data(DATA, esp)
+        else:
+            snapshot_settings(installed.get("build_id") or "unknown")
         staged["status"] = "restarting"
         write_state({"staged": staged, "armed": {"slot": res["slot"], "boot_id": boot_id(), "via": "cli",
+                                                 "clean": bool(a.clean),
                                                  "from": {"version": installed.get("version"),
                                                           "build_id": installed.get("build_id"),
                                                           "slot": booted}}})
@@ -283,6 +289,7 @@ def main(argv=None) -> int:
     p.add_argument("--arm", action="store_true")
     p.add_argument("--allow-older", action="store_true")
     p.add_argument("--allow-flavor", action="store_true")
+    p.add_argument("--clean", action="store_true")
     p.add_argument("--bwlimit", type=int, default=32768)
     d = sub.add_parser("update-disk")
     d.add_argument("--target", required=True)

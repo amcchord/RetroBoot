@@ -101,7 +101,10 @@ class ApplyEngine:
         await self.push_set_config()
 
     async def push_volume(self) -> bool:
-        return await self.app.mixer.set_volume(self.settings.applied["audio.volume"])
+        ok = await self.app.mixer.set_volume(self.settings.applied["audio.volume"])
+        if ok and getattr(self.app, "laptop", None) is not None:
+            self.app.laptop.muted = False
+        return ok
 
     async def sync_audio_output(self, output: str | None = None) -> bool:
         fn = getattr(self.app, "sync_audio_output", None)
@@ -129,7 +132,8 @@ class ApplyEngine:
             results["volume"] = await self.push_volume()
         if "audio.startup_chime" in keys:
             results["startup_chime"] = self.settings.applied.get("audio.startup_chime", "auto")
-        if "printer.enabled" in keys and getattr(self.app, "printer", None) is not None:
+        if any(k in ("printer.enabled", "printer.target", "printer.keep_pdf") for k in keys) \
+                and getattr(self.app, "printer", None) is not None:
             results["printer"] = await self.app.printer.sync()
         if "usb_share.enabled" in keys and getattr(self.app, "usbshare", None) is not None:
             results["usb_share"] = await self.app.usbshare.sync()

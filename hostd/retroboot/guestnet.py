@@ -44,10 +44,14 @@ DEFAULT_OVERLAY = "/var/lib/retroboot/config/hostd.local.json"
 
 
 def ruleset(uid: int, helper_ports: tuple[int, ...] = (8080,), helper_dns_ports: tuple[int, ...] = (8053,),
-            table: str = TABLE) -> str:
+            table: str = TABLE, printer_ports: tuple[int, ...] = (515, 631, 9100)) -> str:
     """The table, replacing any earlier copy atomically."""
     web = ", ".join(str(p) for p in sorted(set(helper_ports)))
     dns = ", ".join(str(p) for p in sorted(set(helper_dns_ports) | {53}))
+    prn_rule = ""
+    if printer_ports:
+        prn = ", ".join(str(int(p)) for p in sorted(set(printer_ports)))
+        prn_rule = f"\n    fib daddr type local tcp dport {{ {prn} }} accept"
     return f"""add table inet {table}
 delete table inet {table}
 table inet {table} {{
@@ -57,9 +61,10 @@ table inet {table} {{
   }}
   chain guest {{
     # Mac OS (QEMU's user network) may use these services on this computer:
-    # DNS (a local resolver stub, the Modern Web Helper's forwarder) and the helper's web port.
+    # DNS (a local resolver stub, the Modern Web Helper's forwarder), the helper's web port,
+    # and RetroBoot's virtual printer ports (LPD 515, IPP 631, AppSocket 9100).
     fib daddr type local meta l4proto {{ tcp, udp }} th dport {{ {dns} }} accept
-    fib daddr type local tcp dport {{ {web} }} accept
+    fib daddr type local tcp dport {{ {web} }} accept{prn_rule}
     # ... and nothing else on this computer: hostd's web and API ports, SSH, anything on loopback.
     fib daddr type local meta l4proto tcp counter reject with tcp reset
     fib daddr type local counter reject with icmpx admin-prohibited

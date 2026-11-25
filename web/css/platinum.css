@@ -3039,3 +3039,73 @@ html:not(.pt) details.disclosure[open] > summary::before {
   flex: 1 1 auto;
   min-width: 140px;
 }
+
+/* Printers page (printers.js) */
+.printer-list {
+  display: block;
+  background: #fff;
+  border-style: solid;
+  border-width: 2px;
+  border-color: #888 #fff #fff #888;
+  border-image: var(--pt-field) 2;
+}
+
+.printer-list > li {
+  padding: 6px 8px;
+  border-bottom: 1px solid #ddd;
+}
+
+.printer-list > li:last-child {
+  border-bottom: 0;
+}
+
+.printer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.printer-icon img.pt-icon,
+.printer-icon svg.px {
+  width: 32px;
+  height: 32px;
+}
+
+.printer-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.printer-uri code {
+  overflow-wrap: anywhere;
+}
+
+.printer-job {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.printer-toggles {
+  display: grid;
+  gap: 6px;
+}
+
+.printer-toggle {
+  display: grid;
+  gap: 2px;
+}
+
+.printer-dlg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 8px;
+}
+
+.printer-dlg-grid .select-wrap,
+.printer-dlg-grid select {
+  width: 100%;
+}

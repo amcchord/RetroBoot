@@ -38,7 +38,7 @@ from ..util import atomic_write_json, read_json, wall
 from . import slotenv
 from .bundle import Bundle, BundleError, compatibility, describe_version, trusted_keys, version_key
 from .writer import (RealOps, SlotWriter, WriteError, _restore_or_clear_tryboot, activate_rpi_slot,
-                     arm_rpi_tryboot, commit_rpi_slot, release_info, sync_esp)
+                     arm_rpi_tryboot, clean_reset_data, commit_rpi_slot, release_info, sync_esp)
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..hostd import Hostd
@@ -291,15 +291,19 @@ class UpdateManager:
         self.trial = False
         self.app.store.hold_schema = None
         staged = self.state.get("staged") or {}
-        prev = (self.state.get("armed") or {}).get("from") or {}
+        armed = self.state.get("armed") or {}
+        prev = armed.get("from") or {}
+        was_clean = bool(armed.get("clean"))
         self.state.pop("armed", None)
         self.state["staged"] = None
         self._history(kind="update", result="installed", version=self.release.get("version"),
                       build_id=self.release.get("build_id"), previous=prev, signal=signal, esp_changed=changed,
-                      message=f"RetroBoot was updated to {self.release.get('version')}.")
+                      clean=was_clean,
+                      message=(f"RetroBoot was clean-updated to {self.release.get('version')}." if was_clean else
+                               f"RetroBoot was updated to {self.release.get('version')}."))
         self.app.lifecycle.event("update_committed", slot=slot, signal=signal, esp_changed=changed,
                                  version=self.release.get("version"), build=self.release.get("build_id"),
-                                 staged=staged.get("build_id"))
+                                 staged=staged.get("build_id"), clean=was_clean)
         await self._refresh_other()
         self.committed = True
 
@@ -399,7 +403,7 @@ class UpdateManager:
         }
         if st:
             out["staged"] = {k: st.get(k) for k in ("version", "build_id", "flavor", "notes", "status", "at",
-                                                    "slot", "label")}
+                                                    "slot", "label", "clean")}
         if other and other.get("version"):
             newer = version_key(other.get("version"), other.get("build_id")) > \
                 version_key(cur.get("version", "0"), cur.get("build_id"))
@@ -411,15 +415,25 @@ class UpdateManager:
 
     def _check_public(self) -> dict | None:
         """The last check; an update it found counts only while it is newer than this RetroBoot
-        (after installing it, the stored check still names it)."""
+        (after installing it, the stored check still names it). ``latest`` also exposes the
+        currently installed version when present on the server, for a same-version Clean Update."""
         check = self.state.get("check")
-        found = (check or {}).get("found") if isinstance(check, dict) else None
+        if not isinstance(check, dict):
+            return check
+        cur = self.release
+        cur_k = version_key(cur.get("version", "0"), cur.get("build_id"))
+        res = dict(check)
+        found = res.get("found")
         if found:
-            cur = self.release
-            if version_key(found.get("version", "0"), found.get("build_id")) <= \
-                    version_key(cur.get("version", "0"), cur.get("build_id")):
-                return dict(check, found=None)
-        return check
+            fk = version_key(found.get("version", "0"), found.get("build_id"))
+            if fk <= cur_k:
+                res["found"] = None
+                if not res.get("latest") and fk == cur_k:
+                    res["latest"] = found
+        latest = res.get("latest")
+        if latest and version_key(latest.get("version", "0"), latest.get("build_id")) < cur_k:
+            res["latest"] = None
+        return res
 
     def notices(self) -> list[dict]:
         out = []
@@ -430,8 +444,10 @@ class UpdateManager:
             out.append({"id": "update-failed", "level": "warning", "message": last.get("message")})
         st = self.staged()
         if st and st.get("status") == "ready":
-            out.append({"id": "update-ready", "level": "info",
-                        "message": f"RetroBoot {st.get('version')} is ready to install. Restart to update."})
+            msg = (f"RetroBoot {st.get('version')} is ready for a Clean Update. Restart to erase Macs and "
+                   "settings and install.") if st.get("clean") else (
+                f"RetroBoot {st.get('version')} is ready to install. Restart to update.")
+            out.append({"id": "update-ready", "level": "info", "message": msg})
         return out
 
     def require_available(self) -> None:
@@ -454,7 +470,7 @@ class UpdateManager:
         return shutil.disk_usage(self.incoming).free >= nbytes + RESERVE
 
     def install_job(self, source: dict, origin: str = "web", allow_older: bool = False,
-                    allow_flavor: bool = False) -> Job:
+                    allow_flavor: bool = False, clean: bool = False) -> Job:
         """source: {"kind": "file", "path"} (incoming, removed afterwards) | {"kind": "usb", "id"} |
         {"kind": "feed"} (the update the last check found)."""
         async def body(job: Job):
@@ -466,40 +482,44 @@ class UpdateManager:
                 elif source["kind"] == "usb":
                     path = await self._copy_from_usb(source["id"], job)
                 elif source["kind"] == "feed":
-                    path = await self._download(job)
+                    path = await self._download(job, clean=clean)
                 else:
                     raise JobFailed("Unknown update source.", None, "invalid")
-                return await self._install(job, path, origin, allow_older, allow_flavor)
+                return await self._install(job, path, origin, allow_older, allow_flavor, clean=clean)
             finally:
                 if path is not None and path.parent == self.incoming:
                     path.unlink(missing_ok=True)
-        return self.app.jobs.start("update.install", body, resources=("update",), params={"source": source["kind"]})
+        return self.app.jobs.start("update.install", body, resources=("update",),
+                                   params={"source": source["kind"], "clean": bool(clean)})
 
-    async def _install(self, job: Job, path: Path, origin: str, allow_older: bool, allow_flavor: bool) -> dict:
+    async def _install(self, job: Job, path: Path, origin: str, allow_older: bool, allow_flavor: bool,
+                       clean: bool = False) -> dict:
         job.update(0.0, "Checking the update…")
         keys = trusted_keys(self.keys_dir)
         try:
             bundle = await asyncio.to_thread(Bundle, path)
             manifest = await asyncio.to_thread(bundle.verify, keys, lambda f, m: job.update(0.15 * f, m))
             compatibility(manifest, self.release, self._disk_schema() or schema.SCHEMA_VERSION,
-                          allow_older=allow_older, allow_flavor=allow_flavor, allow_same=allow_older)
+                          allow_older=allow_older, allow_flavor=allow_flavor,
+                          allow_same=allow_older or clean, clean=clean)
         except BundleError as exc:
             self.app.lifecycle.event("update_rejected", code=exc.code, origin=origin)
             raise JobFailed(exc.message, None, exc.code)
         label = describe_version(manifest["version"], manifest["build_id"])
         self.app.lifecycle.event("update_install_start", version=manifest["version"], build=manifest["build_id"],
-                                 key=bundle.key_id, origin=origin)
+                                 key=bundle.key_id, origin=origin, clean=bool(clean))
         self.state["staged"] = {"version": manifest["version"], "build_id": manifest["build_id"],
                                 "flavor": manifest["flavor"], "notes": str(manifest.get("notes") or "")[:2000],
                                 "status": "writing", "at": wall(), "label": label,
-                                "settings_schema": manifest["settings_schema"]}
+                                "settings_schema": manifest["settings_schema"], "clean": bool(clean)}
         self.save()
         self.other = None
         writer = self._writer()
         t0 = time.monotonic()
         try:
             res = await asyncio.to_thread(writer.write, bundle,
-                                          lambda f, m: job.update(0.15 + 0.85 * f if f is not None else None, m))
+                                          lambda f, m: job.update(0.15 + 0.85 * f if f is not None else None, m),
+                                          clean=clean)
         except (WriteError, BundleError, slotenv.SlotError) as exc:
             self.state["staged"] = None
             self._history(kind="install", result="failed", version=manifest["version"],
@@ -515,21 +535,25 @@ class UpdateManager:
         env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
         self.env, _ = await asyncio.to_thread(slotenv.read_env, self.esp, env_name=env_name)
         self.state["staged"].update(status="ready", slot=res["slot"], written_s=round(time.monotonic() - t0, 1),
-                                    converted_grub=res["converted_grub"])
+                                    converted_grub=res["converted_grub"], clean=bool(clean))
         self.save()
         self.app.lifecycle.event("update_staged", slot=res["slot"], version=manifest["version"],
                                  build=manifest["build_id"], seconds=round(time.monotonic() - t0, 1),
-                                 carried=len(res["carried"]), converted_grub=res["converted_grub"])
-        job.outcome = f"RetroBoot {manifest['version']} is ready. Restart to update."
+                                 carried=len(res["carried"]), converted_grub=res["converted_grub"],
+                                 clean=bool(clean))
+        job.outcome = (f"RetroBoot {manifest['version']} is ready for a Clean Update. Restart to erase Macs "
+                       "and settings and install.") if clean else (
+            f"RetroBoot {manifest['version']} is ready. Restart to update.")
         return {"staged": self.public()["staged"], "restart_required": True}
 
     # -- restart to update ----------------------------------------------------------------------
-    def restart_job(self, origin: str = "web") -> Job:
+    def restart_job(self, origin: str = "web", clean: bool | None = None) -> Job:
         async def body(job: Job):
             self.require_available()
             st = self.staged()
             if not st or st.get("status") not in ("ready", "failed"):
                 raise JobFailed("There is no update ready to install.", None, "nothing-staged")
+            do_clean = bool(st.get("clean")) if clean is None else bool(clean)
             target = st["slot"]
             sup = self.app.supervisor
             if sup.active:
@@ -537,19 +561,30 @@ class UpdateManager:
                 # An application that holds Mac OS's Shut Down past the wait fails this job;
                 # when Mac OS finishes it, Restart to Update goes on (supervisor late_stop).
                 await sup.job_clean(job, "shutdown", poweroff=False, purpose="host-reboot",
-                                    resume=lambda: self.restart_job(origin) if self.staged() else None)
+                                    resume=lambda: self.restart_job(origin, clean=do_clean)
+                                    if self.staged() else None)
             # The screen stays black from Mac OS's shut down to the restart, as for Restart
             # RetroBoot: the last steps take well under a second, and a progress window
             # shown that briefly would only flash (outer capture, image/reports/update-*.md).
             job.update(0.8, f"Installing RetroBoot {st['version']}…")
             writer = self._writer()
-            carried = await asyncio.to_thread(writer.resync_state, target)
-            snap = await asyncio.to_thread(self.snapshot_settings)
-            await asyncio.to_thread(self.app.store.save_now)
+            carried = await asyncio.to_thread(writer.resync_state, target, clean=do_clean)
+            clean_summary = None
+            if do_clean:
+                if getattr(self.app, "pairing", None) is not None:
+                    self.app.pairing.frozen = True
+                clean_summary = await asyncio.to_thread(clean_reset_data, self.paths.data, self.esp,
+                                                        boot_mode=self.boot_mode)
+                snap = None
+            else:
+                snap = await asyncio.to_thread(self.snapshot_settings)
+                await asyncio.to_thread(self.app.store.save_now)
             self.state["armed"] = {"slot": target, "boot_id": self.app.lifecycle.boot_id, "at": wall(),
+                                   "clean": do_clean,
                                    "from": {"version": self.release.get("version"),
                                             "build_id": self.release.get("build_id"),
                                             "slot": (self.layout or {}).get("current")}}
+            st["clean"] = do_clean
             st["status"] = "restarting"
             self.save()
             env_name = slotenv.RPI_ENV_NAME if self.boot_mode == "rpi" else None
@@ -557,12 +592,13 @@ class UpdateManager:
                 await asyncio.to_thread(arm_rpi_tryboot, self.esp, target)
             self.env = await asyncio.to_thread(slotenv.update_env, self.esp, env_name=env_name, rb_next=target,
                                                rb_tries="1")
+            ev_extra = {"clean_summary": clean_summary} if clean_summary is not None else {}
             self.app.lifecycle.event("update_armed", slot=target, version=st["version"], build=st["build_id"],
                                      carried=len(carried), settings_snapshot=bool(snap), origin=origin,
-                                     mode=self.boot_mode)
+                                     mode=self.boot_mode, clean=do_clean, **ev_extra)
             job.update(0.95, "Restarting…")
             await sup.reboot_host(f"update to {st['version']}", arg=("0 tryboot" if self.boot_mode == "rpi" else None))
-            return {"slot": target, "version": st["version"]}
+            return {"slot": target, "version": st["version"], "clean": do_clean}
         return self.app.jobs.start("update.restart", body, resources=("guest", "host", "update"),
                                    preemptible=True)
 
@@ -768,12 +804,14 @@ class UpdateManager:
                 raise JobFailed("The update server's list isn't in a format RetroBoot understands.", None,
                                 "invalid-feed")
             found = self.pick_from_feed(feed)
-            self.state["check"] = {"at": wall(), "url": url, "found": found}
+            latest = found or self.pick_latest_from_feed(feed)
+            self.state["check"] = {"at": wall(), "url": url, "found": found, "latest": latest}
             self.save()
-            self.app.lifecycle.event("update_check", found=(found or {}).get("build_id"), origin=origin)
+            self.app.lifecycle.event("update_check", found=(found or {}).get("build_id"),
+                                     latest=(latest or {}).get("build_id"), origin=origin)
             job.outcome = (f"RetroBoot {found['version']} is available." if found else
                            f"RetroBoot {self.release.get('version')} is up to date.")
-            return {"found": found}
+            return {"found": found, "latest": latest}
         return self.app.jobs.start("update.check", body, resources=("update",))
 
     def feed_url(self) -> str:
@@ -784,7 +822,7 @@ class UpdateManager:
         auth = getattr(self.app, "lab_auth", None)
         return url or (auth.feed_url if auth is not None else "")
 
-    def pick_from_feed(self, feed: Any) -> dict | None:
+    def _pick_from_feed(self, feed: Any, *, include_current: bool = False) -> dict | None:
         if not isinstance(feed, dict) or feed.get("format") != FEED_FORMAT or not isinstance(feed.get("updates"), list):
             raise JobFailed("The update server's list isn't in a format RetroBoot understands.", None, "invalid-feed")
         best = None
@@ -800,7 +838,8 @@ class UpdateManager:
             if version_key(self.release.get("version", "0.0.0")) < version_key(str(u.get("min_version") or "0.0.0")):
                 continue
             k = version_key(u["version"], u["build_id"])
-            if k > cur and (best is None or k > version_key(best["version"], best["build_id"])):
+            eligible = (k >= cur) if include_current else (k > cur)
+            if eligible and (best is None or k > version_key(best["version"], best["build_id"])):
                 best = u
         if best is None:
             return None
@@ -808,8 +847,15 @@ class UpdateManager:
                 "sha256": best["sha256"], "bytes": best["bytes"], "notes": str(best.get("notes") or "")[:2000],
                 "label": describe_version(best["version"], best["build_id"])}
 
-    async def _download(self, job: Job) -> Path:
-        found = (self.state.get("check") or {}).get("found")
+    def pick_from_feed(self, feed: Any) -> dict | None:
+        return self._pick_from_feed(feed, include_current=False)
+
+    def pick_latest_from_feed(self, feed: Any) -> dict | None:
+        return self._pick_from_feed(feed, include_current=True)
+
+    async def _download(self, job: Job, *, clean: bool = False) -> Path:
+        check = self._check_public() or {}
+        found = check.get("found") or (check.get("latest") if clean else None)
         if not found:
             raise JobFailed("Check for updates first.", None, "nothing-found")
         if not self.space_for(found["bytes"]):

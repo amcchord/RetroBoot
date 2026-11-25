@@ -373,6 +373,7 @@ class RetroBootWindow(Screen):
         self.cpu.sample()
         self.selected: str | None = None
         self.address: str | None = None
+        self._cups_printers: list[dict] = []
         # A Raspberry Pi card that keeps the installer beside RetroBoot (rpiboot.py): once
         # per window, not at every refresh (the boot partition is an automount).
         from .. import rpiboot
@@ -387,6 +388,14 @@ class RetroBootWindow(Screen):
             self.address = await self.app.network.primary_address()
         except Exception:  # noqa: BLE001 -- a summary line only
             self.address = None
+        cups = getattr(self.app, "cups", None)
+        avail, _ = _cups_available(cups)
+        if avail and callable(getattr(cups, "list_printers", None)):
+            try:
+                got = await _maybe_await(cups.list_printers())
+                self._cups_printers = [dict(p) for p in (got or []) if isinstance(p, dict)]
+            except Exception:  # noqa: BLE001 -- a summary line only
+                self._cups_printers = []
         if self.panel.screen is self:
             await self.panel.refresh()
 
@@ -477,12 +486,39 @@ class RetroBootWindow(Screen):
             return f"Mac OS started in {t['finder_detected']:.0f} s"
         return f"RetroBoot {__version__}"
 
+    def _printer_summary(self) -> str:
+        s = self.app.settings.applied
+        if not s.get("printer.enabled", True):
+            return "Off"
+        target = str(s.get("printer.target") or "pdf")
+        if target.startswith("cups:"):
+            qname = target[5:]
+            printers = self._cups_printers
+            if not printers:
+                cups = getattr(self.app, "cups", None)
+                avail, _ = _cups_available(cups)
+                if avail and callable(getattr(cups, "list_printers", None)):
+                    try:
+                        got = cups.list_printers()
+                        if inspect.isawaitable(got):
+                            got.close() if hasattr(got, "close") else None
+                        elif got:
+                            printers = got
+                    except Exception:  # noqa: BLE001 -- a summary line only
+                        pass
+            hit = next((p for p in (printers or []) if p.get("name") == qname), None)
+            if hit:
+                return str(hit.get("description") or hit.get("name") or qname)
+            return qname
+        return "Save as PDF"
+
     def panes(self) -> list[dict]:
         webproxy = getattr(self.app, "webproxy", None)
         rows = [ui.row("disk", "Startup Disk", self._disk_summary(), "startup"),
                 ui.row("display", "Display & Sound", self._display_summary(), "display"),
                 ui.row("keyboard", "Keyboard & Mouse", self._keyboard_summary(), "keyboard"),
-                ui.row("network", "Network & Web Access", self._network_summary(), "network")]
+                ui.row("network", "Network & Web Access", self._network_summary(), "network"),
+                ui.row("printers", "Printers…", self._printer_summary(), "note")]
         if webproxy and webproxy.available():
             rows.append(ui.row("webhelper", "Modern Web Helper", self._webhelper_summary(), "web"))
         if self.app.bluetooth.capable():
@@ -614,6 +650,8 @@ class RetroBootWindow(Screen):
             await p.show_software_update()
         elif pane == "network":
             await p.show(NetworkWeb(p))
+        elif pane == "printers":
+            await p.show(Printers(p, back=p.show_recovery))
         elif pane == "webhelper":
             await p.show(WebHelper(p, back=p.show_recovery))
         elif pane == "display":
@@ -644,8 +682,8 @@ class RetroBootWindow(Screen):
             await self.panel.message("stop", "Mac OS could not start.", job.message, then=self.panel.show_recovery)
 
 
-PANES = ("disk", "display", "keyboard", "network", "webhelper", "bluetooth", "download", "update", "timezone",
-         "diagnostics", "installer")
+PANES = ("disk", "display", "keyboard", "network", "printers", "webhelper", "bluetooth", "download", "update",
+         "timezone", "diagnostics", "installer")
 
 
 class StartInstaller(Screen):
@@ -1387,6 +1425,535 @@ class WebHelperBypass(Screen):
             await self.panel.refresh()
 
 
+async def _maybe_await(res: Any) -> Any:
+    return await res if inspect.isawaitable(res) else res
+
+
+def _cups_available(cups: Any) -> tuple[bool, str | None]:
+    """Handle both ``(bool, reason)`` (real CupsManager) and plain ``bool``."""
+    if cups is None or not callable(getattr(cups, "available", None)):
+        return False, "CUPS is not installed on this computer."
+    try:
+        res = cups.available()
+    except Exception as exc:
+        return False, str(exc)
+    if isinstance(res, tuple):
+        ok = bool(res[0]) if res else False
+        reason = str(res[1]) if len(res) > 1 and res[1] else None
+        return ok, reason
+    return bool(res), None
+
+
+async def _apply_printer_settings(app: "Hostd", changes: dict[str, Any]) -> None:
+    if not changes:
+        return
+    ctx = app.validation_context() if callable(getattr(app, "validation_context", None)) else None
+    if hasattr(app.settings, "set_desired_and_applied"):
+        try:
+            app.settings.set_desired_and_applied(changes, ctx)
+        except schema.ValidationError as exc:
+            if all(v == "Unknown setting." for v in exc.fields.values()):
+                app.settings.desired.update(changes)
+                app.settings.applied.update(changes)
+            else:
+                raise
+    else:
+        app.settings.desired.update(changes)
+        app.settings.applied.update(changes)
+    engine = getattr(app, "apply_engine", None) or getattr(app, "apply", None)
+    fn = getattr(engine, "apply_live_keys", None) if engine is not None else None
+    if callable(fn):
+        await _maybe_await(fn(list(changes)))
+
+
+_RESERVED_PRINTER_NAMES = frozenset({"pdf", "print-to-pdf", "retroboot", "lp", "default", "raw", "all"})
+
+
+def _sanitize_printer_name(raw: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", (raw or "").strip()).strip("_-")
+    if not cleaned or not cleaned[0].isalnum():
+        cleaned = "Printer" + (("_" + cleaned) if cleaned else "")
+    slug = cleaned[:48].rstrip("_-") or "Printer"
+    if slug.lower() in _RESERVED_PRINTER_NAMES:
+        slug = f"{slug[:40]}_printer"
+    return slug
+
+
+def _printer_uri(protocol: str, host: str) -> str:
+    h = (host or "").strip()
+    if "://" in h:
+        return h
+    proto = (protocol or "ipp").strip().lower()
+    if proto == "socket":
+        return f"socket://{h}:9100"
+    if proto == "lpd":
+        return f"lpd://{h}:515/auto"
+    if proto == "ipps":
+        return f"ipps://{h}:631/ipp/print"
+    return f"ipp://{h}:631/ipp/print"
+
+
+async def _cups_add_printer(cups: Any, *, name: str, uri: str, driver: str, description: str) -> str:
+    kwargs = {"name": name, "uri": uri, "driver": driver, "description": description}
+    fn = cups.add_printer
+    try:
+        sig = inspect.signature(fn)
+        accepts_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        call_kw = kwargs if accepts_varkw else {k: v for k, v in kwargs.items() if k in sig.parameters}
+        res = await _maybe_await(fn(**call_kw))
+    except TypeError:
+        res = await _maybe_await(fn(name, uri))
+    if isinstance(res, dict) and res.get("name"):
+        return str(res["name"])
+    return name
+
+
+class Printers(Screen):
+    """Virtual LaserWriter output & Linux CUPS printers (RetroBootWindow -> Printers…)."""
+    doc_id = "printers"
+    tick = 5.0
+
+    def __init__(self, panel: "Panel", back: Callable[[], Awaitable[None]] | None = None,
+                 notice: str | None = None):
+        super().__init__(panel)
+        self.back = back
+        self.notice = notice
+        self.error: str | None = None
+        self.printers: list[dict] = []
+        self.cups_available = False
+        self.cups_reason: str | None = None
+        self.selected: str | None = str(self.app.settings.applied.get("printer.target") or "pdf")
+        self._load_sync_or_schedule()
+
+    def _load_sync_or_schedule(self) -> None:
+        cups = getattr(self.app, "cups", None)
+        self.cups_available, self.cups_reason = _cups_available(cups)
+        if self.cups_available and callable(getattr(cups, "list_printers", None)):
+            try:
+                got = cups.list_printers()
+                if inspect.isawaitable(got):
+                    if getattr(self.app, "loop", None) is not None:
+                        self.app.loop.create_task(self._finish_load(got))
+                    return
+                self.printers = [dict(p) for p in (got or []) if isinstance(p, dict) and p.get("name")]
+            except Exception:
+                self.printers = []
+        else:
+            self.printers = []
+
+    async def _finish_load(self, awaitable) -> None:
+        try:
+            got = await awaitable
+            self.printers = [dict(p) for p in (got or []) if isinstance(p, dict) and p.get("name")]
+        except Exception:
+            self.printers = []
+        if self.panel.screen is self and self.panel.visible:
+            await self.panel.refresh()
+
+    async def _load(self) -> None:
+        cups = getattr(self.app, "cups", None)
+        self.cups_available, self.cups_reason = _cups_available(cups)
+        if self.cups_available and callable(getattr(cups, "list_printers", None)):
+            try:
+                got = await _maybe_await(cups.list_printers())
+                self.printers = [dict(p) for p in (got or []) if isinstance(p, dict) and p.get("name")]
+            except Exception:
+                self.printers = []
+        else:
+            self.printers = []
+
+    async def on_tick(self) -> None:
+        await self._load()
+        if self.panel.screen is self and self.panel.visible:
+            await self.panel.refresh()
+
+    def _active_output_label(self, target: str) -> str:
+        if not target or target == "pdf":
+            return "Save as PDF (RetroBoot Share)"
+        if target.startswith("cups:"):
+            qname = target[5:]
+            hit = next((p for p in self.printers if p.get("name") == qname), None)
+            if hit:
+                return str(hit.get("description") or hit.get("name") or qname)
+            return qname
+        return target
+
+    def doc(self):
+        s = self.app.settings.applied
+        enabled = bool(s.get("printer.enabled", True))
+        target = str(s.get("printer.target") or "pdf")
+        keep_pdf = bool(s.get("printer.keep_pdf", False))
+        printer_srv = getattr(self.app, "printer", None)
+        pub = printer_srv.public() if printer_srv is not None and callable(getattr(printer_srv, "public", None)) else {}
+        running = bool(pub.get("running", enabled))
+        status_word = "Running" if (enabled and running) else ("Enabled" if enabled else "Off")
+        active_label = self._active_output_label(target)
+
+        rows = [ui.row("pdf", "Save as PDF (RetroBoot Share)",
+                       "Saves PDFs into RetroBoot Share/Printed PDFs", "note", checked=(target == "pdf"))]
+        for p in self.printers:
+            tid = f"cups:{p['name']}"
+            label = str(p.get("description") or p["name"])
+            state = p.get("state") or "idle"
+            uri = p.get("uri") or ""
+            detail = f"{state} · {uri}" if uri else str(state)
+            rows.append(ui.row(tid, label, detail, "note", checked=(target == tid)))
+
+        valid_ids = {r["id"] for r in rows}
+        if self.selected not in valid_ids:
+            self.selected = target if target in valid_ids else "pdf"
+
+        items = [
+            ui.columns(
+                ui.icon("note", 32),
+                ui.stack(
+                    ui.text(f"Virtual LaserWriter: {status_word}", "emphasis"),
+                    ui.text(f"Active output: {active_label}", "small"),
+                ),
+            ),
+            ui.lst("target", rows, self.selected, rows=5),
+        ]
+        if not self.cups_available:
+            items.append(ui.text(self.cups_reason or
+                                 "CUPS is not installed on this computer. Print to PDF in RetroBoot Share still works.",
+                                 "small"))
+        items.append(ui.columns(
+            ui.checkbox("keep_pdf", "Also save PDF copy", keep_pdf),
+            ui.checkbox("enabled", "Enable Mac printing", enabled),
+        ))
+        if self.notice:
+            items.append(ui.text(self.notice, "small"))
+        if self.error:
+            items.append(ui.text(self.error, "emphasis"))
+        is_cups_sel = bool(self.selected and self.selected.startswith("cups:") and self.cups_available)
+        items.append(ui.buttons(
+            ui.btn("use", "Use for Mac", disabled=not self.selected or self.selected == target),
+            ui.btn("test", "Test Page", disabled=not self.selected),
+            ui.btn("remove", "Remove…", disabled=not is_cups_sel),
+        ))
+        items.append(ui.buttons(
+            ui.btn("discover", "Find Printers…", align="left", disabled=not self.cups_available),
+            ui.btn("add", "Add by IP…", align="left", disabled=not self.cups_available),
+            ui.btn("cancel", "Done", default=True),
+        ))
+        return ui.window(self.doc_id, "Printers", items, width=540)
+
+    async def change(self, id, value):
+        self.error = None
+        if id == "target":
+            self.selected = str(value) if value else None
+            await self.panel.refresh()
+        elif id == "keep_pdf":
+            await _apply_printer_settings(self.app, {"printer.keep_pdf": bool(value)})
+            self.notice = "PDF copy in RetroBoot Share enabled." if value else "PDF copy in RetroBoot Share turned off."
+            await self.panel.refresh()
+        elif id == "enabled":
+            await _apply_printer_settings(self.app, {"printer.enabled": bool(value)})
+            self.notice = "Mac printing enabled." if value else "Mac printing turned off."
+            await self.panel.refresh()
+
+    async def action(self, id, values):
+        p = self.panel
+        back = self.back or p.show_recovery
+        self.error = None
+        if id == "cancel":
+            await back()
+            return
+        if values and "target" in values and values["target"]:
+            self.selected = str(values["target"])
+        sel = self.selected
+        if id == "use" and sel:
+            await _apply_printer_settings(self.app, {"printer.target": sel})
+            self.notice = f"Mac OS now prints to {self._active_output_label(sel)}."
+            await p.refresh()
+        elif id == "test" and sel:
+            await self._test_page(sel)
+        elif id == "discover" and self.cups_available:
+            await p.show(PrinterDiscover(p, back=lambda: p.show(Printers(p, self.back))))
+        elif id == "add" and self.cups_available:
+            await p.show(PrinterAddManual(p, back=lambda: p.show(Printers(p, self.back))))
+        elif id == "remove" and sel and sel.startswith("cups:") and self.cups_available:
+            qname = sel[5:]
+            info = next((x for x in self.printers if x.get("name") == qname), {"name": qname})
+            await p.show(PrinterConfirmRemove(p, info, back=lambda: p.show(Printers(p, self.back))))
+
+    async def _test_page(self, sel: str) -> None:
+        printer_srv = getattr(self.app, "printer", None)
+        cups = getattr(self.app, "cups", None)
+        qname = "pdf" if sel == "pdf" else sel[5:] if sel.startswith("cups:") else sel
+        try:
+            if printer_srv is not None and callable(getattr(printer_srv, "print_test_page", None)):
+                await _maybe_await(printer_srv.print_test_page(qname, __version__))
+            elif qname != "pdf" and cups is not None and callable(getattr(cups, "print_pdf", None)):
+                await _maybe_await(cups.print_pdf(qname, b"%PDF-1.4\n%%EOF\n", "RetroBoot Test Page"))
+            else:
+                self.error = "Test page printing is not available."
+                await self.panel.refresh()
+                return
+            self.notice = ("Test page saved to RetroBoot Share/Printed PDFs."
+                           if qname == "pdf" else f"Test page sent to “{self._active_output_label(sel)}”.")
+        except Exception as exc:
+            self.error = f"Test page failed: {exc}"
+        await self.panel.refresh()
+
+
+class PrinterDiscover(Screen):
+    """Discover nearby network/AirPrint and USB printers via CUPS."""
+    doc_id = "printer-discover"
+
+    def __init__(self, panel: "Panel", back: Callable[[], Awaitable[None]]):
+        super().__init__(panel)
+        self.back = back
+        self.items: list[dict] | None = None
+        self.selected: str | None = None
+        self.scanning = True
+        self.set_target = True
+        self.error: str | None = None
+        if getattr(self.app, "loop", None) is not None:
+            self.app.loop.create_task(self._scan())
+
+    def _item_id(self, d: dict) -> str:
+        return str(d.get("id") or d.get("uri") or d.get("name") or "")
+
+    async def _scan(self) -> None:
+        self.scanning = True
+        self.error = None
+        cups = getattr(self.app, "cups", None)
+        try:
+            if cups is None or not callable(getattr(cups, "discover", None)):
+                self.items = []
+            else:
+                try:
+                    found = await _maybe_await(cups.discover(timeout=5.0))
+                except TypeError:
+                    found = await _maybe_await(cups.discover())
+                self.items = [dict(d) for d in (found or []) if isinstance(d, dict)]
+        except Exception as exc:
+            self.items = []
+            self.error = f"Discovery failed: {exc}"
+        self.scanning = False
+        if self.items:
+            avail = [d for d in self.items if not d.get("already_added")]
+            pick = avail[0] if avail else self.items[0]
+            self.selected = self._item_id(pick)
+        else:
+            self.selected = None
+        if self.panel.screen is self and self.panel.visible:
+            await self.panel.refresh()
+
+    def _find(self, item_id: str | None) -> dict | None:
+        if not item_id or not self.items:
+            return None
+        return next((d for d in self.items if self._item_id(d) == item_id), None)
+
+    def doc(self):
+        items = [ui.text("Looking for nearby network and USB printers." if self.scanning else
+                         "Choose a discovered printer to add to RetroBoot.")]
+        if self.scanning and self.items is None:
+            items += [ui.text("Searching…"), ui.progress(None)]
+        elif self.items:
+            rows = []
+            for d in self.items:
+                iid = self._item_id(d)
+                name = str(d.get("name") or d.get("model") or d.get("address") or "Printer")
+                parts = [str(d.get("transport") or "network").upper()]
+                if d.get("address"):
+                    parts.append(str(d["address"]))
+                elif d.get("uri"):
+                    parts.append(str(d["uri"]))
+                if d.get("already_added"):
+                    parts.append("Added")
+                rows.append(ui.row(iid, name, " · ".join(parts), "note", disabled=bool(d.get("already_added"))))
+            items.append(ui.lst("printer", rows, self.selected, rows=5))
+            items.append(ui.checkbox("set_target", "Use as Mac OS default printer", self.set_target))
+        else:
+            items.append(ui.text("No printers were found. Try Rescan or Add by IP….", "small"))
+        if self.error:
+            items.append(ui.text(self.error, "emphasis"))
+        sel = self._find(self.selected)
+        can_add = bool(sel and not sel.get("already_added") and not self.scanning)
+        items.append(ui.buttons(
+            ui.btn("rescan", "Rescan", align="left", disabled=self.scanning),
+            ui.btn("cancel", "Back"),
+            ui.btn("add", "Add Printer", default=True, disabled=not can_add),
+        ))
+        return ui.window(self.doc_id, "Find Printers", items, width=520)
+
+    async def change(self, id, value):
+        if id == "printer":
+            self.selected = str(value) if value else None
+            self.error = None
+            await self.panel.refresh()
+        elif id == "set_target":
+            self.set_target = bool(value)
+
+    async def action(self, id, values):
+        if id == "cancel":
+            await self.back()
+            return
+        if id == "rescan":
+            self.items = None
+            self.scanning = True
+            await self.panel.refresh()
+            await self._scan()
+            return
+        if id == "add":
+            if values and "set_target" in values:
+                self.set_target = bool(values["set_target"])
+            sel = self._find((values or {}).get("printer") or self.selected)
+            if not sel or sel.get("already_added"):
+                return
+            cups = getattr(self.app, "cups", None)
+            if cups is None:
+                self.error = "CUPS is not available."
+                await self.panel.refresh()
+                return
+            qname = _sanitize_printer_name(str(sel.get("name") or sel.get("model") or "Printer"))
+            try:
+                added = await _cups_add_printer(
+                    cups,
+                    name=qname,
+                    uri=str(sel.get("uri") or ""),
+                    driver=str(sel.get("driver_hint") or "auto"),
+                    description=str(sel.get("model") or sel.get("name") or qname),
+                )
+                if self.set_target:
+                    await _apply_printer_settings(self.app, {"printer.target": f"cups:{added}"})
+            except Exception as exc:
+                self.error = f"Could not add printer: {exc}"
+                await self.panel.refresh()
+                return
+            await self.back()
+
+
+class PrinterAddManual(Screen):
+    """Add a CUPS printer manually by IP address, hostname, or URI."""
+    doc_id = "printer-add"
+
+    def __init__(self, panel: "Panel", back: Callable[[], Awaitable[None]]):
+        super().__init__(panel)
+        self.back = back
+        self.name = ""
+        self.host = ""
+        self.protocol = "ipp"
+        self.driver = "auto"
+        self.set_target = True
+        self.error: str | None = None
+
+    def doc(self):
+        items = [
+            ui.text("Enter the printer’s IP address, hostname, or full URI."),
+            ui.field("name", "Printer Name:", self.name, placeholder="Office_LaserJet", max_length=64),
+            ui.field("host", "IP / Hostname:", self.host, placeholder="192.168.1.50", max_length=253),
+            ui.popup("protocol", "Protocol:", [
+                ("ipp", "IPP (631)"),
+                ("socket", "AppSocket / JetDirect (9100)"),
+                ("lpd", "LPD (515)"),
+                ("ipps", "IPPS (631)"),
+            ], self.protocol),
+            ui.popup("driver", "Driver:", [
+                ("auto", "Automatic (Driverless)"),
+                ("generic_ps", "Generic PostScript"),
+                ("generic_pcl", "Generic PCL"),
+                ("raw", "Raw Queue"),
+            ], self.driver),
+            ui.checkbox("set_target", "Also set for Mac OS", self.set_target),
+        ]
+        if self.error:
+            items.append(ui.text(self.error, "emphasis"))
+        items.append(ui.buttons(ui.btn("cancel", "Cancel"), ui.btn("add", "Add", default=True)))
+        return ui.window(self.doc_id, "Add Printer by Address", items, width=480, focus="host")
+
+    async def change(self, id, value):
+        self.error = None
+        if id == "name":
+            self.name = str(value or "")
+        elif id == "host":
+            self.host = str(value or "")
+        elif id == "protocol":
+            self.protocol = str(value or "ipp")
+        elif id == "driver":
+            self.driver = str(value or "auto")
+        elif id == "set_target":
+            self.set_target = bool(value)
+
+    async def action(self, id, values):
+        if id == "cancel":
+            await self.back()
+            return
+        if id != "add":
+            return
+        if values:
+            for k in ("name", "host", "protocol", "driver", "set_target"):
+                if k in values:
+                    await self.change(k, values[k])
+        host = self.host.strip()
+        if not host:
+            self.error = "Enter an IP address, hostname, or URI."
+            await self.panel.refresh()
+            return
+        cups = getattr(self.app, "cups", None)
+        if cups is None:
+            self.error = "CUPS is not available."
+            await self.panel.refresh()
+            return
+        uri = _printer_uri(self.protocol, host)
+        raw_name = self.name.strip() or host
+        qname = _sanitize_printer_name(raw_name)
+        try:
+            added = await _cups_add_printer(
+                cups,
+                name=qname,
+                uri=uri,
+                driver=self.driver,
+                description=raw_name,
+            )
+            if self.set_target:
+                await _apply_printer_settings(self.app, {"printer.target": f"cups:{added}"})
+        except Exception as exc:
+            self.error = f"Could not add printer: {exc}"
+            await self.panel.refresh()
+            return
+        await self.back()
+
+
+class PrinterConfirmRemove(Screen):
+    """Confirm removing a configured Linux CUPS printer."""
+    doc_id = "printer-confirm-remove"
+
+    def __init__(self, panel: "Panel", printer: dict, back: Callable[[], Awaitable[None]]):
+        super().__init__(panel)
+        self.printer = dict(printer or {})
+        self.back = back
+
+    def doc(self):
+        qname = str(self.printer.get("name") or "")
+        label = str(self.printer.get("description") or qname)
+        active = self.app.settings.applied.get("printer.target") == f"cups:{qname}"
+        detail = (f"Queue “{qname}” will be removed. Mac OS printing will switch back to Save as PDF."
+                  if active else f"Queue “{qname}” will be removed from RetroBoot.")
+        return ui.alert(self.doc_id, "caution", f"Remove printer “{label}”?", detail,
+                        ui.buttons(ui.btn("cancel", "Cancel", default=True), ui.btn("remove", "Remove")))
+
+    async def action(self, id, values):
+        if id == "cancel":
+            await self.back()
+            return
+        if id != "remove":
+            return
+        qname = str(self.printer.get("name") or "")
+        cups = getattr(self.app, "cups", None)
+        if cups is not None and callable(getattr(cups, "remove_printer", None)):
+            try:
+                await _maybe_await(cups.remove_printer(qname))
+            except Exception as exc:
+                await self.panel.message("caution", "The printer could not be removed.", str(exc), then=self.back)
+                return
+        if self.app.settings.applied.get("printer.target") == f"cups:{qname}":
+            await _apply_printer_settings(self.app, {"printer.target": "pdf"})
+        await self.back()
+
+
 def wifi_secured(net: dict) -> bool:
     return str(net.get("security") or "open").strip().lower() not in ("", "open", "--", "none")
 
@@ -1913,7 +2480,11 @@ class DisplaySound(Screen):
                     self.app.settings.set_desired_and_applied({"audio.volume": vol}, self.app.validation_context())
                 except schema.ValidationError:
                     return
+                laptop = getattr(self.app, "laptop", None)
+                was_muted = bool(getattr(laptop, "muted", False))
                 await self.app.apply_engine.push_volume()
+                if was_muted and not getattr(laptop, "muted", False):
+                    await self.panel.refresh()
             return
         if id == "audio.mute":
             laptop = getattr(self.app, "laptop", None)

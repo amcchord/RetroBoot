@@ -946,7 +946,7 @@ class Supervisor:
             if audio_out:
                 extra = ({"connector": audio_out.get("connector"), "alsa": audio_out.get("alsa"),
                           "softvol": audio_out.get("softvol")}
-                         if audio_out.get("vc4") or audio_out["kind"] == "configured" else {})
+                         if audio_out.get("vc4") or audio_out.get("softvol") is not None or audio_out["kind"] == "configured" else {})
                 if screamer:
                     extra["screamer"] = screamer
                 self.log.event("audio_output", kind=audio_out["kind"], card=audio_out["card_id"],
@@ -955,11 +955,14 @@ class Supervisor:
                 want_mixer = audio_out.get("mixer")
                 if (audio_out.get("card_id") != self.app.mixer.card
                         or (want_mixer and want_mixer != self.app.mixer.control)
+                        or audio_out.get("pw_sink") != getattr(self.app.mixer, "pw_sink", None)
                         or not self.app.mixer.available):
                     # Re-probe whenever the chosen output card/control changes (including x86
                     # laptops falling back from HDMI to built-in analog speakers, Pi, Gemini,
                     # and explicit audio.output switches).
-                    await self.app.mixer.probe(audio_out.get("card_id"), want_mixer, detect_switch=True)
+                    pw_sink = audio_out.get("pw_sink")
+                    kw = {"pw_sink": pw_sink} if pw_sink else {}
+                    await self.app.mixer.probe(audio_out.get("card_id"), want_mixer, detect_switch=True, **kw)
                     if self.app.mixer.available:
                         if getattr(getattr(self.app, "laptop", None), "muted", False):
                             vol = int(settings.get("audio.volume", 70))

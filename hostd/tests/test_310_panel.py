@@ -759,3 +759,24 @@ class TestPanel310(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(n.get("type") == "progress" for n in _walk(err_doc)))
         self.assertIn("The catalog could not be loaded.", _all_text(err_doc))
         self.assertIn("retry", _all_buttons(err_doc))
+
+    async def test_display_sound_volume_slider_clears_mute_and_refreshes(self):
+        app = _FakeApp(self.root)
+        app.capabilities = lambda: {"audio": True, "audio_output": True, "display_modes": False}
+        app.laptop = SimpleNamespace(muted=True, can_mute=True)
+        pushed = []
+
+        async def push_volume():
+            pushed.append(app.settings.applied["audio.volume"])
+            app.laptop.muted = False
+            return True
+
+        app.apply_engine = SimpleNamespace(push_volume=push_volume)
+        panel = Panel(app)
+        scr = DisplaySound(panel, page="sound")
+        await panel.show(scr)
+        before_docs = len(app.presenter.docs)
+        await scr.change("audio.volume", 55)
+        self.assertEqual(pushed, [55])
+        self.assertFalse(app.laptop.muted)
+        self.assertGreater(len(app.presenter.docs), before_docs)

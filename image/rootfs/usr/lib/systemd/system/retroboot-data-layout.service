@@ -12,6 +12,8 @@ RemainAfterExit=yes
 ExecStart=/usr/bin/install -d -m 0755 /var/lib/retroboot/logs /var/lib/retroboot/machines /var/lib/retroboot/config /var/lib/retroboot/share /var/lib/retroboot/checkpoints
 ExecStart=/usr/bin/install -d -m 0700 /var/lib/retroboot/state
 ExecStart=/usr/bin/install -d -m 0700 /var/lib/retroboot/bluetooth
+ExecStart=/usr/bin/install -d -m 0755 -g lp /var/lib/retroboot/cups /var/lib/retroboot/cups/ppd /var/lib/retroboot/cups/interfaces
+ExecStart=/usr/bin/install -d -m 0700 -g lp /var/lib/retroboot/cups/ssl
 ExecStart=/usr/bin/install -d -m 2755 -g systemd-journal /var/lib/retroboot/logs/journal
 
 [Install]

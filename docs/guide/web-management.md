@@ -1,22 +1,134 @@
 # Web management
 
-RetroBoot serves its own control panel. Open it in a browser on the same network to see the running Mac, manage its settings, add disk images, or install an update.
+Every RetroBoot serves its own management page. Open it from a phone or another computer on the same network. You don't need a cloud account, an internet connection or even a working Mac OS: the page keeps working while Mac OS is frozen, because it doesn't run inside the emulator.
 
-![A paired browser shows the running Mac, its live Finder screen, and the startup timeline](../images/web-overview.jpg)
+<img src="../images/web-overview.jpg" width="760" alt="The paired RetroBoot Overview shows the running Mac, startup timeline and system status">
 
-## Pair a browser
+<sub>Captured from the running RetroBoot appliance in Proxmox.</sub>
 
-1. On the RetroBoot computer, press **Ctrl+Alt+Delete** and open **Network & Web Access…**. The same panel is available during Setup, and remote screen feeds automatically mask the screen whenever a pairing code is shown.
-2. Scan the QR code or open the address shown there. RetroBoot uses its own HTTPS certificate. Compare its SHA-256 fingerprint against the one shown on the RetroBoot screen.
-3. Enter the six-digit code and a name for the browser. Use **Paired Devices** to remove a browser when it no longer needs access.
+The page looks like Mac OS 9. It uses the Charcoal, Geneva and Monaco fonts, the icons and the desktop pattern of the Mac OS system on your RetroBoot, and its buttons, check boxes and windows match Mac OS 9.2.1 pixel for pixel. Until a Mac OS system is installed, the same layout appears with plain fonts and RetroBoot's own icons.
 
-![RetroBoot's local controls over the running Mac desktop](../images/retroboot-panel.png)
+## Pairing a browser
 
-## Manage files, sound, checkpoints, and Macs
+1. On the computer, press **Ctrl+Alt+Delete** and open **Network & Web Access**. In first-time setup, **Network…** in the RetroBoot Setup window opens it too, and the installer's Network step shows the same address and code.
+2. The window shows the address, a 6-digit pairing code, a QR code of the address and the fingerprint of RetroBoot's certificate:
 
-- **Files & Print-to-PDF:** Drag files into **RetroBoot Share**, preview text/PICT/PDF/images directly in the browser, download folders as ZIP, and browse files printed to PDF or copied from inserted USB flash drives.
-- **Sound & Input:** Pick startup chimes (Automatic by Mac model or a specific Mac family), switch audio outputs, test chimes, adjust **Mouse DPI**, enable **Natural scrolling**, and map game controllers.
-- **Network & Modern Web Helper:** The Web **Network** page includes quick-jump section links, places **Modern Web Helper** prominently at the top, and provides an always-visible **Sites not to help (whitelist)** editor so listed domains pass straight through unchanged. From **Ctrl+Alt+Delete**, open **Keyboard & Mouse**, **Modern Web Helper** (**Whitelist…**), or **Force Reboot…** (**Force Restart Mac OS** / **Force Reboot Computer**) directly.
-- **Storage & Media:** View installed Macs, restore automatic **Fresh Install** or manual checkpoints, browse catalog downloads (with SHA-256 details collapsed until needed), or import an archive. Under **Image Servers**, enter one HTTPS catalog URL per line and apply the settings. [Host your own catalog](image-servers.md)
+   <img src="../screenshots/panel/network-web-access.png" width="588" alt="Network & Web Access: On your phone or computer, open https://192.168.1.40/ or https://retroboot.local/. Pairing code, valid for 5 more minutes. Certificate SHA-256 fingerprint. QR code. Allow web management. Wi-Fi…, Web Helper…, New Code, Done">
 
-![Storage & Media in a paired browser shows installed Macs and catalog imports](../images/web-storage.jpg)
+   <sub>Rendered from RetroBoot's own window with example values.</sub>
+
+3. Open the address in a browser, or scan the QR code. Each RetroBoot makes its own certificate, so the browser warns that it doesn't recognize it. Compare the fingerprint the browser shows with the one on the computer, then continue.
+4. Enter the code and give the browser a name:
+
+   <img src="../screenshots/web/pairing.png" width="512" alt="Pair with RetroBoot: enter the 6-digit code shown on the computer, name this device, Pair">
+
+A code works once and expires after 5 minutes. After too many wrong codes it's retired, and **New Code** makes another. Paired browsers are listed under **Paired Devices**, where you can sign them out one by one:
+
+<img src="../screenshots/web/devices.png" width="760" alt="Paired Devices: each browser with the date it was paired and when it was last active, with Remove and Sign Out buttons">
+
+ Unticking **Allow web management** turns the web page off entirely; the panel on the computer always keeps working.
+
+The name `retroboot.local` works on most phones and computers. When two RetroBoots share a network, the second one gives itself a unique name such as `retroboot-1a2b.local`, and the panel shows the name it really has.
+
+## Finding your way around
+
+The window on the left (or the **Go** menu on a phone) lists the pages:
+
+| Page | What it's for |
+| --- | --- |
+| **Overview** | Whether Mac OS is running, its startup timeline, a live picture, the address and version |
+| **[Screen](screen.md)** | Seeing, hearing, and controlling Mac OS from a browser |
+| **[Files](files.md)** | Copying files, viewing Print-to-PDF drawings, previewing PICT/images, moving items, downloading `.zip` folders, and safe-ejecting USB drives |
+| **Machine & Startup** | Default Mac, per-Mac memory & graphics defaults, processor, time zone, battery display, automatic start and startup indicator |
+| **Display & Input** | Display scaling, pixel size, graphics card (3D acceleration), rotation, resolution, keyboard swaps, gamepad preset (`Arrows` / `WASD` / `Off`), natural scrolling and mouse DPI |
+| **Sound** | Volume, mute, startup chime style (**Automatic**, **Mac OS 9**, **Quadra**, **Power Mac**, **Mac II**, **Macintosh SE**, **Off**), output selector & **Test Sound** |
+| **Printers** | Configure physical/network/USB **CUPS** printers, switch Mac output between **Save as PDF** and a printer queue, optional PDF copy, and test pages |
+| **Storage & Media** | Your Macs, automatic **Fresh Install** & manual checkpoints, 13-Mac catalog imports, USB drive sharing, and CD-ROM disc |
+| **Network** | Quick-jump sections, **Modern Web Helper** with **Sites not to help (whitelist)** passthrough, Wi-Fi, Mac OS AirPort networking, and the remote screen |
+| **Diagnostics** | Versions, screenshots, the startup timeline, logs and evidence bundles |
+| **Recovery** | Clean and forced restarts and shutdowns, and the last settings that worked |
+| **[Software Update](software-update.md)** | Installing a newer RetroBoot, or going back |
+| **Paired Devices** | The browsers that can manage this RetroBoot |
+
+The menu bar works like Mac OS's. The **Mac OS** menu has Start, Restart, Shut Down and the force actions. The RetroBoot menu (the little Mac at the left) has **About RetroBoot**, **Software Update…**, **Restart RetroBoot…** and **Turn Off RetroBoot…**. **View ▸ Browser Pixel Size** chooses how many screen pixels each Mac pixel gets in this browser. Automatic matches your screen, and only sizes your screen can draw exactly are offered.
+
+On a phone, the pages stack into one column, and the list of pages moves into the **Go** menu:
+
+<img src="../screenshots/web/phone-overview.png" width="260" alt="The Overview on a phone-sized screen">
+
+## Overview and Needs attention
+
+*Overview* shows whether Mac OS is running and its startup timeline: when Mac OS was launched, when its startup screen appeared, when it was shown, and when the Finder was ready. It also shows the addresses, the version and a live picture of the Mac's screen. Drop files on that picture to copy them to the Mac.
+
+When RetroBoot decides Mac OS is frozen, the page says **Needs attention** and suggests collecting evidence before you try anything:
+
+<img src="../screenshots/web/overview-hung.png" width="438" alt="Needs attention: Mac OS has stopped responding. This page still works: Collect evidence first if you want to report the problem, then try Restart. If a normal restart doesn't work, use Force Restart on the Recovery page. Recovery Options">
+
+## Storage & Media
+
+<img src="../images/web-storage.jpg" width="760" alt="Storage & Media lists both installed Macs and the available catalog images">
+
+## Settings, and Apply and Restart
+
+<img src="../screenshots/web/machine.png" width="760" alt="Machine & Startup: Startup machine, Memory 512 MB, Processor PowerPC G4 (7400) or G3, Startup speed Real-time startup, Date & Time with Time zone and Show the battery in Mac OS, Startup with Start Mac OS automatically and Show startup progress; In Use Now">
+
+Each setting says when it takes effect:
+
+| Kind | Examples | When it takes effect |
+| --- | --- | --- |
+| Live | Pixel size, Mac screen size, scaling, main display, rotation, swap Command/Option, recovery keys, pointer speed, volume, automatic start, startup indicator, web helper, remote screen | At once |
+| Mac OS restart | Startup machine, memory, processor, time zone, the battery in Mac OS, Mac OS keys, the graphics card, sound on or off, Mac OS networking and adapter, the shared folder, the CD-ROM disc | At the next Mac OS start |
+| Timed | Display resolution | At once, and goes back after 15 s unless you keep it |
+
+Edits stay a local draft (marked *Edited*) until you click **Apply**. A saved change that needs a restart is marked *Pending*, with *In use now: …* beside it. **Apply and Restart Mac OS** asks Mac OS to restart cleanly through its own Restart. If you'd rather wait, **Apply Without Restarting** saves the change for the next start.
+
+A display resolution change shows a countdown at the top of the page. If the computer's screen goes blank or looks wrong, do nothing, and RetroBoot puts the previous mode back:
+
+<img src="../screenshots/web/display-confirm.png" width="760" alt="Keep the new display setting? Laptop display mode 1920 x 1080, 60 Hz — was Automatic (keep current mode). Check the laptop's screen. If it looks wrong or stays blank, do nothing: RetroBoot reverts in 56 seconds. Revert Now / Keep Change">
+
+<sub>From the web page's mock service, which counts down from 60 seconds.</sub>
+
+Settings are checked as a whole before they're saved. If someone changed the same settings elsewhere (on the computer or in another browser), the page tells you what changed and lets you keep or drop your edits. RetroBoot also remembers the last settings that started Mac OS successfully. **Restore Known Working Settings** goes back to them, and a damaged settings file is recovered automatically.
+
+<img src="../screenshots/web/display.png" width="760" alt="Display & Input: Pixel size Automatic (1x = 1024 x 768), Mac screen size Best for this display, Scaling Sharp or Fill the screen, Main display, Rotation, Graphics card Standard or 3D acceleration (ATI Radeon), unavailable on the lab machine, Display resolution; the Screen preview, Current Display and 3D Acceleration">
+
+<sub>This capture (October 12) predates the *Graphics card* choice, which now follows *Scaling* on Display & Input when this computer can offer 3D acceleration. See [3D acceleration](display-scaling.md#3d-acceleration-ati-radeon) for that part of the page.</sub>
+
+## Starting, stopping and forcing
+
+| Action | What happens |
+| --- | --- |
+| Start Mac OS | Starts at once |
+| Restart Mac OS / Shut Down Mac OS… | Asks Mac OS to do it through its own power-key dialog. While Mac OS is still starting, RetroBoot waits for the Finder and then for the dialog, so a request right after startup works too. Shut Down leaves RetroBoot on unless you tick *Also turn off RetroBoot* |
+| Restart RetroBoot / Turn Off RetroBoot | Shuts Mac OS down cleanly first (waking it if it's asleep), then restarts or turns off the whole computer |
+| Force Restart / Force Shut Down | Only after you confirm that unsaved work will be lost. Evidence is saved first |
+
+If Mac OS doesn't respond to a clean request, the page says so and offers the matching force action. It never forces anything by itself.
+
+<img src="../screenshots/web/recovery.png" width="760" alt="Recovery page: Restart or Shut Down, Turn Off or Restart RetroBoot, Force Mac OS to Stop, Known Working Settings, Recovery on the Computer, Before You Force">
+
+## Machines, checkpoints and media
+
+*Storage & Media* lists your Macs and their checkpoints. It imports machines from the RetroBoot Mac library (checked by SHA-256), from RetroBoot downloads when the computer was installed with their sign-in (each entry names its catalog; earlier versions of a system appear after **Show older versions**), or from an archive file you choose (**Import from a File**), chooses the CD-ROM disc, and turns the shared folder on or off. A checkpoint can only be taken while Mac OS is shut down, so the copy is never half-written.
+
+**Remove…** deletes a Mac with its disk and checkpoints, after a warning that names it and the space it frees; tick the box to confirm. It can't be undone, and the shared folder isn't touched. RetroBoot refuses to remove the Mac that is running, the one chosen to start, or your only Mac, and says why. A power cut during a removal leaves nothing half-deleted: RetroBoot finishes the cleanup at its next start. From 1.6.0 the computer's own Startup Disk window offers the same removal as **Delete…** ([polish](../../hostd/reports/polish-2026-10-13.md#1-remove-a-mac-delete-apiv1machinesid); on the test machines the refusal for the running Mac was checked, and nothing was removed: [fleet7](../../image/reports/fleet7-2026-10-13.md)).
+
+**New Blank Disk…** (under the list) makes a Mac with an empty disk, and **Start Up from CD…** on a Mac starts it once from a disc in a CD-ROM drive connected to the RetroBoot computer or from a CD image, the way Mac OS is installed on a blank disk. Both are the same actions as in the computer's [Startup Disk window](recovery.md#new-blank-disks-deleting-macs-and-starting-up-from-a-cd).
+
+<img src="../screenshots/web/storage.png" width="760" alt="Storage & Media: Machines with Mac OS 9.2.2 running, Checkpoints, Import from Catalog, Import from a File, CD-ROM, Shared Volume">
+
+## Diagnostics
+
+*Diagnostics* shows versions, the startup timeline, two screenshots (what the computer's screen shows, and Mac OS's own screen) and the logs. **Collect Evidence** builds a bundle you can download. It contains logs, settings, status and both screenshots. Wi-Fi passwords, session tokens and pairing codes are removed from logs, pages and bundles.
+
+<img src="../screenshots/web/diagnostics.png" width="760" alt="Diagnostics: Evidence Bundle with Collect Evidence, Screenshots of the outer screen and of Mac OS, Versions, Startup Timeline">
+
+## Security
+
+- The page is served over HTTPS with a certificate the device makes itself. It's available only on the local network and on the device itself, and never published to the internet.
+- Only a paired browser can change anything. Sessions use secure, strict cookies, and every change also needs a matching origin and a per-session token.
+- The page can only ask for specific, checked actions. It can't run commands, reach the emulator's internals or read arbitrary files.
+- Wi-Fi passwords go to the computer's network manager and are never shown, logged or given to Mac OS.
+- Mac OS itself can't reach this page or any other service on the computer.
+
+<sub>All screenshots on this page except the countdown are from the real RetroBoot service in the lab, running a real Mac OS 9.2.1 with RetroBoot's display service replaced by a stand-in. The [screenshot index](../screenshots/README.md) has the details.</sub>

@@ -29,9 +29,29 @@ async function followInstall(job) {
   return final;
 }
 
-async function restartToUpdate() {
+async function restartToUpdate(clean = false) {
   const st = (u() || {}).staged;
   if (!st) return;
+  const isClean = typeof clean === 'boolean' ? clean : !!st.clean;
+  if (isClean) {
+    const ok = await confirm({
+      title: `Clean Update to RetroBoot ${st.version}?`,
+      icon: 'caution',
+      danger: true,
+      acknowledge: 'I understand all Macs, disk images, shared files, and settings (except Wi-Fi) will be erased.',
+      message: [
+        `Mac OS shuts down first, the same as choosing Shut Down from the Special menu. ${onSave()}`,
+        `Then ${hw().the} restarts with a fresh RetroBoot ${st.version} setup. Your saved Wi-Fi networks are kept; all Macs, disk images, and settings are erased.`,
+      ],
+      confirmLabel: 'Erase and Update',
+    });
+    if (!ok) return;
+    await powerJob('/api/v1/update/restart', `Clean Update to RetroBoot ${st.version}`, [
+      `Mac OS has shut down and ${hw().the} is restarting into a fresh RetroBoot ${st.version}.`,
+      'Your saved Wi-Fi networks are kept. Once RetroBoot starts up, pair this browser again from the RetroBoot Setup screen.',
+    ], { clean: true });
+    return;
+  }
   const ok = await confirm({
     title: `Restart to Install RetroBoot ${st.version}?`,
     icon: 'note',
@@ -39,7 +59,7 @@ async function restartToUpdate() {
     confirmLabel: 'Restart to Update',
   });
   if (!ok) return;
-  await powerJob('/api/v1/update/restart', `Installing RetroBoot ${st.version}`, [`Mac OS has shut down and ${hw().the} is restarting with RetroBoot ${st.version}.`, 'This page reconnects by itself when RetroBoot is back, usually within a minute or two.']);
+  await powerJob('/api/v1/update/restart', `Installing RetroBoot ${st.version}`, [`Mac OS has shut down and ${hw().the} is restarting with RetroBoot ${st.version}.`, 'This page reconnects by itself when RetroBoot is back, usually within a minute or two.'], { clean: false });
 }
 
 async function goBack() {
@@ -53,11 +73,11 @@ async function goBack() {
   await powerJob('/api/v1/update/rollback', `Switching to RetroBoot ${prev.version}`, [`Mac OS has shut down and ${hw().the} is restarting with RetroBoot ${prev.version}.`, 'This page reconnects by itself when RetroBoot is back.']);
 }
 
-async function powerJob(path, heading, text) {
+async function powerJob(path, heading, text, body = {}) {
   const bootId = store.status && store.status.host && store.status.host.boot_id;
   let job;
   try {
-    job = asJob(await post(path, {}));
+    job = asJob(await post(path, body));
   } catch (err) {
     toast(friendlyMessage(err), { level: 'error', timeout: 8000 });
     return;
@@ -73,11 +93,11 @@ async function powerJob(path, heading, text) {
   }
 }
 
-function uploadFile(file, onProgress) {
+function uploadFile(file, onProgress, { clean = false } = {}) {
   // XMLHttpRequest for upload progress; same session cookie, CSRF header and JSON errors as api.js.
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/v1/update/bundle');
+    xhr.open('POST', clean ? '/api/v1/update/bundle?clean=1' : '/api/v1/update/bundle');
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('X-RetroBoot-CSRF', csrf() || '');
     xhr.setRequestHeader('Accept', 'application/json');
@@ -114,7 +134,7 @@ function versionBlock(info) {
   return out;
 }
 
-function stagedBlock(info) {
+function stagedBlock(info, cleanOverride, onToggleClean) {
   const st = info.staged;
   const job = updateJob();
   if (job && job.kind === 'update.install') {
@@ -123,10 +143,19 @@ function stagedBlock(info) {
   if (!st) return null;
   if (st.status === 'writing') return [h('p', null, `RetroBoot ${st.label} is being written…`)];
   const failed = st.status === 'failed';
+  const isClean = cleanOverride !== null ? cleanOverride : !!st.clean;
   return [
-    h('p', null, h('strong', null, failed ? `RetroBoot ${st.label} didn’t finish starting last time.` : `RetroBoot ${st.label} is ready to install.`)),
+    h('p', null, h('strong', null, failed ? `RetroBoot ${st.label} didn’t finish starting last time.` : (isClean ? `RetroBoot ${st.label} is ready for a Clean Update.` : `RetroBoot ${st.label} is ready to install.`))),
     st.notes ? h('p', { class: 'muted' }, st.notes) : null,
-    h('p', { class: 'muted small' }, 'Installing restarts RetroBoot once. Mac OS shuts down cleanly first.'),
+    isClean
+      ? notice({ level: 'warning', title: 'Clean Update selected', message: 'Restarting will erase all Macs, disk images, shared files, checkpoints, and settings (Wi-Fi networks are kept) and start fresh.' })
+      : h('p', { class: 'muted small' }, 'Installing restarts RetroBoot once. Mac OS shuts down cleanly first.'),
+    h(
+      'label',
+      { class: 'check' },
+      h('input', { type: 'checkbox', checked: isClean, disabled: !!job, onchange: (e) => onToggleClean(e.target.checked) }),
+      h('span', null, 'Clean Update (erase all Macs, disk images, and settings; keep Wi-Fi)'),
+    ),
     h(
       'div',
       { class: 'row-actions' },
@@ -141,7 +170,7 @@ function stagedBlock(info) {
         },
         disabled: !!job,
       }),
-      button(failed ? 'Try Again…' : 'Restart to Update…', { variant: 'default', icon: 'restart', onClick: restartToUpdate, disabled: !!job }),
+      button(isClean ? (failed ? 'Try Clean Update Again…' : 'Restart for Clean Update…') : (failed ? 'Try Again…' : 'Restart to Update…'), { variant: isClean ? 'danger' : 'default', icon: 'restart', onClick: () => restartToUpdate(isClean), disabled: !!job }),
     ),
   ].filter(Boolean);
 }
@@ -158,6 +187,9 @@ export function render() {
   const stagedWin = win({ title: 'Ready to Install', icon: 'update' }, stagedEl);
   const panels = scope.add(settingsPanels('update'));
   let uploading = null; // {name, fraction}
+  let uploadClean = false;
+  let stagedCleanOverride = null;
+  let stagedKey = '';
   const fileInput = h('input', { type: 'file', accept: '.rbu,application/octet-stream', class: 'visually-hidden', 'aria-label': 'Update file' });
 
   fileInput.addEventListener('change', async () => {
@@ -175,7 +207,7 @@ export function render() {
       res = await uploadFile(file, (f) => {
         uploading.fraction = f;
         paint();
-      });
+      }, { clean: uploadClean });
     } catch (err) {
       uploading = null;
       paint();
@@ -255,29 +287,50 @@ export function render() {
       return;
     }
     const busy = !!job || !!uploading || !info.can_install;
+    const nextKey = info.staged ? `${info.staged.build_id || ''}:${info.staged.at || ''}` : '';
+    if (nextKey !== stagedKey) {
+      stagedKey = nextKey;
+      stagedCleanOverride = null;
+    }
     patch('ver', verEl, JSON.stringify([info.current, info.previous, info.last_result, info.boot]), () => versionBlock(info));
-    const staged = stagedBlock(info);
+    const staged = stagedBlock(info, stagedCleanOverride, (v) => {
+      stagedCleanOverride = v;
+      paint();
+    });
     stagedWin.hidden = !staged;
-    patch('staged', stagedEl, JSON.stringify([info.staged, job && [job.id, job.message, job.progress]]), () => staged || []);
-    patch('upload', uploadEl, JSON.stringify([uploading, busy]), () =>
+    patch('staged', stagedEl, JSON.stringify([info.staged, stagedCleanOverride, job && [job.id, job.message, job.progress]]), () => staged || []);
+    patch('upload', uploadEl, JSON.stringify([uploading, busy, uploadClean]), () =>
       uploading
         ? [h('p', null, `Uploading ${uploading.name}…`), progressBar(uploading.fraction, 'Uploading the update')]
-        : [h('p', null, 'Choose a RetroBoot update file (.rbu) on this device. RetroBoot checks its signature before installing it.'), h('div', { class: 'row-actions' }, button('Choose Update File…', { icon: 'download', onClick: () => fileInput.click(), disabled: busy }))],
+        : [
+            h('p', null, 'Choose a RetroBoot update file (.rbu) on this device. RetroBoot checks its signature before installing it.'),
+            h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: uploadClean, disabled: busy, onchange: (e) => { uploadClean = e.target.checked; paint(); } }), h('span', null, 'Clean Update (allows reinstalling the same version; erases all Macs and settings except Wi-Fi)')),
+            h('div', { class: 'row-actions' }, button('Choose Update File…', { icon: 'download', onClick: () => fileInput.click(), disabled: busy })),
+          ],
     );
     patch('usb', usbEl, JSON.stringify([info.usb, busy]), () => {
       const list = info.usb || [];
       return [
-        list.length ? h('ul', { class: 'change-list' }, ...list.map((b) => h('li', null, h('strong', null, `RetroBoot ${b.label}`), ` on ${b.disk} (${formatBytes(b.bytes)}) `, button('Install', { className: 'btn-small', onClick: () => installFrom({ source: 'usb', id: b.id }), disabled: busy })))) : h('p', { class: 'muted' }, `No update files found. Copy a .rbu file to a USB disk and connect it to ${hw().the}.`),
+        list.length ? h('ul', { class: 'change-list' }, ...list.map((b) => h('li', null, h('strong', null, `RetroBoot ${b.label}`), ` on ${b.disk} (${formatBytes(b.bytes)}) `, button('Install', { className: 'btn-small', onClick: () => installFrom({ source: 'usb', id: b.id }), disabled: busy }), ' ', button('Clean Update', { className: 'btn-small', onClick: () => installFrom({ source: 'usb', id: b.id, clean: true }), disabled: busy })))) : h('p', { class: 'muted' }, `No update files found. Copy a .rbu file to a USB disk and connect it to ${hw().the}.`),
         h('div', { class: 'row-actions' }, button('Look Again', { icon: 'refresh', onClick: lookUsb, disabled: busy })),
       ];
     });
     patch('server', serverEl, JSON.stringify([info.url, info.check, busy]), () => {
       const found = info.check && info.check.found;
+      const latest = info.check && info.check.latest;
       if (!info.url) return h('p', { class: 'muted' }, 'Enter the address of an update server below to check it for updates (or leave it empty for RetroBoot’s update list). RetroBoot never installs anything by itself.');
       return [
         found ? h('p', null, h('strong', null, `RetroBoot ${found.label} is available`), ` (${formatBytes(found.bytes)}).`) : h('p', null, info.check ? `RetroBoot is up to date (checked ${fmtDateTime(info.check.at)}).` : 'Not checked yet.'),
         found && found.notes ? h('p', { class: 'muted' }, found.notes) : null,
-        h('div', { class: 'row-actions' }, button('Check for Updates', { icon: 'refresh', onClick: check, disabled: busy }), found ? button('Download and Install', { variant: 'default', icon: 'download', onClick: () => installFrom({ source: 'server' }), disabled: busy }) : null),
+        !found && latest ? h('p', { class: 'muted small' }, `Start fresh with RetroBoot ${latest.version}: erases all Macs, disk images and settings (Wi-Fi is kept).`) : null,
+        h(
+          'div',
+          { class: 'row-actions' },
+          button('Check for Updates', { icon: 'refresh', onClick: check, disabled: busy }),
+          found ? button('Download and Install', { variant: 'default', icon: 'download', onClick: () => installFrom({ source: 'server' }), disabled: busy }) : null,
+          found ? button('Clean Update', { icon: 'download', onClick: () => installFrom({ source: 'server', clean: true }), disabled: busy }) : null,
+          !found && latest ? button(`Clean Update (${latest.version})`, { icon: 'download', onClick: () => installFrom({ source: 'server', clean: true }), disabled: busy }) : null,
+        ),
       ];
     });
     patch('prev', prevEl, JSON.stringify([info.previous, busy]), () => {

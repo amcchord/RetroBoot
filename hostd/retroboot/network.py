@@ -434,7 +434,7 @@ _SCONTROL_RE = re.compile(r"^Simple mixer control '([^']+)',(\d+)\s*$", re.M)
 _CAPABILITIES_RE = re.compile(r"^\s*Capabilities:\s*(.*)$", re.M)
 VOLUME_STEP = 6
 _MIXER_CANDIDATES = ("Master", "PCM", "Speaker", "Headphone", "Front", "Line Out", "DAC", "Digital",
-                     "Playback", "Headset")
+                     "Playback", "Headset", "RetroBoot")
 
 
 def perceptual_to_hw_percent(percent: int) -> int:

@@ -1,28 +1,26 @@
 # Mac disk library
 
-Download a current Mac archive and its SHA-256 checksum. Keep the archive intact when copying it to a USB disk for import. The library includes Internet Archive references for the original install media and updates. [Public Mac disk library](https://mcchord.net/retroboot-downloads/#advanced)
+RetroBoot 3.3.0 includes all **13 ready-to-run Macs** right out of the box—built into both the installer and **Ctrl+Alt+Delete → Download a Mac** with no account, password, or server configuration needed. You can also download archives manually with SHA-256 verification from the [RetroBoot downloads portal](https://mcchord.net/retroboot-downloads/#advanced).
 
-RetroBoot lists this library in the PC installer and in **Download a Mac** (**Ctrl+Alt+Delete**) on every computer, with no setup. The Raspberry Pi Zero 2 W has used it since 3.0.3 and ships with the two standard 68k editions installed. On RetroBoot 3.0.5 and earlier on other computers, press **Ctrl+Alt+Delete**, open **Download a Mac**, choose **Image Servers…** and add `https://mcchord.net/retroboot-downloads/catalog.json`. You can also add it under **Storage & Media → Image Servers** in a paired browser. [Add an image server](image-servers.md)
+![Download a Mac catalog selector](../images/download-a-mac.png)
 
-![Download a Mac with System 7.5.5 selected from the public RetroBoot catalog](../images/download-a-mac.png)
+RetroBoot filters the list to the Mac runtimes supported by your hardware and groups them cleanly across **Kids & Family**, **Clean Classic**, **68k**, **Deluxe**, and **Mac OS X**:
 
-The library groups Macs by runtime and lists OS versions in numerical order. It shows the newest published revision of each edition. Standard and curated editions are separate Macs. Previously downloaded archives can still be imported.
-
-| Runtime | Available images | Requirements |
+| Runtime | Editions available | Hardware support |
 | --- | --- | --- |
-| 68k | System 7.5.5 and Mac OS 8.1, each in standard and Deluxe editions | RetroBoot 1.7.0 or later with the 68k emulator |
-| PowerPC Classic | Mac OS 9.2.1 and 9.2.2 standard, plus Mac OS 9.2.2 Deluxe, SuperDeluxe and Mega Deluxe | A RetroBoot build with the Classic PowerPC emulator |
-| PowerPC Mac OS X | Jaguar 10.2.8, Panther 10.3.9 and Tiger 10.4.11 Period Editions, plus Tiger Deluxe | RetroBoot 2.0.2 on an x86 PC with Mac OS X support |
+| **68k (Quadra 800)** | System 7.5.5, System 7.5.5 Deluxe v2, Mac OS 8.1, Mac OS 8.1 Deluxe v2 | x86-64 PCs, Raspberry Pi 4/5, Raspberry Pi Zero 2 W & Gemini PDA |
+| **PowerPC Classic** | Mac OS 9.2.1 (v4), Mac OS 9.2.2 (v5), Deluxe v10, SuperDeluxe v7, **Mega Deluxe v5** | x86-64 PCs, Raspberry Pi 4/5 & Gemini PDA |
+| **PowerPC Mac OS X** | Jaguar 10.2.8, Panther 10.3.9, Tiger 10.4.11 Period Editions & **Tiger Deluxe** | x86-64 PCs |
 
-The device lists images its installed emulator can start. Add your own HTTPS catalog in [Image Servers](image-servers.md). The browser portal also lists the PC installers, Raspberry Pi SD images and host updates in their own sections.
+## Featured & curated editions
 
-## Choose an edition
+- **Kids & Family — Mac OS 9.2.2 Mega Deluxe v5 (`thinArchive`):** Our flagship family edition packed with **all 146 classic games, creative apps, and utilities across 8 tabs** in Launcher, a 2-second **ACTION GoMac** bar hover delay, the classic Apple menu (ACTION Menus off), and a clean desktop—highlighted by **Kid Pix Studio Deluxe**, **Zoombinis**, **Oregon Trail**, **SimCity**, and **ClarisWorks 5**.
+- **Clean Mac OS 9.2.2 (v5):** Clean, snappy Mac OS 9.2.2 with QuickTime 6, AirPort, Classilla/iCab web browsers, Acrobat 5, ATI 3D software, and crisp RetroBoot Display.
+- **SuperDeluxe v7:** 59 classic games (*Harry the Handsome Executive*, *Mighty Mike*, *Bub & Bob*, *Wolfenstein 3D*, *Angband*), full After Dark collection, ClarisWorks 5, Home Page 3, Audion, SoundEdit 16, classic Apple menu (ACTION Menus off), 2-second ACTION GoMac bar delay, and clean desktop ([SuperDeluxe guide](superdeluxe-image.md)).
+- **Deluxe v10:** 16 classic games, Audion with SomaFM Groove Salad, After Dark screensavers, sample QuickTime movies, 2-second ACTION GoMac bar delay, clean desktop, and automatic on-demand Myst disc mounting ([Deluxe guide](deluxe-image.md)).
+- **Mac OS 7.5.5 / 8.1 Deluxe v2:** 23 classic 1990s games, ClarisWorks 5, and After Dark—ideal for Raspberry Pi Zero 2 W and 68k nostalgia.
+- **Mac OS X Period & Tiger Deluxe:** Period 2002–2006 Aqua desktops with Camino, Audacity, VLC, GLtron, and **iLife ’06 + Quake III Arena** in **Tiger Deluxe**. RetroBoot automatically applies per-Mac recommended RAM (`2048 MB` for Tiger Deluxe, `1024 MB` for Tiger/Panther Period on capable PCs) and `ATI Radeon` graphics—adjustable anytime in **Startup Disk** or **Machine & Startup**.
 
-- **Standard** provides the base OS with the drivers and tools selected for that RetroBoot release.
-- **Deluxe** adds applications, games and utilities. The available titles depend on the OS version.
-- **SuperDeluxe** and **Mega Deluxe** are curated Mac OS 9.2.2 collections (shipped in 3.2.0 as **Deluxe v10**, **SuperDeluxe v7**, and **Mega Deluxe v5** in both `.thin.tar.gz` and `.classic.tar.gz` formats). Mega Deluxe v5 includes Kid Pix Studio Deluxe, Logical Journey of the Zoombinis, Oregon Trail, SimCity, and all 146 classic games, creative apps, and utilities organized across 8 Launcher tabs, with ACTION Menus disabled (classic Apple menu), a 2-second ACTION GoMac bar hover delay, and Desktop Read Me files removed.
-- **Period Edition** adds period software to Jaguar, Panther or Tiger. Tiger Deluxe includes Quake III Arena and iLife ’06. Set **Mac OS X memory** to 2048 MB and select **ATI Radeon** for the Tiger Deluxe setup. Allow 21.2 GB of free space to download and install it.
+Downloading an edition imports it as an independent Mac alongside your existing ones and creates an automatic **Fresh Install** checkpoint. Add additional third-party HTTPS catalogs anytime via **Image Servers…** ([guide](image-servers.md)).
 
-Downloading another edition creates a new Mac. Choose **Not Now** to keep the current Mac running, or **Restart** to start the new Mac now. You can also select it later in **Startup Disk**.
-
-![RetroBoot confirms that System 7.5.5 is installed and offers to restart into it](../images/download-finished.png)
+![Download complete prompt offering restart into the newly imported Mac](../images/download-finished.png)

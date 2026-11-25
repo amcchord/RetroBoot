@@ -17,6 +17,7 @@ import * as screen from './pages/screen.js';
 import * as machine from './pages/machine.js';
 import * as display from './pages/display.js';
 import * as sound from './pages/sound.js';
+import * as printers from './pages/printers.js';
 import * as storage from './pages/storage.js';
 import * as network from './pages/network.js';
 import * as diagnostics from './pages/diagnostics.js';
@@ -25,10 +26,10 @@ import * as devices from './pages/devices.js';
 import * as files from './pages/files.js';
 import * as update from './pages/update.js';
 
-const PAGES = { overview, screen, files, machine, display, sound, storage, network, diagnostics, recovery, update, devices };
+const PAGES = { overview, screen, files, machine, display, sound, printers, storage, network, diagnostics, recovery, update, devices };
 const NAV = [
   { label: null, items: ['overview', 'screen', 'files'] },
-  { label: 'Settings', items: ['machine', 'display', 'sound', 'storage', 'network'] },
+  { label: 'Settings', items: ['machine', 'display', 'sound', 'printers', 'storage', 'network'] },
   { label: 'Maintenance', items: ['diagnostics', 'recovery', 'update', 'devices'] },
 ];
 
@@ -103,6 +104,7 @@ function navItem(name) {
 const MOBILE_NAV_LABELS = {
   machine: 'Machine',
   display: 'Display',
+  printers: 'Printers',
   storage: 'Storage',
   update: 'Updates',
   devices: 'Devices',

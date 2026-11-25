@@ -30,10 +30,19 @@ class RulesetTests(unittest.TestCase):
         lines = [l.strip() for l in rs.splitlines()]
         dns = lines.index("fib daddr type local meta l4proto { tcp, udp } th dport { 53, 8053 } accept")
         web = lines.index("fib daddr type local tcp dport { 8080 } accept")
+        prn = lines.index("fib daddr type local tcp dport { 515, 631, 9100 } accept")
         tcp = lines.index("fib daddr type local meta l4proto tcp counter reject with tcp reset")
         rest = lines.index("fib daddr type local counter reject with icmpx admin-prohibited")
-        self.assertTrue(dns < tcp and web < tcp < rest)       # allowances come before the refusals
+        self.assertTrue(dns < tcp and web < prn < tcp < rest)       # allowances come before the refusals
         self.assertNotIn("drop", rs.replace("# ", ""))
+
+    def test_rules_custom_printer_ports(self):
+        rs_custom = guestnet.ruleset(997, (8080,), (8053,), printer_ports=(631, 515))
+        self.assertIn("fib daddr type local tcp dport { 515, 631 } accept", rs_custom)
+        rs_none = guestnet.ruleset(997, (8080,), (8053,), printer_ports=())
+        code_only = "\n".join(l for l in rs_none.splitlines() if not l.lstrip().startswith("#"))
+        self.assertNotIn("515", code_only)
+        self.assertNotIn("9100", code_only)
 
     def test_settings_from_hostd_json(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:

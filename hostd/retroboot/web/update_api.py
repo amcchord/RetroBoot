@@ -81,7 +81,7 @@ class UpdateApi:
                            extra={"job": holder.public()})
         if not self.u.space_for(length):
             raise ApiError(507, "no_space", "There isn't enough free space for this update.")
-        flags = {k: request.query.get(k) == "1" for k in ("allow_older", "allow_flavor")}
+        flags = {k: request.query.get(k) == "1" for k in ("allow_older", "allow_flavor", "clean")}
         path = self.u.new_incoming()
         got = 0
         try:
@@ -109,7 +109,11 @@ class UpdateApi:
     async def install(self, request):
         from .server import ApiError
         self._ready()
-        data = await self._fields(request, {"source", "id"})
+        data = await self._fields(request, {"source", "id", "clean"})
+        if "clean" in data and type(data["clean"]) is not bool:
+            raise ApiError(422, "invalid", "Choose whether to run a Clean Update.",
+                           {"clean": "Must be true or false."})
+        clean = bool(data.get("clean", False))
         src = data.get("source")
         if src == "usb" and isinstance(data.get("id"), str):
             spec = {"kind": "usb", "id": data["id"][:300]}
@@ -118,7 +122,7 @@ class UpdateApi:
         else:
             raise ApiError(422, "invalid", "Choose an update to install.",
                            {"source": "Use usb with an id, or server."})
-        return self.server.jobres(self.server.begin(lambda: self.u.install_job(spec, origin="web")))
+        return self.server.jobres(self.server.begin(lambda: self.u.install_job(spec, origin="web", clean=clean)))
 
     async def check(self, request):
         self._ready(need_committed=False)
@@ -126,9 +130,14 @@ class UpdateApi:
         return self.server.jobres(self.server.begin(lambda: self.u.check_job(origin="web")))
 
     async def restart(self, request):
+        from .server import ApiError
         self._ready()
-        await self._fields(request, set())
-        return self.server.jobres(self.server.begin(lambda: self.u.restart_job(origin="web")))
+        data = await self._fields(request, {"clean"})
+        if "clean" in data and data["clean"] is not None and type(data["clean"]) is not bool:
+            raise ApiError(422, "invalid", "Choose whether to run a Clean Update.",
+                           {"clean": "Must be true or false."})
+        clean = data.get("clean")
+        return self.server.jobres(self.server.begin(lambda: self.u.restart_job(origin="web", clean=clean)))
 
     async def rollback(self, request):
         self._ready()

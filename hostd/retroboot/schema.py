@@ -48,6 +48,7 @@ TIMEZONE_RE = re.compile(r"^[A-Za-z0-9_+\-]+(/[A-Za-z0-9_+\-]+){0,2}$")
 MEDIA_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+,'&!-]{0,126}$")   # media.py library names
 REDIRECT_HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
 REDIRECT_URL_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s]*)?$")
+PRINTER_TARGET_RE = re.compile(r"^(pdf|cups:[A-Za-z0-9][A-Za-z0-9_-]{0,47})\Z")
 MAX_REDIRECTS = 64
 MAX_BYPASS_HOSTS = 128
 MAX_IMAGE_SERVERS = 8
@@ -215,7 +216,8 @@ class Setting:
             d["pattern"] = self.pattern
             if self.type == "string":
                 d["min_length"], d["max_length"] = {"share.volume_name": (1, 27),
-                                                    "update.url": (0, 2048)}.get(self.key, (1, 63))
+                                                    "update.url": (0, 2048),
+                                                    "printer.target": (3, 53)}.get(self.key, (1, 63))
         if ctx is not None and self.capability:
             d["available"] = bool(ctx.capabilities.get(self.capability))
         else:
@@ -306,6 +308,12 @@ class Setting:
         if t == "string":
             if not isinstance(value, str) or not re.fullmatch(self.pattern, value):
                 raise ValueError(self.help)
+            if self.key == "printer.target" and value.startswith("cups:"):
+                from .cups import CupsError, validate_queue_name
+                try:
+                    validate_queue_name(value[5:])
+                except CupsError as exc:
+                    raise ValueError(exc.message)
             return value
         if t == "machine":
             if not isinstance(value, str) or not MACHINE_ID_RE.fullmatch(value):
@@ -817,6 +825,12 @@ SETTINGS: tuple[Setting, ...] = (
     _s(key="printer.enabled", type="bool", default=True, apply=LIVE, group="storage",
        label="Print to PDF",
        help="Listen for Mac OS PostScript print jobs and save PDFs into RetroBoot Share/Printed PDFs."),
+    _s(key="printer.target", type="string", default="pdf", pattern=PRINTER_TARGET_RE.pattern,
+       apply=LIVE, group="storage", label="Mac printer output",
+       help="Choose pdf to save into RetroBoot Share, or cups:<name> to send print jobs to a configured printer."),
+    _s(key="printer.keep_pdf", type="bool", default=False, apply=LIVE, group="storage",
+       label="Also save a PDF copy in RetroBoot Share",
+       help="When printing to a physical printer, also save a PDF copy inside RetroBoot Share/Printed PDFs."),
     _s(key="usb_share.enabled", type="bool", default=True, apply=LIVE, group="storage",
        label="USB flash drives in Share",
        help="Show plugged-in USB flash drives inside RetroBoot Share/USB Drives."),

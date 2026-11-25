@@ -233,12 +233,18 @@ class Hostd:
         self.last_printed_pdf: dict | None = None
         self._printed_pdf_seq = 0
         self._chime_seq = 0
+        from .cups import CupsManager
         from .printer import PrintServer
         from .usbshare import UsbShare
+        self.cups = CupsManager()
         self.printer = PrintServer(
             self.paths.share,
             enabled=lambda: bool(self.settings.applied.get("printer.enabled", True)),
-            on_printed=self._on_printed_pdf)
+            on_printed=self._on_printed_pdf,
+            cups=self.cups,
+            target=lambda: str(self.settings.applied.get("printer.target", "pdf")),
+            keep_pdf=lambda: bool(self.settings.applied.get("printer.keep_pdf", False)),
+            raw_port=9100)
         self.usbshare = UsbShare(
             self.paths.share,
             enabled=lambda: bool(self.settings.applied.get("usb_share.enabled", True)),
@@ -553,24 +559,27 @@ class Hostd:
             if self.platform.is_gemini:
                 # A USB sound card when one is plugged in, else the codec (speakers and jack;
                 # the image routes it and switches the speaker amplifiers).
-                return audio.choose(prefer="gemini", **extra)
-            if self.platform.is_raspberry_pi:
+                out = audio.choose(prefer="gemini", **extra)
+            elif self.platform.is_raspberry_pi:
                 # The HDMI port Mac OS is shown on (primary first), then USB, then the Pi 4's jack.
                 driving = [o["connector"] for o in sorted(outputs, key=lambda o: o.get("role") != "primary")
                            if o.get("connector")] if outputs else None
                 out = audio.choose(prefer="pi", driving=driving, **extra)
                 if out and out.get("vc4"):
                     out = dict(out, softvol=audio.vc4_softvol(out))   # the volume control, before the probe
-                return out
-            out = audio.choose(prefer="analog" if laptop_main else "hdmi", **extra)
-            if out and out.get("asoc"):
-                ucm = audio.ucm_prepare(out)        # ASoC routing (once per card), before QEMU opens it
-                if ucm:
-                    out = dict(out, ucm_device=ucm["device"], mixer=ucm["mixer"], warmed=ucm.get("warmed"))
-            elif out:
-                stage = audio.hda_output_stage(out)     # HD Audio speakers/headphones or IEC958 on, each launch
-                if stage is not None:
-                    out = dict(out, stage=stage)
+            else:
+                out = audio.choose(prefer="analog" if laptop_main else "hdmi", **extra)
+                if out and out.get("asoc"):
+                    ucm = audio.ucm_prepare(out)        # ASoC routing (once per card), before QEMU opens it
+                    if ucm:
+                        out = dict(out, ucm_device=ucm["device"], mixer=ucm["mixer"], warmed=ucm.get("warmed"))
+                elif out:
+                    stage = audio.hda_output_stage(out)     # HD Audio speakers/headphones or IEC958 on, each launch
+                    if stage is not None:
+                        out = dict(out, stage=stage)
+            if out and out.get("needs_softvol") and hasattr(audio, "ensure_softvol"):
+                sv = audio.ensure_softvol(out)
+                out = dict(out, softvol=sv, mixer=audio.SOFTVOL_CONTROL if sv else out.get("mixer"))
             return out
         except Exception as exc:  # never block a launch on sound
             log.warning("audio output selection failed: %s", exc)
@@ -858,6 +867,7 @@ class Hostd:
             "remote": self.remote.public(),
             "update": self.updates.public(),
             "rotation": self.rotation.public(),
+            "printer": self.printer.public(),
             "printed_pdf": self.last_printed_pdf,
             "corrupt_disk_recovery": getattr(self.supervisor, "corrupt_disk_recovery", None) or self.corrupt_disk_recovery,
             **({"pi_display": self.rpi_display.public()} if self.rpi_display.enabled else {}),

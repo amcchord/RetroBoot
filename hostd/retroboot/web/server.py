@@ -162,6 +162,8 @@ class WebServer:
         register_bluetooth(self, r)
         from .rpidisplay_api import register as register_pi_display
         register_pi_display(self, r)
+        from .printer_api import register as register_printer
+        register_printer(self, r)
         r.add_route("*", "/api/{tail:.*}", self.api_not_found)
         r.add_get("/assets/platinum/{path:.+}", self.platinum_file)
         r.add_get("/", self.static_index)
