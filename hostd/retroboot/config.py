@@ -382,6 +382,8 @@ class Config:
     sync_cmd: list = field(default_factory=lambda: ["sync"])
     hostname_cmd: list = field(default_factory=lambda: ["hostnamectl", "set-hostname"])
     timezone_cmd: list = field(default_factory=lambda: ["timedatectl", "set-timezone"])
+    timezone_guess_urls: list[str] | None = None
+    timezone_guess_allow_http: bool = False
     # Rewrites GRUB's display.cfg/checkerboard for display.pixel_scale (image rb-bootdisplay).
     bootdisplay_cmd: list = field(default_factory=lambda: ["systemctl", "--no-block", "start",
                                                            "retroboot-bootdisplay.service"])

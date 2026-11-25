@@ -65,6 +65,70 @@ export function formatBytes(n) {
   return `${v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)} ${units[i]}`;
 }
 
+export function formatSpeed(bps) {
+  if (bps == null || isNaN(bps) || bps <= 0) return '';
+  const mib = 1024 * 1024;
+  const kib = 1024;
+  if (bps >= 100 * mib) return `${(bps / mib).toFixed(0)} MB/s`;
+  if (bps >= mib) return `${(bps / mib).toFixed(1)} MB/s`;
+  if (bps >= 10 * kib) return `${(bps / kib).toFixed(0)} KB/s`;
+  if (bps >= kib) return `${(bps / kib).toFixed(1)} KB/s`;
+  return `${Math.round(bps)} B/s`;
+}
+
+export function formatEta(seconds) {
+  if (seconds == null || isNaN(seconds) || seconds <= 0 || seconds > 48 * 3600) return '';
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} s left`;
+  if (seconds < 300) {
+    const s = Math.round(seconds);
+    return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s left`;
+  }
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min left`;
+  const m = Math.round(seconds / 60);
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m left`;
+}
+
+export function createTransferMeter(total = null, { windowMs = 4000, clock = () => performance.now() } = {}) {
+  const samples = [];
+  let lastDone = 0;
+  const start = clock();
+  samples.push([start, 0]);
+  return {
+    update(done) {
+      const n = Math.max(0, Number(done) || 0);
+      if (n < lastDone) {
+        samples.length = 0;
+        samples.push([clock(), n]);
+        lastDone = n;
+        return { speed: null, eta: null };
+      }
+      const now = clock();
+      lastDone = n;
+      samples.push([now, n]);
+      const cutoff = now - Math.max(500, windowMs);
+      while (samples.length > 2 && samples[1][0] <= cutoff) samples.shift();
+      const [t0, b0] = samples[0];
+      const dt = (now - t0) / 1000;
+      const db = n - b0;
+      if (dt < 0.15 || db <= 0) return { speed: null, eta: null };
+      const speed = db / dt;
+      const eta = total && total > n && speed > 0 ? (total - n) / speed : null;
+      return { speed, eta };
+    },
+  };
+}
+
+export function formatTransferText(prefix, { fraction = null, loaded = null, total = null, speed = null, eta = null } = {}) {
+  const parts = [];
+  if (typeof fraction === 'number' && !isNaN(fraction)) parts.push(`${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`);
+  if (loaded != null && total != null && total > 0) parts.push(`${formatBytes(loaded)} of ${formatBytes(total)}`);
+  const spd = formatSpeed(speed);
+  if (spd) parts.push(spd);
+  const left = formatEta(eta);
+  if (left) parts.push(left);
+  return parts.length ? `${prefix} ${parts.join(' · ')}` : prefix;
+}
+
 export function formatDuration(seconds) {
   if (seconds == null || isNaN(seconds)) return '—';
   const s = Math.max(0, Math.floor(seconds));

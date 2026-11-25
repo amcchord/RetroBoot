@@ -169,6 +169,8 @@ class InstallerPanel(Panel):
                 self.app.redactor.add(net.password)
             result = await netconf.import_network(self.app.network, net)
             self.st.media_network = result
+            if result.get("connected") and callable(getattr(self.app, "prefetch_timezone", None)):
+                self.app.prefetch_timezone()
             self.app.lifecycle.event("installer_media_network", found_on=net.source, connected=result["connected"])
         except netconf.NetConfError as exc:
             self.st.media_network_error = str(exc)
@@ -341,6 +343,7 @@ class HardwareCheck(IScreen):
         super().__init__(panel)
         self.addresses: list[str] | None = None
         self.wifi: dict | None = None
+        self.wifi_state: dict | None = None
         self.app.loop.create_task(self._load())
 
     async def _load(self):
@@ -356,6 +359,12 @@ class HardwareCheck(IScreen):
             self.wifi = await self.app.network.wifi_hardware()
         except Exception:   # an adapter problem never blocks the installer
             self.wifi = None
+        try:
+            self.wifi_state = await self.app.network.wifi_state()
+        except Exception:
+            self.wifi_state = None
+        if self.addresses and callable(getattr(self.app, "prefetch_timezone", None)):
+            self.app.prefetch_timezone()
         self.app.lifecycle.event("installer_hardware", disks=len(self.st.disks),
                                  candidates=len(self.candidates()), addresses=len(self.addresses),
                                  display=(self.app.presenter.display or {}).get("mode"), keyboard=keyboard_present())
@@ -388,8 +397,13 @@ class HardwareCheck(IScreen):
             lines.append(("Disks", f"{n} disk{'s' if n != 1 else ''} available" if n else "No disk available"))
         if self.addresses is None:
             lines.append(("Network", "Checking…"))
+        elif self.addresses:
+            ws = self.wifi_state or {}
+            ssid = ws.get("ssid") if ws.get("connected") else None
+            lines.append(("Network", f"Connected to “{ssid}” ({self.addresses[0]})" if ssid
+                          else f"Connected ({self.addresses[0]})"))
         else:
-            lines.append(("Network", "Connected" if self.addresses else "Not connected (optional)"))
+            lines.append(("Network", "Not connected (optional)"))
         if self.wifi:
             lines.append(("Wi-Fi", self.wifi["label"]))
         items = [ui.text("Checking this computer…" if self.st.disks is None else "This computer is ready."
@@ -406,9 +420,8 @@ class HardwareCheck(IScreen):
         media = netconf.describe(self.st.media_network, self.st.media_network_error)
         if media:
             items.append(ui.text(media, "small"))
-        offline = self.addresses is not None and not self.addresses
         buttons = [ui.btn("back", "Back"), ui.btn("rescan", "Check Again")]
-        if self.wifi and offline:
+        if self.wifi:
             buttons.append(ui.btn("wifi", "Wi-Fi…"))
         buttons.append(ui.btn("continue", "Continue", default=True, disabled=not self.candidates()))
         items.append(ui.buttons(*buttons))
@@ -865,7 +878,7 @@ class InstallProgress(JobScreen):
                         f"{int(round(r['fraction'] * 100))}%" if isinstance(r.get("fraction"), (int, float)) else word
                     )
                 items.append(ui.text(f"{m['name']}: {word}", "small"))
-        return ui.window(self.doc_id, "RetroBoot", items, width=460)
+        return ui.window(self.doc_id, "RetroBoot", items, width=500)
 
 
 class DownloadProblem(IScreen):
@@ -1129,8 +1142,17 @@ async def install_remote(app, st: InstallerState, m: dict, data: Path, progress)
                   "archive_format": dl["format"], "catalog_url": c.catalog_url,
                   "catalog": c.source, "via": "installer"}
         limits = ExtractLimits(c.entry["installedBytes"], c.entry.get("requiredStorageBytes"))
+        def unpack_progress(f, msg, scale_base=0.7, scale_span=0.3):
+            detail = " ".join(str(msg or "").split())
+            for pfx in ("Installing disk.img…", "Installing disk.img..."):
+                if detail.startswith(pfx):
+                    detail = detail[len(pfx):].strip()
+                    break
+            text = f"Unpacking {c.name}… {detail}" if detail and not detail.startswith("Installing ") else f"Unpacking {c.name}…"
+            progress(scale_base + (f or 0.0) * scale_span, text)
+
         mid = await install_machine(archive, None, c.name, c.entry.get("osVersion"), source, limits,
-                                    lambda f, msg: progress(0.7 + (f or 0.0) * 0.3, f"Unpacking {c.name}…"),
+                                    lambda f, msg: unpack_progress(f, msg, 0.7, 0.3),
                                     machines_dir=machines, machine_id=m["id"],
                                     expected_guest_os=c.entry.get("guestOS"), os_build=c.entry.get("osBuild"))
         archive.unlink(missing_ok=True)     # verified and unpacked: the space goes back to the Macs
@@ -1143,8 +1165,18 @@ async def install_remote(app, st: InstallerState, m: dict, data: Path, progress)
             raise ImportError_("The archive did not pass its integrity check.", "integrity")
     source = {"type": (c.origin or "usb").split(":")[0], "archive_name": c.path.name, "archive_sha256": c.sha256,
               "via": "installer"}
+
+    def usb_unpack_progress(f, msg):
+        detail = " ".join(str(msg or "").split())
+        for pfx in ("Installing disk.img…", "Installing disk.img..."):
+            if detail.startswith(pfx):
+                detail = detail[len(pfx):].strip()
+                break
+        text = f"Unpacking {c.name}… {detail}" if detail and not detail.startswith("Installing ") else f"Unpacking {c.name}…"
+        progress(f or 0.0, text)
+
     return await install_machine(c.path, None, c.name, None, source, ExtractLimits(None, None),
-                                 lambda f, msg: progress(f or 0.0, f"Unpacking {c.name}…"),
+                                 usb_unpack_progress,
                                  machines_dir=machines, machine_id=m["id"])
 
 

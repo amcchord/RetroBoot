@@ -1,6 +1,7 @@
 """Builders for UI documents (ARCHITECTURE 4.2).  Pure data; the presenter renders."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -260,12 +261,14 @@ def format_fingerprint(fp: str | None, group_bytes: int = 8) -> list[str]:
 
 
 def format_download_status(fraction: float | None, message: str = "") -> str:
-    """Combine a download percentage and byte summary into one crisp status line."""
+    """Combine a download percentage and byte/speed summary into one crisp status line."""
     detail = " ".join(str(message or "").split())
     for prefix in ("Downloading…", "Downloading...", "downloading…", "downloading..."):
         if detail.lower().startswith(prefix.lower()):
             detail = detail[len(prefix):].strip()
             break
+    if re.match(r"^\d+%(?:\s|·|$)", detail):
+        return detail
     pct = f"{int(round(max(0.0, min(1.0, fraction)) * 100))}%" if isinstance(fraction, (int, float)) else ""
     if pct and detail:
         return f"{pct} · {detail}"

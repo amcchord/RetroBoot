@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from .. import schema
 from ..jobs import Job, JobFailed
-from ..util import atomic_write_json, read_json, wall
+from ..util import TransferMeter, atomic_write_json, format_transfer_progress, read_json, wall
 from . import slotenv
 from .bundle import Bundle, BundleError, compatibility, describe_version, trusted_keys, version_key
 from .writer import (RealOps, SlotWriter, WriteError, _restore_or_clear_tryboot, activate_rpi_slot,
@@ -477,15 +477,19 @@ class UpdateManager:
             self.require_available()
             path: Path | None = None
             try:
+                base, span = 0.0, 1.0
                 if source["kind"] == "file":
                     path = Path(source["path"])
                 elif source["kind"] == "usb":
-                    path = await self._copy_from_usb(source["id"], job)
+                    path = await self._copy_from_usb(source["id"], job, progress_span=0.2)
+                    base, span = 0.2, 0.8
                 elif source["kind"] == "feed":
-                    path = await self._download(job, clean=clean)
+                    path = await self._download(job, clean=clean, progress_span=0.5)
+                    base, span = 0.5, 0.5
                 else:
                     raise JobFailed("Unknown update source.", None, "invalid")
-                return await self._install(job, path, origin, allow_older, allow_flavor, clean=clean)
+                return await self._install(job, path, origin, allow_older, allow_flavor, clean=clean,
+                                           progress_base=base, progress_span=span)
             finally:
                 if path is not None and path.parent == self.incoming:
                     path.unlink(missing_ok=True)
@@ -493,12 +497,15 @@ class UpdateManager:
                                    params={"source": source["kind"], "clean": bool(clean)})
 
     async def _install(self, job: Job, path: Path, origin: str, allow_older: bool, allow_flavor: bool,
-                       clean: bool = False) -> dict:
-        job.update(0.0, "Checking the update…")
+                       clean: bool = False, progress_base: float = 0.0, progress_span: float = 1.0) -> dict:
+        job.update(progress_base, "Checking the update…")
         keys = trusted_keys(self.keys_dir)
         try:
             bundle = await asyncio.to_thread(Bundle, path)
-            manifest = await asyncio.to_thread(bundle.verify, keys, lambda f, m: job.update(0.15 * f, m))
+            manifest = await asyncio.to_thread(
+                bundle.verify, keys,
+                lambda f, m: job.update(progress_base + progress_span * (0.15 * f), m),
+            )
             compatibility(manifest, self.release, self._disk_schema() or schema.SCHEMA_VERSION,
                           allow_older=allow_older, allow_flavor=allow_flavor,
                           allow_same=allow_older or clean, clean=clean)
@@ -517,9 +524,11 @@ class UpdateManager:
         writer = self._writer()
         t0 = time.monotonic()
         try:
-            res = await asyncio.to_thread(writer.write, bundle,
-                                          lambda f, m: job.update(0.15 + 0.85 * f if f is not None else None, m),
-                                          clean=clean)
+            res = await asyncio.to_thread(
+                writer.write, bundle,
+                lambda f, m: job.update(progress_base + progress_span * (0.15 + 0.85 * f) if f is not None else None, m),
+                clean=clean,
+            )
         except (WriteError, BundleError, slotenv.SlotError) as exc:
             self.state["staged"] = None
             self._history(kind="install", result="failed", version=manifest["version"],
@@ -700,7 +709,7 @@ class UpdateManager:
                 from ..util import run as run_cmd
                 await run_cmd(["umount", str(target)], timeout=20)
 
-    async def _copy_from_usb(self, usb_id: str, job: Job) -> Path:
+    async def _copy_from_usb(self, usb_id: str, job: Job, *, progress_span: float = 0.2) -> Path:
         await self.scan_usb()
         item = next((u for u in self.usb if u["id"] == usb_id), None)
         if item is None:
@@ -713,6 +722,8 @@ class UpdateManager:
             src = Path(mp) / item["_file"]
             total = src.stat().st_size
             done = 0
+            meter = TransferMeter(total=total, initial=0)
+            last = 0.0
             with open(src, "rb") as fi, open(dest, "xb") as fo:
                 while True:
                     b = fi.read(4 * MiB)
@@ -720,7 +731,15 @@ class UpdateManager:
                         break
                     fo.write(b)
                     done += len(b)
-                    job.update(0.0, f"Copying the update from the USB disk… {done // MiB} of {total // MiB} MB")
+                    now = time.monotonic()
+                    if now - last > 0.25 or done == total:
+                        last = now
+                        speed, eta = meter.update(done)
+                        frac = (done / total) if total else 0.0
+                        job.update(
+                            frac * progress_span,
+                            format_transfer_progress("Copying the update from the USB disk…", done, total, speed, eta),
+                        )
                 fo.flush()
                 os.fsync(fo.fileno())
             return done == total
@@ -853,7 +872,7 @@ class UpdateManager:
     def pick_latest_from_feed(self, feed: Any) -> dict | None:
         return self._pick_from_feed(feed, include_current=True)
 
-    async def _download(self, job: Job, *, clean: bool = False) -> Path:
+    async def _download(self, job: Job, *, clean: bool = False, progress_span: float = 0.5) -> Path:
         check = self._check_public() or {}
         found = check.get("found") or (check.get("latest") if clean else None)
         if not found:
@@ -864,20 +883,29 @@ class UpdateManager:
         import hashlib
         h = hashlib.sha256()
         got = 0
-        session, resp = await self._get(found["url"], found["bytes"])
+        total = int(found["bytes"] or 0)
+        meter = TransferMeter(total=total, initial=0)
+        session, resp = await self._get(found["url"], total)
         try:
             with open(dest, "xb") as f:
                 last = 0.0
                 async for chunk in resp.content.iter_chunked(1024 * 1024):
                     got += len(chunk)
-                    if got > found["bytes"]:
+                    if got > total:
                         raise JobFailed("The download is larger than expected.", None, "integrity")
                     f.write(chunk)
                     h.update(chunk)
-                    if time.monotonic() - last > 0.3:
-                        last = time.monotonic()
-                        job.update(None, f"Downloading RetroBoot {found['version']}… "
-                                         f"{got // MiB} of {found['bytes'] // MiB} MB")
+                    now = time.monotonic()
+                    if now - last > 0.25 or got == total:
+                        last = now
+                        speed, eta = meter.update(got)
+                        frac = (got / total) if total else 0.0
+                        job.update(
+                            frac * progress_span,
+                            format_transfer_progress(
+                                f"Downloading RetroBoot {found['version']}…", got, total, speed, eta
+                            ),
+                        )
                 f.flush()
                 os.fsync(f.fileno())
         except JobFailed:

@@ -175,7 +175,7 @@ export function uploadFile(path, file, contentType, onProgress) {
     xhr.setRequestHeader('Content-Type', contentType);
     xhr.setRequestHeader('X-RetroBoot-CSRF', csrfToken || '');
     xhr.setRequestHeader('Accept', 'application/json');
-    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress && onProgress(e.loaded / e.total);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress && onProgress(e.loaded / e.total, { loaded: e.loaded, total: e.total });
     xhr.onload = () => {
       setReachable(true);
       let body = null;

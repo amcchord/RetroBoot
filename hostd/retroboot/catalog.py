@@ -38,7 +38,7 @@ from .machines import (PRAM_FILE, QUADRA800, ROM_FILE, TEMPLATE_FAMILIES, OSX_CA
                        MachineError, MachineRegistry,
                        direct_framebuffer, family_fields, family_of_template, guest_os_of_template, unique_machine_id,
                        validate_meta)
-from .util import atomic_write_json, run as run_cmd, wall
+from .util import TransferMeter, atomic_write_json, format_transfer_progress, run as run_cmd, wall
 
 log = logging.getLogger("retroboot.catalog")
 
@@ -288,6 +288,7 @@ class CatalogClient:
                 have = 0
             else:
                 await asyncio.to_thread(_hash_into, part, h)
+        meter = TransferMeter(total=total, initial=have)
         attempts = 0
         while have < total:
             attempts += 1
@@ -300,6 +301,7 @@ class CatalogClient:
                             # Server ignored Range: restart cleanly.
                             have = 0
                             h = hashlib.sha256()
+                            meter.reset(0)
                             mode = "wb"
                         elif resp.status == 206 and have:
                             cr = resp.headers.get("Content-Range", "")
@@ -324,9 +326,13 @@ class CatalogClient:
                                 f.write(chunk)
                                 h.update(chunk)
                                 now = time.monotonic()
-                                if now - last > 0.25:
+                                if now - last > 0.25 or have == total:
                                     last = now
-                                    progress(have / total, f"Downloading… {have // MiB} of {total // MiB} MB")
+                                    speed, eta = meter.update(have)
+                                    progress(
+                                        have / total,
+                                        format_transfer_progress("Downloading…", have, total, speed, eta),
+                                    )
             except ImportError_:
                 raise
             except Exception as exc:
@@ -385,6 +391,7 @@ class _Writer:
         self.total, self.stored, self.stored_before = max(1, total), stored_before, stored_before
         self.done = 0
         self.last = 0.0
+        self.meter = TransferMeter(total=self.total, initial=0)
 
     def put(self, offset: int, chunk: bytes) -> None:
         if self.cancelled():
@@ -398,7 +405,13 @@ class _Writer:
         now = time.monotonic()
         if self.progress and now - self.last > 0.5:
             self.last = now
-            self.progress(self.done / self.total, f"Installing {self.name}…")
+            speed, eta = self.meter.update(self.done)
+            msg = (
+                format_transfer_progress(f"Installing {self.name}…", self.done, self.total, speed, eta)
+                if self.name == "disk.img"
+                else f"Installing {self.name}…"
+            )
+            self.progress(self.done / self.total, msg)
             if self.limits.min_free_bytes is not None and _free_bytes(self.staging) < self.limits.min_free_bytes:
                 raise ImportError_("There isn't enough free space to install this machine.", "no_space")
 

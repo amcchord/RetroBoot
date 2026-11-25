@@ -318,7 +318,7 @@ class JobScreen(Screen):
         if self.allow_cancel and j.cancellable and not j.done.is_set():
             items.append(ui.text("A stopped download continues where it left off next time.", "small"))
             items.append(ui.buttons(ui.btn("cancel", "Stop Download")))
-        return ui.window(self.doc_id, "RetroBoot", items, width=420)
+        return ui.window(self.doc_id, "RetroBoot", items, width=480)
 
     async def on_tick(self):
         if not self.job.done.is_set():
@@ -433,7 +433,7 @@ class RetroBootWindow(Screen):
         st = u.get("staged") or {}
         found = (u.get("check") or {}).get("found")
         if job and job.kind == "update.install":
-            return "Downloading…"
+            return ui.clip_words(job.message, 60) if job.message else "Downloading…"
         if st.get("status") == "ready":
             return f"RetroBoot {st.get('version')} is ready to install"
         if found:
@@ -1170,6 +1170,8 @@ class NetworkWeb(Screen):
     async def _load(self):
         self.addresses = await self.app.network.all_addresses()
         self.primary = await self.app.network.primary_address()
+        if self.addresses and callable(getattr(self.app, "prefetch_timezone", None)):
+            self.app.prefetch_timezone()
         try:
             self.wifi_hw = await self.app.network.wifi_hardware()
         except Exception:
@@ -2109,6 +2111,8 @@ async def join_wifi(wifi: WiFi, net: dict, psk: str | None) -> None:
 
     async def after(job):
         if job.state == SUCCEEDED:
+            if callable(getattr(app, "prefetch_timezone", None)):
+                app.prefetch_timezone()
             await panel.message("note", f"Connected to “{ssid}”.",
                                 "RetroBoot will join this network automatically from now on.",
                                 then=lambda: wifi.reopen(joined=ssid))
@@ -3268,6 +3272,9 @@ class SetupWelcome(Screen):
         super().__init__(panel)
         self.back = back
         self.source = "catalog"
+        if (self.app.settings.desired.get("system.timezone", "UTC") == "UTC"
+                and callable(getattr(self.app, "prefetch_timezone", None))):
+            self.app.prefetch_timezone()
 
     def doc(self):
         first = not self.app.machines.list()
@@ -3833,6 +3840,15 @@ def _utc_offset(zone: str) -> str:
     return f"UTC{sign}{mins // 60:02d}:{mins % 60:02d}"
 
 
+def _local_clock(zone: str) -> str:
+    try:
+        import datetime as _dt
+        import zoneinfo
+        return _dt.datetime.now(zoneinfo.ZoneInfo(zone)).strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return ""
+
+
 def _city(zone: str) -> str:
     if "/" not in zone or zone.startswith("Etc/"):
         return zone
@@ -3840,7 +3856,7 @@ def _city(zone: str) -> str:
 
 
 class TimeZone(Screen):
-    """Region popup + search field + zone list (searchable, region-grouped)."""
+    """Region popup + search field + zone list (searchable, region-grouped, network-assisted)."""
     doc_id = "timezone"
     MAX_ROWS = 150
 
@@ -3853,6 +3869,64 @@ class TimeZone(Screen):
         self.selected = cur
         self.region = cur.split("/", 1)[0] if "/" in cur and cur.split("/", 1)[0] in self.regions else "Other"
         self.search = ""
+        self.user_touched = False
+        self.guessed: str | None = None
+        self.guessing = False
+        self.guess_note: str | None = None
+        if cur == "UTC":
+            cached = getattr(self.app, "guessed_timezone", None)
+            if isinstance(cached, str) and cached:
+                self._apply_guess(cached)
+            elif (callable(getattr(self.app, "guess_timezone", None))
+                  and getattr(self.app, "loop", None) is not None
+                  and getattr(getattr(self.app, "cfg", None), "timezone_guess_urls", None) != []):
+                self.guessing = True
+                self.app.loop.create_task(self._auto_guess())
+
+    def _apply_guess(self, zone: str) -> None:
+        reg = zone.split("/", 1)[0] if "/" in zone else "Other"
+        if reg not in self.regions:
+            reg = "Other"
+        self.regions.setdefault(reg, [])
+        if zone not in self.regions[reg]:
+            self.regions[reg] = sorted(self.regions[reg] + [zone])
+        self.selected = zone
+        self.region = reg
+        self.guessed = zone
+        self.guess_note = f"Suggested from your network: {_city(zone)} ({_utc_offset(zone)})"
+
+    async def _auto_guess(self) -> None:
+        zone: str | None = None
+        try:
+            zone = await self.app.guess_timezone()
+        except Exception:
+            zone = None
+        self.guessing = False
+        if zone and not self.user_touched:
+            self._apply_guess(zone)
+        if self.panel.screen is self and self.panel.visible:
+            await self.panel.refresh()
+
+    async def _detect_now(self) -> None:
+        self.guessing = True
+        self.guess_note = None
+        if self.panel.screen is self and self.panel.visible:
+            await self.panel.refresh()
+        zone: str | None = None
+        if callable(getattr(self.app, "guess_timezone", None)):
+            try:
+                zone = await self.app.guess_timezone(force=True)
+            except Exception:
+                zone = None
+        self.guessing = False
+        if zone:
+            self.search = ""
+            self.user_touched = False
+            self._apply_guess(zone)
+        else:
+            self.guess_note = "Could not detect your time zone from the network. Choose one above."
+        if self.panel.screen is self and self.panel.visible:
+            await self.panel.refresh()
 
     def zones(self) -> list[str]:
         if self.search.strip():
@@ -3871,28 +3945,43 @@ class TimeZone(Screen):
         intro = ("Choose RetroBoot's time zone. Mac OS X keeps its own time zone in "
                  "System Preferences → Date & Time." if osx else
                  "Choose the time zone for the Mac clock. Type a city, or choose a region.")
+        clock = _local_clock(self.selected)
+        off = _utc_offset(self.selected)
+        meta = f"{off} · {clock}" if off and clock else (off or clock)
+        sel_line = f"Selected: {self.selected.replace('_', ' ')}" + (f" ({meta})" if meta else "")
         items = [ui.text(intro),
                  ui.columns(ui.popup("region", "Region:", [(r, r) for r in self.regions], self.region,
                                      disabled=bool(self.search.strip())),
                             ui.field("search", "Search:", self.search, placeholder="City")),
                  ui.lst("zone", rows, sel, rows=8),
-                 ui.text(f"Selected: {self.selected.replace('_', ' ')} ({_utc_offset(self.selected)})", "small")]
+                 ui.text(sel_line, "small")]
+        if self.guessing:
+            items.append(ui.text("Detecting time zone from your network…", "small"))
+        elif self.guess_note:
+            items.append(ui.text(self.guess_note, "small"))
         if self.app.supervisor.active and not osx:
             items.append(ui.text("The Mac clock changes the next time Mac OS restarts.", "small"))
-        items.append(ui.buttons(ui.btn("cancel", "Back"),
+        detect_btn = (
+            ui.btn("detect", "Detecting…" if self.guessing else "Detect", align="left", disabled=self.guessing)
+            if callable(getattr(self.app, "guess_timezone", None)) else None
+        )
+        items.append(ui.buttons(detect_btn, ui.btn("cancel", "Back"),
                                 ui.btn("set", "Continue" if self.next_ else "Set Time Zone", default=True)))
         return ui.window(self.doc_id, self.title, items, width=520)
 
     async def change(self, id, value):
         if id == "region" and value in self.regions:
+            self.user_touched = True
             self.region = value
         elif id == "search":
+            self.user_touched = True
             self.search = str(value or "")[:40]
             zones = self.zones()
             if self.search.strip() and zones and self.selected not in zones:
                 # The first match is the choice, so Return after typing a city sets it.
                 self.selected = zones[0]
         elif id == "zone" and isinstance(value, str):
+            self.user_touched = True
             if value == self.selected:
                 return
             self.selected = value      # and the "Selected:" line follows
@@ -3903,6 +3992,9 @@ class TimeZone(Screen):
     async def action(self, id, values):
         if id == "cancel":
             await self.back()
+            return
+        if id == "detect":
+            await self._detect_now()
             return
         zone = values.get("zone") or self.selected
         if zone != self.app.settings.desired.get("system.timezone"):

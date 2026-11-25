@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import datetime as _dt
 import json
 import os
@@ -11,7 +12,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 def mono() -> float:
@@ -192,3 +193,106 @@ def chunked(it: Iterable, n: int):
             buf = []
     if buf:
         yield buf
+
+
+KiB = 1024
+MiB = 1024 ** 2
+
+
+def format_speed(bytes_per_sec: float | None) -> str:
+    """Format a transfer rate cleanly for classic panel and web status lines."""
+    if bytes_per_sec is None or bytes_per_sec <= 0:
+        return ""
+    if bytes_per_sec >= 100 * MiB:
+        return f"{bytes_per_sec / MiB:.0f} MB/s"
+    if bytes_per_sec >= MiB:
+        return f"{bytes_per_sec / MiB:.1f} MB/s"
+    if bytes_per_sec >= 10 * KiB:
+        return f"{bytes_per_sec / KiB:.0f} KB/s"
+    if bytes_per_sec >= KiB:
+        return f"{bytes_per_sec / KiB:.1f} KB/s"
+    return f"{int(round(bytes_per_sec))} B/s"
+
+
+def format_eta(seconds: float | None) -> str:
+    """Format remaining transfer duration concisely (e.g. '12 s left', '2m 15s left')."""
+    if seconds is None or seconds <= 0 or seconds > 48 * 3600:
+        return ""
+    if seconds < 60:
+        return f"{max(1, int(round(seconds)))} s left"
+    if seconds < 300:
+        s = int(round(seconds))
+        return f"{s // 60}m {s % 60:02d}s left"
+    if seconds < 3600:
+        return f"{int(round(seconds / 60))} min left"
+    m = int(round(seconds / 60))
+    return f"{m // 60}h {m % 60:02d}m left"
+
+
+class TransferMeter:
+    """Sliding-window transfer rate and ETA estimator that handles resumed offsets."""
+
+    def __init__(self, total: int | None = None, initial: int = 0, *, window_s: float = 4.0,
+                 clock: Callable[[], float] = time.monotonic):
+        self.total = int(total) if total is not None and total > 0 else None
+        self.window_s = max(0.5, float(window_s))
+        self._clock = clock
+        self._samples: collections.deque[tuple[float, int]] = collections.deque()
+        self.reset(initial)
+
+    def reset(self, initial: int = 0) -> None:
+        now = self._clock()
+        self._last_done = max(0, int(initial))
+        self._samples.clear()
+        self._samples.append((now, self._last_done))
+
+    def update(self, done: int) -> tuple[float | None, float | None]:
+        done = max(0, int(done))
+        if done < self._last_done:
+            self.reset(done)
+            return None, None
+        now = self._clock()
+        self._last_done = done
+        self._samples.append((now, done))
+        cutoff = now - self.window_s
+        while len(self._samples) > 2 and self._samples[1][0] <= cutoff:
+            self._samples.popleft()
+        t0, b0 = self._samples[0]
+        dt = now - t0
+        db = done - b0
+        if dt < 0.15 or db <= 0:
+            return None, None
+        bps = db / dt
+        eta = None
+        if self.total is not None and self.total > done and bps > 0:
+            eta = (self.total - done) / bps
+        return bps, eta
+
+
+def format_transfer_progress(
+    prefix: str,
+    done: int,
+    total: int | None,
+    speed_bps: float | None = None,
+    eta_s: float | None = None,
+    *,
+    include_pct: bool = True,
+) -> str:
+    """Combine prefix, percentage, transferred/total size, live speed, and ETA."""
+    parts: list[str] = []
+    if include_pct and total and total > 0:
+        pct = int(round(max(0.0, min(1.0, done / total)) * 100))
+        parts.append(f"{pct}%")
+    if total and total >= MiB:
+        parts.append(f"{done // MiB} of {total // MiB} MB")
+    elif total and total > 0:
+        parts.append(f"{done // KiB} of {max(1, total // KiB)} KB")
+    else:
+        parts.append(f"{done // MiB} MB")
+    spd = format_speed(speed_bps)
+    if spd:
+        parts.append(spd)
+    eta = format_eta(eta_s)
+    if eta:
+        parts.append(eta)
+    return f"{prefix} {' · '.join(parts)}".strip()

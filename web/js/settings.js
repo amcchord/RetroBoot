@@ -276,11 +276,29 @@ function renderField(key) {
     const helpText = key === 'update.url' && def.help
       ? def.help.replace(/\s*Empty on a computer signed in to RetroBoot downloads uses its update list\.?/i, ' Leave empty to use the built-in RetroBoot update list.')
       : def.help;
+    const browserTz = key === 'system.timezone'
+      ? (() => {
+          try {
+            return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+          } catch {
+            return '';
+          }
+        })()
+      : '';
+    const canGuessTz = Boolean(browserTz && def.choices && def.choices.some((c) => sameValue(c.value, browserTz)));
+    const tzBtn = canGuessTz
+      ? button(`Use This Device’s Time Zone (${browserTz.replace(/_/g, ' ')})`, {
+          className: 'btn-small',
+          focusKey: 'use-browser-tz',
+          onClick: () => onValue(browserTz),
+        })
+      : null;
     const head = h('div', { class: 'setting-head' }, labelEl, h('span', { class: 'setting-tags' }));
     el.replaceChildren();
     append(el, [
       head,
       body,
+      tzBtn ? h('div', { class: 'row-actions setting-tz-detect' }, tzBtn) : null,
       helpText ? h('p', { class: 'setting-help', id: ids.help }, helpText) : null,
       h('p', { class: 'setting-unavailable', hidden: def.available }, h('span', { class: 'mini-icon', html: pixelIcon('note', 16) }), `Unavailable: ${def.reason || ''}`),
       h('p', { class: 'setting-state', id: ids.state, hidden: true }),
@@ -308,6 +326,16 @@ function renderField(key) {
       control.setDisabled(!def.available || busy);
     }
     const value = currentValue(key);
+    const tzWrap = el.querySelector('.setting-tz-detect');
+    if (tzWrap) {
+      let browserTz = '';
+      try {
+        browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+      } catch {
+        browserTz = '';
+      }
+      tzWrap.hidden = !def.available || busy || !browserTz || sameValue(value, browserTz);
+    }
     el.querySelector('.setting-tags').replaceChildren(...fieldTags(def, key, m));
     const st = stateText(def, key, m);
     const stEl = el.querySelector('.setting-state');

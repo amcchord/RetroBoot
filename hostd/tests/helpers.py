@@ -194,6 +194,7 @@ def make_config(root: Path, **overrides) -> Config:
     cfg.reboot_cmd = []
     cfg.hostname_cmd = []
     cfg.timezone_cmd = []
+    cfg.timezone_guess_urls = []
     cfg.bootdisplay_cmd = []
     cfg.sync_cmd = []
     cfg.run_as_user = ""

@@ -1,5 +1,5 @@
 import { get, post, del, asJob, friendlyMessage, uploadFile } from '../api.js';
-import { h, swap, Scope, formatBytes, fmtDateTime, relTime, uid } from '../util.js';
+import { h, swap, Scope, formatBytes, fmtDateTime, relTime, uid, createTransferMeter, formatTransferText } from '../util.js';
 import { win, kv, button, badge, pageHeader, notice, loading, errorState, emptyState, progressBar, dialog, confirm, toast, copyButton } from '../ui.js';
 import { pixelIcon } from '../icons.js';
 import { store, subscribe, refreshSettings, refreshStatus } from '../store.js';
@@ -352,7 +352,7 @@ export function render() {
     const job = fileImport && fileImport.job ? activeJobs('machines.import').find((j) => j.id === fileImport.job.id) || fileImport.job : null;
     let body;
     if (fileImport && !fileImport.job) {
-      body = [h('p', null, `Uploading ${fileImport.name}…`), progressBar(fileImport.fraction, `Uploading ${fileImport.name}`)];
+      body = [h('p', null, formatTransferText(`Uploading ${fileImport.name}…`, fileImport)), progressBar(fileImport.fraction, `Uploading ${fileImport.name}`)];
     } else if (job) {
       body = [h('p', null, job.message || `Importing ${fileImport.name}…`), progressBar(typeof job.progress === 'number' ? job.progress : null, `Importing ${fileImport.name}`)];
     } else {
@@ -381,11 +381,19 @@ export function render() {
     });
     if (!ok) return;
     const name = file.name.replace(/\.(tar\.gz|tgz)$/i, '').slice(0, 100);
-    fileImport = { name: file.name, fraction: 0, job: null };
+    const meter = createTransferMeter(file.size);
+    fileImport = { name: file.name, fraction: 0, loaded: 0, total: file.size, speed: null, eta: null, job: null };
     renderFileImport();
     try {
-      const res = await uploadFile(`/api/v1/machines/import?name=${encodeURIComponent(name)}`, file, 'application/gzip', (f) => {
+      const res = await uploadFile(`/api/v1/machines/import?name=${encodeURIComponent(name)}`, file, 'application/gzip', (f, info) => {
         fileImport.fraction = f;
+        if (info && typeof info.loaded === 'number') {
+          fileImport.loaded = info.loaded;
+          fileImport.total = info.total;
+          const r = meter.update(info.loaded);
+          fileImport.speed = r.speed;
+          fileImport.eta = r.eta;
+        }
         renderFileImport();
       });
       const job = asJob(res);

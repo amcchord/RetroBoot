@@ -227,6 +227,8 @@ class Hostd:
         self._wifi_available: bool | None = None
         self._wifi_task: asyncio.Task | None = None
         self._boot_network_task: asyncio.Task | None = None
+        self._guessed_timezone: str | None = None
+        self._tz_guess_task: asyncio.Task | None = None
         self.wifi_watch_s = (2.0, 90.0)          # period, how long to look for a late Wi-Fi driver
         self.guest_isolation: dict = {"loaded": None, "detail": "not checked yet"}
         self.corrupt_disk_recovery: dict | None = None
@@ -1758,6 +1760,8 @@ class Hostd:
             self._wifi_task.cancel()
         if self._boot_network_task is not None and not self._boot_network_task.done():
             self._boot_network_task.cancel()
+        if self._tz_guess_task is not None and not self._tz_guess_task.done():
+            self._tz_guess_task.cancel()
         if self._health_task is not None and not self._health_task.done():
             self._health_task.cancel()
         await self.airport.stop()           # AirPort hook
@@ -1785,6 +1789,61 @@ class Hostd:
             self.loop.add_signal_handler(sig, stop.set)
         await stop.wait()
         await self.shutdown()
+
+    @property
+    def guessed_timezone(self) -> str | None:
+        return self._guessed_timezone
+
+    async def guess_timezone(self, *, force: bool = False) -> str | None:
+        """Best-effort network lookup for the likely IANA time zone after Wi-Fi/network setup."""
+        if not force and self._guessed_timezone:
+            return self._guessed_timezone
+        if self.cfg.timezone_guess_urls is not None and len(self.cfg.timezone_guess_urls) == 0:
+            return None
+        try:
+            addrs = await self.network.all_addresses()
+        except Exception:
+            addrs = []
+        if not addrs:
+            return None
+        if self._tz_guess_task is not None and not self._tz_guess_task.done():
+            if not force:
+                return await self._tz_guess_task
+            self._tz_guess_task.cancel()
+
+        async def _run() -> str | None:
+            from . import tzguess
+            zone, source = await tzguess.guess_timezone(
+                urls=self.cfg.timezone_guess_urls,
+                ca_file=self.cfg.catalog_ca_file,
+                allow_http=self.cfg.timezone_guess_allow_http,
+            )
+            if zone:
+                self._guessed_timezone = zone
+                self.lifecycle.event("timezone_guessed", zone=zone, source=source)
+            return zone
+
+        task = asyncio.get_running_loop().create_task(_run(), name="tz-guess")
+        self._tz_guess_task = task
+        try:
+            return await task
+        finally:
+            if self._tz_guess_task is task and task.done():
+                self._tz_guess_task = None
+
+    def prefetch_timezone(self) -> None:
+        """Warm the time zone guess in the background once network is available."""
+        if self._guessed_timezone or self.stopping:
+            return
+        if self.cfg.timezone_guess_urls is not None and len(self.cfg.timezone_guess_urls) == 0:
+            return
+        if self.settings.state and self.settings.desired.get("system.timezone", "UTC") != "UTC":
+            return
+        if self.loop is None or self.loop.is_closed():
+            return
+        if self._tz_guess_task is not None and not self._tz_guess_task.done():
+            return
+        self.loop.create_task(self.guess_timezone(), name="tz-prefetch")
 
     def _seed_from_install(self) -> None:
         """First start after installation: adopt the installer's seed and startup Mac.

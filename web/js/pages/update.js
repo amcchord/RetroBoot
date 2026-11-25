@@ -3,7 +3,7 @@
 // or go back to the version that was installed before.
 
 import { post, csrf, asJob, friendlyMessage, ApiError } from '../api.js';
-import { h, swap, Scope, fmtDateTime, formatBytes } from '../util.js';
+import { h, swap, Scope, fmtDateTime, formatBytes, createTransferMeter, formatTransferText } from '../util.js';
 import { win, button, pageHeader, progressBar, notice, kv, confirm, toast, dialog } from '../ui.js';
 import { store, subscribe, refreshStatus, pollFast, emit } from '../store.js';
 import { track, activeJobs, jobOutcome } from '../jobs.js';
@@ -101,7 +101,7 @@ function uploadFile(file, onProgress, { clean = false } = {}) {
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.setRequestHeader('X-RetroBoot-CSRF', csrf() || '');
     xhr.setRequestHeader('Accept', 'application/json');
-    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total, { loaded: e.loaded, total: e.total });
     xhr.onload = () => {
       let body = null;
       try {
@@ -200,12 +200,20 @@ export function render() {
       toast('Choose a RetroBoot update file (its name ends in .rbu).', { level: 'error' });
       return;
     }
-    uploading = { name: file.name, fraction: 0 };
+    const meter = createTransferMeter(file.size);
+    uploading = { name: file.name, fraction: 0, loaded: 0, total: file.size, speed: null, eta: null };
     paint();
     let res;
     try {
-      res = await uploadFile(file, (f) => {
+      res = await uploadFile(file, (f, info) => {
         uploading.fraction = f;
+        if (info && typeof info.loaded === 'number') {
+          uploading.loaded = info.loaded;
+          uploading.total = info.total;
+          const r = meter.update(info.loaded);
+          uploading.speed = r.speed;
+          uploading.eta = r.eta;
+        }
         paint();
       }, { clean: uploadClean });
     } catch (err) {
@@ -301,7 +309,7 @@ export function render() {
     patch('staged', stagedEl, JSON.stringify([info.staged, stagedCleanOverride, job && [job.id, job.message, job.progress]]), () => staged || []);
     patch('upload', uploadEl, JSON.stringify([uploading, busy, uploadClean]), () =>
       uploading
-        ? [h('p', null, `Uploading ${uploading.name}…`), progressBar(uploading.fraction, 'Uploading the update')]
+        ? [h('p', null, formatTransferText(`Uploading ${uploading.name}…`, uploading)), progressBar(uploading.fraction, 'Uploading the update')]
         : [
             h('p', null, 'Choose a RetroBoot update file (.rbu) on this device. RetroBoot checks its signature before installing it.'),
             h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: uploadClean, disabled: busy, onchange: (e) => { uploadClean = e.target.checked; paint(); } }), h('span', null, 'Clean Update (allows reinstalling the same version; erases all Macs and settings except Wi-Fi)')),
