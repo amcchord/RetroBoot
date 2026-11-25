@@ -186,6 +186,7 @@ class _FakeApp:
         self.supervisor = SimpleNamespace(
             state="stopped", active=False, paused=False, content_seen=False, launch_pending=False,
             machine=None, unresponsive_reason=None, responsive=True, unavailable=None,
+            timeline=lambda: [],
             active_machine=lambda: self.machines.get(self.settings.desired.get("machine.active")),
         )
         self.rpi_display = SimpleNamespace(enabled=False, public=lambda: {"available": False})
@@ -197,6 +198,11 @@ class _FakeApp:
         self.updates = SimpleNamespace(
             public=lambda: {"available": True, "url": None, "current": {"version": "3.1.0", "label": "3.1.0"}},
             scan_usb=self._empty_async,
+        )
+        self.webproxy = SimpleNamespace(
+            available=lambda: True,
+            public=lambda: {"available": True, "enabled": True, "state": "running", "stats": {"counts": {}}},
+            refresh=self._empty_async,
         )
         self.jobs = SimpleNamespace(holder=lambda *a: None)
         self.graphics = SimpleNamespace(ui_context=lambda: {"available": True, "message": None}, exact=lambda: False)
@@ -233,6 +239,19 @@ class _FakeApp:
         self.test_sound_result = {"ok": True, "output": "auto"}
         self.updated_machine_settings: list[tuple[str, dict]] = []
         self.started_jobs: list[tuple[str, object]] = []
+        self.power_calls: list[tuple] = []
+
+    def lifecycle_job(self, kind: str, poweroff: bool | None = None, origin: str = "web"):
+        self.power_calls.append(("lifecycle", kind, poweroff, origin))
+        j = Job(id=f"j-{kind}", kind=f"guest.{kind}", resources=(), state=SUCCEEDED, result={})
+        j.done.set()
+        return j
+
+    def host_job(self, action: str, force: bool = False, origin: str = "web"):
+        self.power_calls.append(("host", action, force, origin))
+        j = Job(id=f"j-host-{action}", kind=f"host.{action}", resources=(), state=SUCCEEDED, result={})
+        j.done.set()
+        return j
 
     async def _all_addrs(self):
         return list(self.addrs)
@@ -285,7 +304,7 @@ class _FakeApp:
             s.update(changes)
             m.meta["settings"] = s
 
-    async def show_scene(self, name: str, background: str | None = None):
+    async def show_scene(self, name: str, background: str | None = None, **kwargs):
         self.scenes.append((name, background))
 
     def apply_job(self, rev: int, restart: bool, origin: str = "panel"):
@@ -303,6 +322,9 @@ class _FakeCatalogs:
 
     async def fetch_all(self):
         return [("internet", self.entries)], {}
+
+    def clients(self):
+        return [("internet", None)]
 
     def custom_clients(self, *args, **kwargs):
         return []
@@ -552,7 +574,7 @@ class TestPanel310(unittest.IsolatedAsyncioTestCase):
         app2.paths.qemu_m68k_package = app.paths.qemu_m68k_package
         app2.paths.qemu_osx_package = app.paths.qemu_osx_package
         app2.catalogs = _FakeCatalogs(entries, app2)
-        mega = next(e for e in entries if e["id"] == "os922-mega-deluxe-v4")
+        mega = next(e for e in entries if e["id"].startswith("os922-mega-deluxe"))
         sha = download_of(mega)["sha256"]
         part = app2.paths.downloads / f"{sha}.part"
         part.write_bytes(b"x" * (87 * 1024 * 1024))  # 87 MB partial file
@@ -645,3 +667,41 @@ class TestPanel310(unittest.IsolatedAsyncioTestCase):
         combined = "\n".join(p.read_text() for p in sorted(panel_dir.glob("*.py")))
         for banned in ("Parent PIN", "Kid Lock", "kid_lock", "parent_pin", "SafeSearch"):
             self.assertNotIn(banned, combined)
+
+    async def test_recovery_panes_keyboard_webhelper_and_force_reboot(self):
+        from retroboot.panel.controller import DisplaySound, ForceRebootAlert, RetroBootWindow, WebHelper
+
+        app = _FakeApp(self.root, machines=[_FakeMachine("m1", "Mac OS 9")])
+        app.supervisor.active = True
+        panel = Panel(app)
+        win = RetroBootWindow(panel)
+        doc = win.doc()
+        pane_ids = [r["id"] for r in _find_id(doc, "pane")["items"]]
+        self.assertIn("keyboard", pane_ids)
+        self.assertIn("webhelper", pane_ids)
+        self.assertIn("force-reboot", _all_buttons(doc))
+
+        await win.open("keyboard")
+        self.assertIsInstance(panel.screen, DisplaySound)
+        self.assertEqual(panel.screen.page, "keyboard")
+        self.assertEqual(panel.screen.doc()["title"], "Keyboard & Mouse")
+
+        await win.open("webhelper")
+        self.assertIsInstance(panel.screen, WebHelper)
+        self.assertIn("bypass", _all_buttons(panel.screen.doc()))
+
+        await win.action("force-reboot", {})
+        self.assertIsInstance(panel.screen, ForceRebootAlert)
+        btns = _all_buttons(panel.screen.doc())
+        self.assertIn("force-restart-mac", btns)
+        self.assertIn("force-reboot-host", btns)
+        self.assertFalse(btns["force-restart-mac"].get("disabled", False))
+
+        await panel.screen.action("force-restart-mac", {})
+        await asyncio.sleep(0)
+        self.assertIn(("lifecycle", "force-restart", None, "panel"), app.power_calls)
+
+        await panel.show(ForceRebootAlert(panel, back=win))
+        await panel.screen.action("force-reboot-host", {})
+        await asyncio.sleep(0)
+        self.assertIn(("host", "reboot", True, "panel"), app.power_calls)

@@ -504,21 +504,21 @@ class RecoveryAndPower(Base):
         self.assertEqual(doc["title"], "RetroBoot")
         lst = next(i for i in doc["items"] if i.get("type") == "list")
         self.assertEqual([r["id"] for r in lst["items"]],
-                         ["disk", "download", "update", "network", "display", "timezone", "diagnostics"])
+                         ["disk", "display", "keyboard", "network", "download", "update", "timezone", "diagnostics"])
         self.assertEqual((lst["view"], lst["columns"]), ("icons", 4))
-        self.assertTrue(lst["header"].startswith("7 items, Mac OS "), lst["header"])
+        self.assertTrue(lst["header"].startswith("8 items, Mac OS "), lst["header"])
         meters = next(i for i in doc["items"] if i.get("type") == "meters")["items"]
         self.assertEqual([(m["icon"], m["label"]) for m in meters][0], ("mac", self.app.supervisor.machine.name))
         self.assertEqual(meters[1]["icon"], "chip")
         self.assertEqual(next(r for r in lst["items"] if r["id"] == "display")["detail"], "1024 × 768")
         self.assertEqual(next(r for r in lst["items"] if r["id"] == "disk")["detail"], "Mac OS 9")
         buttons = [(b["id"], bool(b.get("default"))) for b in doc["items"][-1]["items"]]
-        self.assertEqual(buttons, [("power", False), ("cancel", True)])
+        self.assertEqual(buttons, [("power", False), ("force-reboot", False), ("cancel", True)])
         self.assertNotIn("force-restart", json.dumps(doc))         # only when Mac OS is frozen
         self.fp.change("pane", "display")
         await helpers.wait_for(lambda: [b["id"] for b in self.fp.doc["items"][-1]["items"]] ==
-                               ["power", "open", "cancel"], 5, what="Open button")
-        self.assertTrue(self.fp.doc["items"][-1]["items"][1]["default"])
+                               ["power", "force-reboot", "open", "cancel"], 5, what="Open button")
+        self.assertTrue(self.fp.doc["items"][-1]["items"][2]["default"])
         self.fp.click("open")
         await self.until_doc("display-sound")
         self.fp.click("cancel")
@@ -630,21 +630,21 @@ class SettingsApply(Base):
         self.fp.change("page", "keyboard")
         await helpers.wait_for(lambda: find_item(self.fp.doc, "input.legacy_mouse") is not None, 5,
                                what="Legacy mouse tracking")
-        self.assertFalse(self.app.settings.applied["input.legacy_mouse"])
-        self.fp.change("input.legacy_mouse", True)
+        self.assertTrue(self.app.settings.applied["input.legacy_mouse"])
+        self.fp.change("input.legacy_mouse", False)
         await helpers.wait_for(lambda: not find_item(self.fp.doc, "restart").get("disabled"), 5,
                                what="Apply and Restart enabled")
         self.fp.change("input.mouse_dpi", "64000")
         self.fp.click("apply")
         await self.until_doc("recovery-main")
-        self.assertFalse(self.app.settings.applied["input.legacy_mouse"])
-        self.assertTrue(self.app.settings.desired["input.legacy_mouse"])
+        self.assertTrue(self.app.settings.applied["input.legacy_mouse"])
+        self.assertFalse(self.app.settings.desired["input.legacy_mouse"])
         self.assertEqual(self.app.settings.applied["input.mouse_dpi"], 64000)
         self.assertEqual(self.fp.requests_of("input_config")[-1]["mouse_dpi"], 64000)
         await self.job(self.app.lifecycle_job("restart", origin="web"))
         await self.running()
-        self.assertTrue(self.app.settings.applied["input.legacy_mouse"])
-        self.assertTrue(self.fp.requests_of("input_config")[-1]["legacy_mouse"])
+        self.assertFalse(self.app.settings.applied["input.legacy_mouse"])
+        self.assertFalse(self.fp.requests_of("input_config")[-1]["legacy_mouse"])
 
     async def test_display_mode_reverts_unless_kept(self):
         await self.running()

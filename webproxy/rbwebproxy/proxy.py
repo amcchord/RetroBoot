@@ -29,7 +29,7 @@ import aiohttp
 from aiohttp.abc import AbstractResolver
 
 from . import __version__, charset, html, images, mime, pages, redirects
-from .config import MODERN_UA, SEARCH_ENGINES, SEARCH_FALLBACK, Config
+from .config import MODERN_UA, SEARCH_ENGINES, SEARCH_FALLBACK, Config, is_bypassed
 from .security import Policy, Refused, peer_uid
 from .server import HTTPError, Request, Response
 from .urls import CONTROL_PREFIX, TLSMemory, for_client, idna_host, netloc_of, upstream
@@ -74,7 +74,8 @@ class Stats:
     def __init__(self):
         self.started = time.time()
         self.counts = {"requests": 0, "pages": 0, "simplified": 0, "images": 0, "images_converted": 0,
-                       "downloads": 0, "redirects": 0, "errors": 0, "refused": 0, "certificate_errors": 0}
+                       "downloads": 0, "redirects": 0, "bypassed": 0, "errors": 0, "refused": 0,
+                       "certificate_errors": 0}
         self.bytes_in = 0
         self.bytes_out = 0
         self.last_error: dict | None = None
@@ -417,7 +418,94 @@ class App:
         raise Upstream("upstream", "Too many redirects.")
 
     # -- dispatch ----------------------------------------------------------------------------------
+    def is_bypassed(self, host: str) -> bool:
+        return is_bypassed(host, self.cfg.bypass_hosts)
+
+    def _bypass_request_headers(self, req: Request) -> dict:
+        out: dict[str, str] = {}
+        multi: list[tuple[str, str]] = []
+        for k, v in req.headers:
+            kl = k.lower()
+            if kl in HOP or kl.startswith("proxy-"):
+                continue
+            if kl == "cookie":
+                multi.append(("Cookie", v))
+                continue
+            out[k] = v
+        if multi:
+            out["Cookie"] = "; ".join(v for _, v in multi)
+        return out
+
+    def _bypass_response_headers(self, resp: aiohttp.ClientResponse) -> list[tuple[str, str]]:
+        drop = {"connection", "keep-alive", "transfer-encoding", "proxy-connection",
+                "upgrade", "trailer", "te", "content-encoding", "content-length"}
+        return [(k, v) for k, v in resp.headers.items() if k.lower() not in drop]
+
+    async def passthrough_request(self, req: Request, url: str, host: str) -> Response:
+        """Forward a whitelisted host over plain HTTP with headers and body untouched."""
+        lim = self.cfg.limits
+        headers = self._bypass_request_headers(req)
+        try:
+            resp = await self._open(req.method, url, headers, req.body or None)
+        except Refused as e:
+            return self._refused_page(host, e)
+        except Upstream as e:
+            return self._upstream_error_page(host, url, e)
+        resp_headers = self._bypass_response_headers(resp)
+        self.stats.add("bypassed")
+        if req.method == "HEAD" or resp.status in (204, 304):
+            resp.release()
+            r = Response(resp.status, resp_headers, b"")
+            r.set("X-RB-Kind", "bypass")
+            return r
+        stats = self.stats
+
+        async def body() -> AsyncIterator[bytes]:
+            sent = 0
+            t_end = time.monotonic() + lim.download_s
+            try:
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(resp.content.readany(), lim.idle_s)
+                    except (asyncio.TimeoutError, aiohttp.ClientError):
+                        return
+                    if not chunk:
+                        return
+                    sent += len(chunk)
+                    stats.bytes_in += len(chunk)
+                    stats.bytes_out += len(chunk)
+                    if sent > lim.download_bytes or time.monotonic() > t_end:
+                        return
+                    yield chunk
+            finally:
+                resp.release()
+
+        r = Response(resp.status, resp_headers, None, stream=body(), length=None)
+        r.set("X-RB-Kind", "bypass")
+        return r
+
+    def _refused_page(self, host: str, e: Refused) -> Response:
+        self.stats.add("refused")
+        kind = {"lan": "refused-lan", "port": "refused-port"}.get(e.kind, "refused-host")
+        log.info("refused %s (%s)", host, e.kind)
+        r = self.page(403, pages.error_page(kind, host=host, detail=e.message, cs=self.cfg.charset))
+        r.set("X-RB-Kind", "refused")
+        return r
+
+    def _upstream_error_page(self, host: str, url: str, e: Upstream) -> Response:
+        if e.kind == "certificate":
+            self.stats.add("certificate_errors")
+        self.stats.error(e.kind, host)
+        status = {"timeout": 504, "certificate": 502}.get(e.kind, 502)
+        extra = self.search_failed(host, url) if e.kind in ("timeout", "refused-connection", "unreachable") else []
+        r = self.page(status, pages.error_page(e.kind, host=host, detail=e.detail, retry=url,
+                                               cs=self.cfg.charset, extra=extra))
+        r.set("X-RB-Kind", "error")
+        return r
+
     async def dispatch(self, req: Request, url: str, host: str) -> Response:
+        if self.is_bypassed(host):
+            return await self.passthrough_request(req, url, host)
         r = self.homepage_redirect(req, url, host)
         if r is not None:
             return r
@@ -427,22 +515,9 @@ class App:
         try:
             resp, real_url = await self.fetch(req, url, kind_hint)
         except Refused as e:
-            self.stats.add("refused")
-            kind = {"lan": "refused-lan", "port": "refused-port"}.get(e.kind, "refused-host")
-            log.info("refused %s (%s)", host, e.kind)
-            r = self.page(403, pages.error_page(kind, host=host, detail=e.message, cs=self.cfg.charset))
-            r.set("X-RB-Kind", "refused")
-            return r
+            return self._refused_page(host, e)
         except Upstream as e:
-            if e.kind == "certificate":
-                self.stats.add("certificate_errors")
-            self.stats.error(e.kind, host)
-            status = {"timeout": 504, "certificate": 502}.get(e.kind, 502)
-            extra = self.search_failed(host, url) if e.kind in ("timeout", "refused-connection", "unreachable") else []
-            r = self.page(status, pages.error_page(e.kind, host=host, detail=e.detail, retry=url,
-                                                   cs=self.cfg.charset, extra=extra))
-            r.set("X-RB-Kind", "error")
-            return r
+            return self._upstream_error_page(host, url, e)
         try:
             return await self.respond(req, url, real_url, resp)
         except Upstream as e:

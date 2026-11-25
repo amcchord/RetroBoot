@@ -343,7 +343,7 @@ def test_volume_down_while_muted_respects_mute_and_updates_mixer(tmp_path):
         assert app.settings.applied["audio.volume"] == 64
         # ALSA must NOT be sent "unmute" when volume_down is pressed while muted (#40).
         assert app.volume_pushes == 0
-        assert calls == [["amixer", "-c", "PCH", "-q", "sset", "Master", "64%"]]
+        assert calls == [["amixer", "-c", "PCH", "-q", "sset", "Master", "37%"]]
         # Pressing volume_up unmutes cleanly at the new level.
         res_up = await lp.on_host_key("volume_up")
         assert res_up["muted"] is False and lp.muted is False
@@ -380,6 +380,47 @@ def test_volume_down_while_muted_switchless_keeps_zero_percent(tmp_path):
         assert app.mixer.last_percent == 64
         assert calls == []     # never raise ALSA above 0% while switchless mute is active
         await lp.set_mute(False)
-        assert calls[-1] == ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "64%"]
+        assert calls[-1] == ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "37%"]
+
+    run(go())
+
+
+def test_volume_hotkey_reprobes_unprobed_mixer_and_bypasses_capability_gate(tmp_path):
+    from retroboot import schema
+    from retroboot.network import AudioMixer
+    calls = []
+
+    async def amixer_run(argv, timeout=None):
+        calls.append(argv)
+        if "scontrols" in argv:
+            return 0, "Simple mixer control 'Master',0\n", ""
+        if argv[-2:] == ["sget", "Master"]:
+            return 0, ("Simple mixer control 'Master',0\n"
+                       "  Capabilities: pvolume pswitch\n"
+                       "  Mono: Playback 64 [100%] [0.00dB] [on]\n"), ""
+        return 0, "", ""
+
+    app = FakeApp(tmp_path, [])
+    app.mixer = AudioMixer(runner=amixer_run)
+    app.validation_context = lambda: schema.ValidationContext(check_capabilities=True)
+    seen_ctxs = []
+    app.settings.set_desired_and_applied = lambda v, ctx=None: (seen_ctxs.append(ctx), app.settings.applied.update(v))
+
+    async def real_push():
+        app.volume_pushes += 1
+        return await app.mixer.set_volume(app.settings.applied["audio.volume"])
+    app.apply_engine.push_volume = real_push
+    assert app.mixer.available is False
+    lp = Laptop(app)
+
+    async def go():
+        res = await lp.on_host_key("volume_down")
+        assert abs(res["level"] - 0.64) < 1e-6
+        assert app.settings.applied["audio.volume"] == 64
+        assert app.mixer.available is True
+        assert app.mixer.mapped is True
+        assert app.volume_pushes == 1
+        assert seen_ctxs and seen_ctxs[-1].check_capabilities is False
+        assert ["amixer", "-M", "-q", "sset", "Master", "64%", "unmute"] in calls
 
     run(go())

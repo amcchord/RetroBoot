@@ -9,13 +9,14 @@ choices (registered machines, the presenter's mode list) arrive through a
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from . import display as dpolicy
-from .webproxy import DEFAULT_REDIRECTS, SEARCH_CHOICES, SEARCH_LABELS
+from .webproxy import DEFAULT_BYPASS_HOSTS, DEFAULT_REDIRECTS, SEARCH_CHOICES, SEARCH_LABELS
 
 SCHEMA_VERSION = 1
 
@@ -48,6 +49,7 @@ MEDIA_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+,'&!-]{0,126}$")   # me
 REDIRECT_HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
 REDIRECT_URL_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s]*)?$")
 MAX_REDIRECTS = 64
+MAX_BYPASS_HOSTS = 128
 MAX_IMAGE_SERVERS = 8
 MOUSE_DPI_MIN = 100
 MOUSE_DPI_MAX = 100000
@@ -172,7 +174,7 @@ class Setting:
         """Wire form for GET /api/v1/settings (dynamic kinds are presented as enums)."""
         wire_type = {"machine": "enum", "host_mode": "enum", "timezone": "enum", "media": "enum",
                      "audio_output": "enum", "float": "number", "pixel_scale": "enum",
-                     "redirects": "list", "catalog_urls": "list"}.get(self.type, self.type)
+                     "redirects": "list", "bypass_hosts": "list", "catalog_urls": "list"}.get(self.type, self.type)
         d: dict[str, Any] = {
             "key": self.key, "type": wire_type, "kind": self.type, "default": self.default,
             "apply": self.apply, "capability": self.capability,
@@ -341,6 +343,8 @@ class Setting:
             return validate_catalog_urls(value)
         if t == "redirects":
             return validate_redirects(value)
+        if t == "bypass_hosts":
+            return validate_bypass_hosts(value)
         if t == "host_mode":
             if value == "auto":
                 return value
@@ -396,6 +400,41 @@ def validate_redirects(value: Any) -> list[dict]:
             raise ValueError(f"Redirect {i}: {host}{path} is already in the list.")
         seen.add((host, path))
         out.append({"host": host, "path": path, "to": to})
+    return out
+
+
+def validate_bypass_hosts(value: Any) -> list[str]:
+    """network.web_proxy_bypass: host names or IPv4 addresses the helper passes through untouched."""
+    if not isinstance(value, list):
+        raise ValueError("Provide a list of site names or IP addresses.")
+    if len(value) > MAX_BYPASS_HOSTS:
+        raise ValueError(f"Up to {MAX_BYPASS_HOSTS} whitelisted sites.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for i, raw in enumerate(value, 1):
+        if not isinstance(raw, str):
+            raise ValueError(f"Site {i}: enter a site name such as example.com.")
+        host = raw.strip().lower()
+        host = re.sub(r"^https?://", "", host)
+        host = host.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        if ":" in host and not host.startswith("["):
+            host = host.rsplit(":", 1)[0]
+        while host.startswith("*."):
+            host = host[2:]
+        host = host.strip(".")
+        if not host:
+            raise ValueError(f"Site {i}: enter a site name such as example.com.")
+        ok = bool(REDIRECT_HOST_RE.fullmatch(host))
+        if not ok:
+            try:
+                ok = isinstance(ipaddress.ip_address(host), ipaddress.IPv4Address)
+            except ValueError:
+                ok = False
+        if not ok:
+            raise ValueError(f"Site {i}: “{raw.strip()}” is not a valid host name or IPv4 address.")
+        if host not in seen:
+            seen.add(host)
+            out.append(host)
     return out
 
 
@@ -675,7 +714,7 @@ SETTINGS: tuple[Setting, ...] = (
        help="The key combination that opens RetroBoot Recovery."),
     _s(key="input.pointer_speed", type="float", default=1.0, range=(0.25, 4.0), step=0.25,
        apply=LIVE, group="input", label="Pointer speed", help="Pointer speed multiplier."),
-    _s(key="input.legacy_mouse", type="bool", default=False, apply=GUEST_RESTART, group="input",
+    _s(key="input.legacy_mouse", type="bool", default=True, apply=GUEST_RESTART, group="input",
        label="Legacy mouse tracking",
        help="Let Mac OS 7, 8 or 9 track your local mouse. Takes effect when Mac OS restarts."),
     _s(key="input.mouse_dpi", type="int", default=0, range=(0, MOUSE_DPI_MAX), apply=LIVE, group="input",
@@ -759,6 +798,11 @@ SETTINGS: tuple[Setting, ...] = (
        group="network", label="Allow pages on the local network",
        help="Lets Mac OS's browsers open routers, printers and other computers on your network, as any "
             "browser can. Mac OS can never open RetroBoot's own pages through the helper."),
+    _s(key="network.web_proxy_bypass", type="bypass_hosts", default=list(DEFAULT_BYPASS_HOSTS),
+       apply=LIVE, capability="web_proxy", group="network",
+       label="Sites not to help (whitelist)",
+       help="Web sites the Modern Web Helper passes through untouched without rewriting pages, images, "
+            "or redirects. Subdomains are included automatically."),
     # Media library (retroboot/media.py): a registered disc image, never a host path.
     _s(key="media.cd", type="media", default="none", apply=GUEST_RESTART, group="media",
        choice_labels={"none": "No disc"}, label="CD-ROM drive",

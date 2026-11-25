@@ -438,6 +438,23 @@ class RetroBootWindow(Screen):
         mode = (self.app.presenter.display or {}).get("mode") or []
         return f"{mode[0]} × {mode[1]}" if len(mode) >= 2 else ""
 
+    def _keyboard_summary(self) -> str:
+        s = self.app.settings.applied
+        bits = [str(s.get("input.keymap") or "us").upper()]
+        if s.get("input.legacy_mouse", True):
+            bits.append("classic mouse")
+        return " · ".join(bits)
+
+    def _webhelper_summary(self) -> str:
+        s = self.app.settings.applied
+        if s.get("network.web_proxy") != "on":
+            return "Off"
+        bypass = s.get("network.web_proxy_bypass")
+        count = len(bypass) if isinstance(bypass, list) else 0
+        view = s.get("network.web_proxy_view", "auto")
+        mode = schema.BY_KEY["network.web_proxy_view"].choice_labels.get(view, "Automatic")
+        return f"On · {mode} · {count} whitelisted" if count else f"On · {mode}"
+
     def _bluetooth_summary(self) -> str:
         bt = self.app.bluetooth
         try:
@@ -459,14 +476,18 @@ class RetroBootWindow(Screen):
         return f"RetroBoot {__version__}"
 
     def panes(self) -> list[dict]:
+        webproxy = getattr(self.app, "webproxy", None)
         rows = [ui.row("disk", "Startup Disk", self._disk_summary(), "startup"),
-                ui.row("download", "Download a Mac", self._download_summary(), "mac"),
-                ui.row("update", "Software Update", self._update_summary(), "update"),
-                ui.row("network", "Network & Web Access", self._network_summary(), "network"),
-                ui.row("display", "Display & Sound", self._display_summary(), "display")]
+                ui.row("display", "Display & Sound", self._display_summary(), "display"),
+                ui.row("keyboard", "Keyboard & Mouse", self._keyboard_summary(), "keyboard"),
+                ui.row("network", "Network & Web Access", self._network_summary(), "network")]
+        if webproxy and webproxy.available():
+            rows.append(ui.row("webhelper", "Modern Web Helper", self._webhelper_summary(), "web"))
         if self.app.bluetooth.capable():
             rows.append(ui.row("bluetooth", "Bluetooth", self._bluetooth_summary(), "bluetooth"))
-        rows += [ui.row("timezone", "Date & Time", self._time_summary(), "clock"),
+        rows += [ui.row("download", "Download a Mac", self._download_summary(), "mac"),
+                 ui.row("update", "Software Update", self._update_summary(), "update"),
+                 ui.row("timezone", "Date & Time", self._time_summary(), "clock"),
                  ui.row("diagnostics", "Diagnostics", self._diagnostics_summary(), "profiler")]
         if self.installer:
             rows.append(ui.row("installer", "Start Installer", "RetroBoot's installer on this card", "cd"))
@@ -537,8 +558,9 @@ class RetroBootWindow(Screen):
             main = ui.btn("start", "Start Mac OS", default=not chosen,
                           disabled=mode == "stopped" and sup.active_machine() is None)
         items.append(ui.buttons(ui.btn("power", "Shut Down…", align="left"),
+                                ui.btn("force-reboot", "Force Reboot…", align="left"),
                                 ui.btn("open", "Open", default=True) if chosen else None, main))
-        return ui.window(self.doc_id, "Startup Options" if mode == "paused" else "RetroBoot", items, width=540,
+        return ui.window(self.doc_id, "Startup Options" if mode == "paused" else "RetroBoot", items, width=560,
                          focus="pane")
 
     async def change(self, id, value):
@@ -564,6 +586,8 @@ class RetroBootWindow(Screen):
                                   self._after_start)
         elif id in ("power", "poweroff"):
             await p.show(PowerAlert(p, back=p.show_recovery))
+        elif id == "force-reboot":
+            await p.show(ForceRebootAlert(p, back=self))
         elif id == "force-restart":
             await p.show(ConfirmForce(p, "restart", back=self))
         elif id == "force-shutdown":
@@ -588,8 +612,12 @@ class RetroBootWindow(Screen):
             await p.show_software_update()
         elif pane == "network":
             await p.show(NetworkWeb(p))
+        elif pane == "webhelper":
+            await p.show(WebHelper(p, back=p.show_recovery))
         elif pane == "display":
             await p.show(DisplaySound(p))
+        elif pane == "keyboard":
+            await p.show(DisplaySound(p, page="keyboard"))
         elif pane == "bluetooth":
             from .bluetooth import BluetoothDevices
             await p.show(BluetoothDevices(p))
@@ -614,7 +642,8 @@ class RetroBootWindow(Screen):
             await self.panel.message("stop", "Mac OS could not start.", job.message, then=self.panel.show_recovery)
 
 
-PANES = ("disk", "download", "update", "network", "display", "bluetooth", "timezone", "diagnostics", "installer")
+PANES = ("disk", "display", "keyboard", "network", "webhelper", "bluetooth", "download", "update", "timezone",
+         "diagnostics", "installer")
 
 
 class StartInstaller(Screen):
@@ -818,6 +847,53 @@ class ConfirmForce(Screen):
             return
         await self.panel.message("stop", "The emulator could not be stopped.",
                                  f"{job.message} Evidence {eid}." if eid else job.message,
+                                 then=self.panel.show_recovery)
+
+
+class ForceRebootAlert(Screen):
+    """Ctrl+Alt+Del → Force Reboot…: force restart Mac OS or force reboot the host."""
+    doc_id = "force-reboot"
+
+    def __init__(self, panel, back: Screen | None = None):
+        super().__init__(panel)
+        self.back = back
+
+    def doc(self):
+        active = bool(self.app.supervisor.active)
+        return ui.alert(
+            self.doc_id, "stop", "Force reboot or restart?",
+            "Unsaved changes in Mac OS may be lost. Use Shut Down… first if Mac OS is still responding.",
+            ui.buttons(ui.btn("cancel", "Cancel", default=True),
+                       ui.btn("force-restart-mac", "Force Restart Mac OS", disabled=not active),
+                       ui.btn("force-reboot-host", "Force Reboot Computer")))
+
+    async def action(self, id, values):
+        if id == "cancel":
+            if self.back:
+                await self.panel.show(self.back)
+            else:
+                await self.panel.close()
+            return
+        if id == "force-restart-mac":
+            await self.panel.start_job(lambda: self.app.lifecycle_job("force-restart", origin="panel"),
+                                       "Forcing Mac OS to restart", self._after_mac)
+        elif id == "force-reboot-host":
+            await self.panel.start_job(lambda: self.app.host_job("reboot", force=True, origin="panel"),
+                                       "Forcing computer to reboot", self._after_host)
+
+    async def _after_mac(self, job: Job):
+        eid = (job.result or {}).get("evidence") if isinstance(job.result, dict) else None
+        if job.state == SUCCEEDED:
+            await self.panel.close()
+            return
+        await self.panel.message("stop", "Mac OS could not be restarted.",
+                                 f"{job.message} Evidence {eid}." if eid else job.message,
+                                 then=self.panel.show_recovery)
+
+    async def _after_host(self, job: Job):
+        if job.state == SUCCEEDED:
+            return
+        await self.panel.message("stop", "The computer could not be rebooted.", job.message,
                                  then=self.panel.show_recovery)
 
 
@@ -1093,6 +1169,15 @@ class NetworkWeb(Screen):
             items.append(ui.text(f"Paired devices: {len(app.pairing.devices())}", "small"))
         if self.wifi_hw or app.capabilities().get("wifi"):
             items.append(ui.text("AirPort: Join Wi-Fi with Wi-Fi…; Mac OS AirPort shares this host connection.", "small"))
+        webproxy = getattr(app, "webproxy", None)
+        if webproxy and webproxy.available():
+            on = app.settings.applied.get("network.web_proxy") == "on"
+            bypass = app.settings.applied.get("network.web_proxy_bypass")
+            n_bypass = len(bypass) if isinstance(bypass, list) else 0
+            view = app.settings.applied.get("network.web_proxy_view", "auto")
+            view_label = schema.BY_KEY["network.web_proxy_view"].choice_labels.get(view, "Automatic")
+            summary = f"Modern Web Helper: On ({view_label}" + (f", {n_bypass} whitelisted)" if n_bypass else ")")
+            items.append(ui.text(summary if on else "Modern Web Helper: Off", "small"))
         items.append(ui.checkbox("web", "Allow web management", web_on))
         items.append(ui.buttons(ui.btn("wifi", "Wi-Fi…"), ui.btn("webhelper", "Web Helper…"),
                                 ui.btn("newcode", "New Code", disabled=not web_on),
@@ -1175,9 +1260,10 @@ class WebHelper(Screen):
                 ui.checkbox("network.web_proxy_lan", "Allow pages on the local network",
                             bool(v["network.web_proxy_lan"]), disabled=not (available and on)),
             ]),
-            ui.text("Changes take effect at once; Mac OS keeps running. The list of old home pages "
-                    "is on the web page, under Network.", "small"),
-            ui.buttons(ui.btn("cancel", "Cancel"), ui.btn("ok", "OK", default=True, disabled=not available)),
+            ui.text("Changes take effect at once; Mac OS keeps running. Sites on the whitelist open untouched, "
+                    "and old home page redirects are on the web page.", "small"),
+            ui.buttons(ui.btn("bypass", "Whitelist…", disabled=not (available and on)),
+                       ui.btn("cancel", "Cancel"), ui.btn("ok", "OK", default=True, disabled=not available)),
         ]
         return ui.window(self.doc_id, "Modern Web Helper", items, width=520)
 
@@ -1198,6 +1284,9 @@ class WebHelper(Screen):
         if id == "cancel":
             await back()
             return
+        if id == "bypass":
+            await self.panel.show(WebHelperBypass(self.panel, back=lambda: self.panel.show(WebHelper(self.panel, self.back))))
+            return
         for k, v in (values or {}).items():
             await self.change(k, v)
         changes = {k: v for k, v in self.values.items() if v != self.app.settings.desired.get(k)}
@@ -1211,6 +1300,89 @@ class WebHelper(Screen):
                                      then=lambda: self.panel.show(self))
             return
         await back()
+
+
+class WebHelperBypass(Screen):
+    """Manage sites the Modern Web Helper passes through untouched."""
+    doc_id = "web-helper-bypass"
+
+    def __init__(self, panel, back=None):
+        super().__init__(panel)
+        self.back = back
+        self.selected: str | None = None
+        self.draft = ""
+        self.error: str | None = None
+
+    def _hosts(self) -> list[str]:
+        val = self.app.settings.desired.get("network.web_proxy_bypass")
+        return list(val) if isinstance(val, list) else []
+
+    def doc(self):
+        hosts = self._hosts()
+        if self.selected not in hosts:
+            self.selected = None
+        rows = [ui.row(h, h) for h in hosts]
+        items = [
+            ui.text("Sites on this whitelist pass straight through untouched: no page rewriting, "
+                    "no image conversion, no HTTPS upgrade, and no home page redirect.", "small"),
+            ui.lst("hosts", rows, self.selected, rows=6),
+            ui.field("host", "Add site:", self.draft, placeholder="example.com", max_length=253),
+            ui.buttons(ui.btn("add", "Add"),
+                       ui.btn("remove", "Remove", disabled=self.selected is None),
+                       ui.btn("defaults", "Use Defaults")),
+        ]
+        if self.error:
+            items.append(ui.text(self.error, "emphasis"))
+        items.append(ui.buttons(ui.btn("done", "Done", default=True)))
+        return ui.window(self.doc_id, "Web Helper Whitelist", items, width=520)
+
+    async def change(self, id, value):
+        if id == "hosts":
+            self.selected = str(value) if value else None
+            self.error = None
+            await self.panel.refresh()
+        elif id == "host":
+            self.draft = str(value or "")
+
+    async def action(self, id, values):
+        if values and "host" in values:
+            self.draft = str(values["host"] or "")
+        if id == "done":
+            await (self.back() if self.back else self.panel.show_recovery())
+            return
+        hosts = self._hosts()
+        if id == "add":
+            raw = self.draft.strip()
+            if not raw:
+                self.error = "Enter a site name such as example.com."
+                await self.panel.refresh()
+                return
+            try:
+                norm = schema.validate_bypass_hosts([raw])[0]
+                updated = hosts if norm in hosts else hosts + [norm]
+                await self.app.apply_engine.change_and_apply({"network.web_proxy_bypass": updated}, origin="panel")
+            except (ValueError, schema.ValidationError) as exc:
+                self.error = exc.fields.get("network.web_proxy_bypass") if isinstance(exc, schema.ValidationError) else str(exc)
+                await self.panel.refresh()
+                return
+            self.draft = ""
+            self.selected = norm
+            self.error = None
+            await self.panel.refresh()
+        elif id == "remove":
+            if self.selected not in hosts:
+                return
+            updated = [h for h in hosts if h != self.selected]
+            await self.app.apply_engine.change_and_apply({"network.web_proxy_bypass": updated}, origin="panel")
+            self.selected = None
+            self.error = None
+            await self.panel.refresh()
+        elif id == "defaults":
+            defaults = list(schema.BY_KEY["network.web_proxy_bypass"].default)
+            await self.app.apply_engine.change_and_apply({"network.web_proxy_bypass": defaults}, origin="panel")
+            self.selected = None
+            self.error = None
+            await self.panel.refresh()
 
 
 def wifi_secured(net: dict) -> bool:
@@ -1708,8 +1880,10 @@ class DisplaySound(Screen):
             items.append(ui.buttons(ui.btn("cancel", "Cancel"),
                                     ui.btn("restart", "Apply and Restart", disabled=not (pending and app.supervisor.active)),
                                     ui.btn("apply", "Apply", default=True)))
+        titles = {"keyboard": "Keyboard & Mouse", "sound": "Sound"}
+        title = titles.get(self.page, "Display & Sound")
         # One size for every page, as Monitors keeps (the Monitor page's height on a desktop).
-        return ui.window(self.doc_id, "Display & Sound", items, width=507, height=self.HEIGHT)
+        return ui.window(self.doc_id, title, items, width=507, height=self.HEIGHT)
 
     async def change(self, id, value):
         if id == "pi-display.profile":

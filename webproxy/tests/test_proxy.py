@@ -264,6 +264,70 @@ class SearchFallbackTests(unittest.TestCase):
         self.assertIn("MSIE 5.0", app.upstream_headers(req, "page", "http://a.example/")["User-Agent"])
 
 
+class BypassWhitelistTests(HelperCase):
+    helper_config = {
+        "redirects": [{"host": "oldhome.test", "path": "", "to": "http://system7today.com/"}],
+        "bypass_hosts": ["http://Passthrough.Test/foo", "*.sub.test", "203.0.113.5:8080"],
+    }
+
+    async def test_bypass_passes_headers_body_and_skips_redirects(self):
+        from aiohttp import web
+
+        raw_html = "<html><head><title>Café</title></head><body><script>keepMe()</script><p>Café</p></body></html>"
+
+        async def handler(req):
+            self.assertEqual(req.headers.get("User-Agent"), "Mozilla/4.0 (compatible; MSIE 5.0; Mac_PowerPC)")
+            self.assertEqual(req.headers.get("X-Custom-Guest"), "classic")
+            r = web.Response(
+                body=raw_html.encode("utf-8"),
+                content_type="text/html",
+                charset="utf-8",
+                headers={
+                    "X-Orig-Header": "untouched",
+                    "Location": "https://passthrough.test/next",
+                    "Refresh": "5; url=https://passthrough.test/later",
+                    "Content-Security-Policy": "default-src 'self'",
+                },
+            )
+            r.set_cookie("sid", "xyz", secure=True, samesite="None")
+            return r
+
+        self.up.routes["/raw"] = handler
+        status, hdrs, body = await self.h.get(
+            "/raw",
+            host=f"passthrough.test:{self.up.http_port}",
+            headers={"X-Custom-Guest": "classic"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(hdrs.get("x-orig-header"), "untouched")
+        self.assertEqual(hdrs.get("location"), "https://passthrough.test/next")
+        self.assertEqual(hdrs.get("refresh"), "5; url=https://passthrough.test/later")
+        self.assertIn("Secure", hdrs.get("set-cookie", ""))
+        self.assertIn("text/html; charset=utf-8", hdrs.get("content-type", ""))
+        self.assertEqual(body, raw_html.encode("utf-8"))
+        self.assertIn(b"<script>keepMe()</script>", body)
+        self.assertEqual(self.h.app.stats.counts["bypassed"], 1)
+
+    async def test_bypass_subdomain_and_ssrf_still_blocked(self):
+        from aiohttp import web
+        self.up.routes["/sub"] = lambda req: asyncio.sleep(0, web.Response(text="plain", content_type="text/plain"))
+        status, hdrs, body = await self.h.get("/sub", host=f"www.sub.test:{self.up.http_port}")
+        self.assertEqual((status, body), (200, b"plain"))
+        self.assertEqual(self.h.app.stats.counts["bypassed"], 1)
+        # Bypassing an internal address must still enforce SSRF refusal.
+        self.h.app.reconfigure(Config.from_dict({
+            "bypass_hosts": ["127.0.0.1", "oldhome.test"],
+            "redirects": [{"host": "oldhome.test", "path": "", "to": "http://system7today.com/"}],
+        }))
+        status, _, _ = await self.h.get("/", host=f"127.0.0.1:{self.up.http_port}")
+        self.assertEqual(status, 403)
+        # Homepage redirect is skipped when its host is whitelisted.
+        self.up.routes["/"] = lambda req: asyncio.sleep(0, web.Response(text="real-oldhome", content_type="text/plain"))
+        status, hdrs, body = await self.h.get("/", host=f"oldhome.test:{self.up.http_port}")
+        self.assertEqual((status, body), (200, b"real-oldhome"))
+        self.assertEqual(self.h.app.stats.counts["bypassed"], 2)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     unittest.main()

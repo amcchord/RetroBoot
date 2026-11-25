@@ -1,12 +1,12 @@
 # RetroBoot for families and kids
 
-RetroBoot 3.1.0 is built to turn any spare laptop, mini PC, Intel Mac, or Raspberry Pi into an approachable, joyful classic Macintosh that kids and families can explore right away—with no locked-down modes getting in the way of curiosity.
+RetroBoot 3.2.0 is built to turn any spare laptop, mini PC, Intel Mac, or Raspberry Pi into an approachable, joyful classic Macintosh that kids and families can explore right away—with no locked-down modes getting in the way of curiosity.
 
-## Recommended first pick: Mega Deluxe v4 vs. Clean Mac OS 9.2.2
+## Recommended first pick: Mega Deluxe v5 vs. Clean Mac OS 9.2.2
 
 When setting up a PC or choosing a system in **Download a Mac** (`Ctrl+Alt+Delete`), RetroBoot highlights two great starting points right at the top:
 
-- **Kids & Family: Mac OS 9.2.2 Mega Deluxe v4** — Packed with **111 classic games and creative programs**, ready to launch from **Launcher** and the **ACTION GoMac** menu at the bottom of the screen. Favorites include **Kid Pix Studio Deluxe**, **Logical Journey of the Zoombinis**, **The Oregon Trail**, **SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, and **ClarisWorks 5**.
+- **Kids & Family: Mac OS 9.2.2 Mega Deluxe v5** — Packed with **all 146 classic games, creative programs, and utilities across 8 Launcher tabs** and the **ACTION GoMac** bar (2-second bottom-edge delay), with a clean desktop and classic Apple menu. Favorites include **Kid Pix Studio Deluxe**, **Logical Journey of the Zoombinis**, **The Oregon Trail**, **SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, and **ClarisWorks 5**.
 - **Clean Mac OS 9.2.2** — A fast, minimal system with classic browsers, QuickTime 6, AirPort, and plenty of room to install your own favorite discs.
 
 If you have a **Raspberry Pi Zero 2 W**, choose **Mac OS 7.5.5 Deluxe v2** or **Mac OS 8.1 Deluxe v2** for 23 classic 68k games (including ClarisWorks 5) tuned for 512 MB boards.
@@ -40,4 +40,4 @@ Turn on your RetroBoot and hear an authentic Macintosh power-on chord right when
 
 ## Playing with USB & Bluetooth game controllers
 
-Most USB gamepads and modern Bluetooth controllers (Xbox, PlayStation, Switch Pro, 8BitDo) work right away in classic Mac games. Pair a Bluetooth controller in **Ctrl+Alt+Delete → Bluetooth…**, or plug in a USB gamepad, then pick **Arrow keys**, **WASD**, or **Off** under **Keyboard → Game controller** in **Display & Sound** (or Web **Display & Input**).
+Most USB gamepads and modern Bluetooth controllers (Xbox, PlayStation, Switch Pro, 8BitDo) work right away in classic Mac games. Pair a Bluetooth controller in **Ctrl+Alt+Delete → Bluetooth…**, or plug in a USB gamepad, then pick **Arrow keys**, **WASD**, or **Off** under **Keyboard → Game controller** in **Ctrl+Alt+Delete → Keyboard & Mouse** (or Web **Display & Input**).

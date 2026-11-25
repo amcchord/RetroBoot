@@ -594,7 +594,10 @@ class Hostd:
 
     async def sync_audio_output(self, output: str | None = None) -> bool:
         out = await asyncio.to_thread(self.choose_audio_output, output)
-        await self.mixer.probe(out["card_id"] if out else None, (out or {}).get("mixer"), detect_switch=True)
+        pw_sink = (out or {}).get("pw_sink")
+        kw = {"pw_sink": pw_sink} if pw_sink else {}
+        await self.mixer.probe(out["card_id"] if out else None, (out or {}).get("mixer"),
+                               detect_switch=True, **kw)
         if self.mixer.available:
             await self.apply_engine.push_volume()
             return True
@@ -1629,8 +1632,10 @@ class Hostd:
         self.bluetooth.assistant_hook = lambda stage, ctx: assistant_update(self.panel, stage, ctx)
         self._bluetooth_task = self.loop.create_task(self.bluetooth.start(), name="bluetooth-start")
         out = await audio_out
+        pw_sink = (out or {}).get("pw_sink")
+        kw = {"pw_sink": pw_sink} if pw_sink else {}
         await self.mixer.probe(out["card_id"] if out else None, (out or {}).get("mixer"),
-                               detect_switch=True)
+                               detect_switch=True, **kw)
         if self.mixer.available:
             await self.apply_engine.push_volume()
         self._launch_ready.set()

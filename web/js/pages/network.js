@@ -38,19 +38,53 @@ export function render() {
   const connEl = h('div', null, loading());
   const wifiEl = h('div', null, loading());
   const guestEl = h('div', null, loading());
-  // The Modern Web Helper window adds its live state and the redirect table (webhelper.js);
-  // the Bluetooth window its devices, pairing and battery levels (bluetooth.js).
-  const panels = scope.add(settingsPanels('network', { extras: { 'Modern Web Helper': webHelperExtras, Bluetooth: bluetoothExtras } }));
+  // Modern Web Helper sits at the top of the right column so it and its whitelist are easy to
+  // find; Host Connection, Wi-Fi and Bluetooth sit on the left; guest status and management below.
+  const helperPanels = scope.add(settingsPanels('network', {
+    groups: ['Modern Web Helper'],
+    extras: { 'Modern Web Helper': webHelperExtras },
+  }));
+  const btPanels = scope.add(settingsPanels('network', {
+    groups: ['Bluetooth'],
+    extras: { Bluetooth: bluetoothExtras },
+  }));
+  const otherPanels = scope.add(settingsPanels('network', {
+    groups: ['Mac OS Networking', 'Web Management', 'Remote Screen'],
+  }));
+
+  const jumpTo = (id) => {
+    const target = document.getElementById(id);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  const jumpNav = h(
+    'nav',
+    { class: 'net-jump', 'aria-label': 'Network sections' },
+    button('Connection', { className: 'btn-small', onClick: () => jumpTo('net-conn') }),
+    button('Modern Web Helper', { className: 'btn-small', variant: 'default', onClick: () => jumpTo('net-webhelper') }),
+    button('Wi-Fi', { className: 'btn-small', onClick: () => jumpTo('net-wifi') }),
+    button('Bluetooth', { className: 'btn-small', onClick: () => jumpTo('net-bt') }),
+    button('Mac OS Networking', { className: 'btn-small', onClick: () => jumpTo('net-guest') }),
+    button('Web Management', { className: 'btn-small', onClick: () => jumpTo('net-mgmt') }),
+  );
 
   const el = h(
     'div',
     { class: 'page' },
-    pageHeader('network', 'Network', 'How RetroBoot connects to your network, how Mac OS gets online, Bluetooth devices, and how this page is reached.'),
+    pageHeader('network', 'Network', 'How RetroBoot gets online, Modern Web Helper and its whitelist, Wi-Fi, Bluetooth, and web management.'),
+    jumpNav,
     h(
       'div',
       { class: 'two-col' },
-      h('div', { class: 'col' }, win({ title: 'Connection', icon: 'network' }, connEl), win({ title: 'Wi-Fi', icon: 'network' }, wifiEl)),
-      h('div', { class: 'col' }, win({ title: 'Mac OS Network Status', icon: 'mac' }, guestEl), panels.el),
+      h('div', { class: 'col' },
+        h('div', { id: 'net-conn' }, win({ title: 'Connection', icon: 'network' }, connEl)),
+        h('div', { id: 'net-wifi' }, win({ title: 'Wi-Fi', icon: 'network' }, wifiEl)),
+        h('div', { id: 'net-bt' }, btPanels.el),
+      ),
+      h('div', { class: 'col' },
+        h('div', { id: 'net-webhelper' }, helperPanels.el),
+        h('div', { id: 'net-guest' }, win({ title: 'Mac OS Network Status', icon: 'mac' }, guestEl)),
+        h('div', { id: 'net-mgmt' }, otherPanels.el),
+      ),
     ),
   );
 

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import uuid
 from pathlib import Path
@@ -431,10 +432,35 @@ def is_ip(host: str) -> bool:
 
 _SCONTROL_RE = re.compile(r"^Simple mixer control '([^']+)',(\d+)\s*$", re.M)
 _CAPABILITIES_RE = re.compile(r"^\s*Capabilities:\s*(.*)$", re.M)
+VOLUME_STEP = 6
+_MIXER_CANDIDATES = ("Master", "PCM", "Speaker", "Headphone", "Front", "Line Out", "DAC", "Digital",
+                     "Playback", "Headset")
+
+
+def perceptual_to_hw_percent(percent: int) -> int:
+    """Convert perceptual loudness (0..100) to linear hardware gain (0..100).
+
+    Used when an ALSA mixer control lacks dB TLV metadata so ``amixer -M`` cannot
+    compute its cubic loudness curve.  Matches a 2.2 power law while keeping
+    0 -> 0, 100 -> 100, and non-zero levels audible (>= 1%).
+    """
+    p = max(0, min(100, int(percent)))
+    if p <= 0:
+        return 0
+    if p >= 100:
+        return 100
+    return max(1, min(100, int(round(100.0 * ((p / 100.0) ** 2.2)))))
+
+
+def step_volume(current: int, direction: int, step: int = VOLUME_STEP) -> int:
+    """Step ``audio.volume`` (0..100) cleanly up or down."""
+    cur = max(0, min(100, int(current)))
+    delta = int(step) if direction > 0 else -int(step)
+    return max(0, min(100, cur + delta))
 
 
 class AudioMixer:
-    """amixer adapter for the live audio.volume setting."""
+    """amixer / pactl adapter for the live audio.volume setting."""
 
     def __init__(self, enabled: bool = True, runner: Runner | None = None, detect_switch: bool = True):
         self.enabled = enabled
@@ -442,8 +468,10 @@ class AudioMixer:
         self.detect_switch = detect_switch
         self.control: str | None = None
         self.card: str | None = None     # ALSA card id of the chosen output (audio.choose); None: default
+        self.pw_sink: str | None = None  # PipeWire/Pulse sink name for Bluetooth audio
         self.available = False
         self.mapped = False
+        self.has_db = False
         self.has_switch = True
         self.muted = False
         self.last_percent: int | None = None
@@ -459,27 +487,51 @@ class AudioMixer:
             return "pswitch" in tokens
         return False if explicit and "pswitch" not in (info or "") else None
 
+    @staticmethod
+    def _has_playback_volume(info: str) -> bool:
+        caps = _CAPABILITIES_RE.findall(info or "")
+        if not caps:
+            return True
+        tokens = {tok for line in caps for tok in line.split()}
+        return bool(tokens & {"pvolume", "volume"})
+
     async def probe(self, card: str | None = None, control: str | None = None,
-                    detect_switch: bool | None = None) -> bool:
-        """Pick the volume control. ``control`` (an ASoC card's UCM playback master,
-        e.g. the ES8336's "DAC") wins when it exists; it is set on the mapped
-        (perceptual) scale, since its raw steps span 96 dB.  ``detect_switch`` asks
-        whether the chosen control has a mute switch: vc4 softvol and USB DACs
-        without pswitch fall back to 0 % cleanly."""
+                    detect_switch: bool | None = None, pw_sink: str | None = None) -> bool:
+        """Pick the playback volume control.
+
+        * Bluetooth/PipeWire sinks (``pw_sink``) use ``pactl`` (perceptual cubic scale).
+        * ALSA controls with dB range metadata use ``amixer -M`` (ALSA perceptual scale).
+        * ALSA controls without dB metadata apply :func:`perceptual_to_hw_percent`.
+        * Candidates without playback volume capability (e.g. switch-only or capture)
+          are skipped.
+        """
         self.available = False
         self.card = card
+        self.pw_sink = None
+        self.control = None
         self.mapped = False
+        self.has_db = False
         self.has_switch = True
         self.muted = False
-        self.last_percent: int | None = None
+        self.last_percent = None
         if not self.enabled:
             return False
+        if pw_sink:
+            if self.run is not run_cmd or shutil.which("pactl"):
+                self.pw_sink = pw_sink
+                self.control = pw_sink
+                self.mapped = True
+                self.has_db = True
+                self.has_switch = True
+                self.available = True
+                return True
         explicit_detect = bool(detect_switch) if detect_switch is not None else False
         should_detect = self.detect_switch if detect_switch is None else bool(detect_switch)
         if control:
             rc, out, _ = await self.run(["amixer", *self._card_args(), "sget", control], timeout=5)
-            if rc == 0 and "pvolume" in out:
+            if rc == 0 and self._has_playback_volume(out):
                 self.control, self.mapped = control, True
+                self.has_db = "dB" in (out or "")
                 parsed = self._parse_has_switch(out, explicit=True)
                 self.has_switch = bool(parsed) if parsed is not None else ("pswitch" in out)
                 self.available = True
@@ -488,20 +540,28 @@ class AudioMixer:
         if rc != 0:
             return False
         controls = {m.group(1) for m in _SCONTROL_RE.finditer(out or "")}
-        for name in ("Master", "PCM", "Speaker", "Headphone"):
-            if name in controls:
-                self.control = name
-                self.available = True
-                if should_detect:
-                    rc, info, _ = await self.run(["amixer", *self._card_args(), "sget", name], timeout=5)
-                    if rc == 0:
-                        parsed = self._parse_has_switch(info, explicit=explicit_detect)
-                        if parsed is not None:
-                            self.has_switch = parsed
-                    elif explicit_detect:
-                        self.has_switch = False
-                return True
+        for name in _MIXER_CANDIDATES:
+            if name not in controls:
+                continue
+            rc, info, _ = await self.run(["amixer", *self._card_args(), "sget", name], timeout=5)
+            if rc != 0:
+                continue
+            if not self._has_playback_volume(info):
+                continue
+            self.control = name
+            self.available = True
+            self.has_db = "dB" in (info or "")
+            self.mapped = self.has_db
+            if should_detect:
+                parsed = self._parse_has_switch(info, explicit=explicit_detect)
+                if parsed is not None:
+                    self.has_switch = parsed
+            return True
         return False
+
+    def _hw_percent(self, percent: int) -> int:
+        p = max(0, min(100, int(percent)))
+        return p if self.mapped else perceptual_to_hw_percent(p)
 
     def _sset(self, *values: str) -> list[str]:
         return ["amixer", *self._card_args(), *(["-M"] if self.mapped else []), "-q", "sset", self.control, *values]
@@ -509,10 +569,18 @@ class AudioMixer:
     async def set_volume(self, percent: int, unmute: bool = True) -> bool:
         if not self.available or self.control is None:
             return False
-        self.last_percent = int(percent)
+        pct = max(0, min(100, int(percent)))
+        self.last_percent = pct
+        if self.pw_sink:
+            rc, _, _ = await self.run(["pactl", "set-sink-volume", self.pw_sink, f"{pct}%"], timeout=5)
+            if rc == 0 and unmute:
+                await self.run(["pactl", "set-sink-mute", self.pw_sink, "0"], timeout=5)
+                self.muted = False
+            return rc == 0
         if not unmute and not self.has_switch:
             return True
-        values = [f"{int(percent)}%"] + (["unmute"] if (self.has_switch and unmute) else [])
+        hw_pct = self._hw_percent(pct)
+        values = [f"{hw_pct}%"] + (["unmute"] if (self.has_switch and unmute) else [])
         rc, _, _ = await self.run(self._sset(*values), timeout=5)
         if rc == 0 and unmute:
             self.muted = False
@@ -522,10 +590,16 @@ class AudioMixer:
         """Mute key: the control's switch, or 0 % and back for a control without one."""
         if not self.available or self.control is None:
             return False
+        if self.pw_sink:
+            rc, _, _ = await self.run(["pactl", "set-sink-mute", self.pw_sink, "1" if mute else "0"], timeout=5)
+            if rc == 0:
+                self.muted = bool(mute)
+            return rc == 0
         if self.has_switch:
             values = ["mute" if mute else "unmute"]
         else:
-            values = ["0%" if mute else f"{self.last_percent if self.last_percent is not None else 70}%"]
+            pct = self.last_percent if self.last_percent is not None else 70
+            values = ["0%" if mute else f"{self._hw_percent(pct)}%"]
         rc, _, _ = await self.run(self._sset(*values), timeout=5)
         if rc == 0:
             self.muted = bool(mute)

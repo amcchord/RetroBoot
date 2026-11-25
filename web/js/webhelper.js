@@ -9,6 +9,7 @@ import { store, subscribe } from './store.js';
 import { currentValue, setDraft } from './settings.js';
 
 const KEY = 'network.web_proxy_redirects';
+const BYPASS_KEY = 'network.web_proxy_bypass';
 const STATE = {
   running: ['On', 'ok'],
   starting: ['Starting…', 'pending'],
@@ -32,6 +33,7 @@ function statusLine(wp) {
     if (c.pages) parts.push(plural(c.pages, 'page', 'pages'));
     if (c.images_converted) parts.push(plural(c.images_converted, 'picture converted', 'pictures converted'));
     if (c.downloads) parts.push(plural(c.downloads, 'download', 'downloads'));
+    if (c.bypassed) parts.push(plural(c.bypassed, 'whitelisted site passed through', 'whitelisted sites passed through'));
     text = parts.length
       ? `Mac OS's browsers open today's web through RetroBoot: ${parts.join(', ')} so far.`
       : "Mac OS's browsers open today's web, including secure sites, through RetroBoot.";
@@ -113,9 +115,49 @@ async function editEntry(entry) {
   return choice === 'ok' ? result : null;
 }
 
+function normalizeBypassHost(raw) {
+  let host = String(raw || '').trim().toLowerCase();
+  host = host.replace(/^https?:\/\//, '');
+  host = host.split(/[/?#]/, 1)[0];
+  if (host.includes(':') && !host.startsWith('[')) host = host.replace(/:[^:]*$/, '');
+  while (host.startsWith('*.')) host = host.slice(2);
+  host = host.replace(/^\.+|\.+$/g, '');
+  const hostRe = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+  const ipv4Re = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (hostRe.test(host)) return host;
+  if (ipv4Re.test(host) && host.split('.').every((p) => Number(p) >= 0 && Number(p) <= 255)) return host;
+  return null;
+}
+
 /** Extras for the "Modern Web Helper" window: {top, el, update, destroy}. */
 export function webHelperExtras() {
   const top = h('div');
+  const bypassListEl = h('ul', { class: 'cp-list wb-list', 'aria-label': 'Sites not to help' });
+  const bypassCountEl = h('span', { class: 'muted small' });
+  const bypassInputId = uid('wb');
+  const bypassInput = h('input', {
+    type: 'text',
+    id: bypassInputId,
+    autocomplete: 'off',
+    autocapitalize: 'off',
+    spellcheck: 'false',
+    placeholder: 'example.com',
+  });
+  const bypassErr = h('p', { class: 'field-error', hidden: true, role: 'alert' });
+  const bypassSection = h(
+    'div',
+    { class: 'subsection wb-section' },
+    h('div', { class: 'wb-head' },
+      h('label', { class: 'setting-label', for: bypassInputId }, 'Sites not to help (whitelist) '),
+      bypassCountEl),
+    h('p', { class: 'muted small' }, 'Web sites passed straight through untouched — no rewriting, image conversion, HTTPS upgrade, or home page redirect. Subdomains are included automatically.'),
+    bypassListEl,
+    h('div', { class: 'wb-add-row' },
+      bypassInput,
+      button('Add', { className: 'btn-small', onClick: () => addBypass() }),
+      button('Use Defaults', { className: 'btn-small', variant: 'quiet', onClick: () => defaultBypass() })),
+    bypassErr,
+  );
   const listEl = h('ul', { class: 'cp-list rd-list', 'aria-label': 'Home page redirects' });
   const countEl = h('span');
   const details = h(
@@ -129,10 +171,70 @@ export function webHelperExtras() {
         button('Add…', { className: 'btn-small', onClick: () => add() }),
         button('Use Defaults', { className: 'btn-small', variant: 'quiet', onClick: () => defaults() }))),
   );
-  const el = h('div', { class: 'wh-extras' }, details);
+  const el = h('div', { class: 'wh-extras' }, bypassSection, details);
 
+  const bypassHosts = () => (Array.isArray(currentValue(BYPASS_KEY)) ? currentValue(BYPASS_KEY) : []);
+  const saveBypass = (list) => setDraft(BYPASS_KEY, list);
   const entries = () => (Array.isArray(currentValue(KEY)) ? currentValue(KEY) : []);
   const save = (list) => setDraft(KEY, list);
+
+  function addBypass() {
+    const norm = normalizeBypassHost(bypassInput.value);
+    if (!norm) {
+      bypassErr.hidden = false;
+      bypassErr.textContent = 'Enter a site name such as example.com or an IPv4 address.';
+      return;
+    }
+    bypassErr.hidden = true;
+    const list = bypassHosts();
+    if (!list.includes(norm)) saveBypass([...list, norm]);
+    bypassInput.value = '';
+    renderBypass();
+  }
+
+  bypassInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addBypass();
+    }
+  });
+
+  function removeBypass(host) {
+    saveBypass(bypassHosts().filter((x) => x !== host));
+    renderBypass();
+  }
+
+  function defaultBypass() {
+    const def = store.settings && store.settings.defs.get(BYPASS_KEY);
+    if (def && Array.isArray(def.default)) saveBypass([...def.default]);
+    bypassErr.hidden = true;
+    renderBypass();
+  }
+
+  function renderBypass() {
+    const list = bypassHosts();
+    const def = store.settings && store.settings.defs.get(BYPASS_KEY);
+    const disabled = !!(def && !def.available);
+    bypassCountEl.textContent = `(${list.length})`;
+    bypassListEl.replaceChildren(
+      ...(list.length
+        ? list.map((host) =>
+            h(
+              'li',
+              { class: 'wb-row' },
+              h('span', { class: 'wb-host' }, host),
+              button('Remove', {
+                className: 'btn-small',
+                variant: 'quiet',
+                disabled,
+                ariaLabel: `Remove ${host} from whitelist`,
+                onClick: () => removeBypass(host),
+              }),
+            ),
+          )
+        : [h('li', { class: 'muted small' }, 'No whitelisted sites. All web sites pass through the helper.')]),
+    );
+  }
 
   async function add() {
     const e = await editEntry(null);
@@ -187,6 +289,7 @@ export function webHelperExtras() {
   }
 
   const update = () => {
+    renderBypass();
     renderList();
     renderStatus();
   };

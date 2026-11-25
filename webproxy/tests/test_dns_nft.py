@@ -52,6 +52,7 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
         loop = asyncio.get_running_loop()
         self.ut, self.up = await loop.create_datagram_endpoint(FakeUpstream, local_addr=("127.0.0.1", 0))
         port = self.ut.get_extra_info("sockname")[1]
+        self.up_port = port
         self.names = {"livepage.apple.com", "live.example"}
         self.fwd = dns.Forwarder(lambda: self.names, lambda: "10.0.2.2", upstream=[("127.0.0.1", port)])
         await self.fwd.start(["127.0.0.1"], 0)
@@ -83,6 +84,32 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_live_redirect_name_keeps_real_answer(self):
         self.assertEqual(a_records(await self.ask(query("live.example"))), ["198.51.100.7"])
+
+    async def test_bypassed_redirect_name_is_not_synthesized(self):
+        from rbwebproxy.config import is_bypassed
+        bypass = ["livepage.apple.com"]
+        fwd = dns.Forwarder(lambda: {h for h in self.names if not is_bypassed(h, bypass)},
+                            lambda: "10.0.2.2", upstream=[("127.0.0.1", self.up_port)])
+        await fwd.start(["127.0.0.1"], 0)
+        try:
+            port = fwd.transports[0].get_extra_info("sockname")[1]
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+
+            class C(asyncio.DatagramProtocol):
+                def datagram_received(self, data, addr):
+                    fut.set_result(data)
+
+            t, _ = await loop.create_datagram_endpoint(C, remote_addr=("127.0.0.1", port))
+            t.sendto(query("livepage.apple.com"))
+            try:
+                reply = await asyncio.wait_for(fut, 5)
+            finally:
+                t.close()
+            self.assertEqual(a_records(reply), [])
+            self.assertEqual(fwd.counts["synthesized"], 0)
+        finally:
+            await fwd.close()
 
     async def test_other_names_forwarded_with_fresh_ids(self):
         reply = await self.ask(query("www.example", qid=0x0001))

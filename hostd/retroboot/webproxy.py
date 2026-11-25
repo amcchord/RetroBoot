@@ -69,6 +69,9 @@ SEARCH_CHOICES = ("frogfind", "bing", "duckduckgo", "wiby", "none")
 SEARCH_LABELS = {"frogfind": "FrogFind (made for vintage computers)", "bing": "Bing",
                  "duckduckgo": "DuckDuckGo (HTML version)", "wiby": "Wiby (the classic web)",
                  "none": "Keep the original search pages"}
+DEFAULT_BYPASS_HOSTS: tuple[str, ...] = (
+    "system7today.com", "frogfind.com", "68k.news", "wiby.me", "theoldnet.com", "oldweb.today",
+)
 
 
 def guest_uid(user: str | None) -> int | None:
@@ -135,6 +138,7 @@ class WebHelper:
             "view": a.get("network.web_proxy_view", "auto"),
             "homepages": bool(a.get("network.web_proxy_homepages", True)),
             "redirects": list(a.get("network.web_proxy_redirects") or []),
+            "bypass_hosts": list(a.get("network.web_proxy_bypass") or []),
             "search": a.get("network.web_proxy_search", "frogfind"),
             "allow_lan": bool(a.get("network.web_proxy_lan", True)),
             "status_path": str(self.status_path),
@@ -289,5 +293,6 @@ class WebHelper:
                 "view": a.get("network.web_proxy_view", "auto"),
                 "homepages": bool(a.get("network.web_proxy_homepages", True)),
                 "search": a.get("network.web_proxy_search", "frogfind"),
+                "bypass_count": len(a.get("network.web_proxy_bypass") or []),
                 "address": f"10.0.2.2:{int(getattr(self.cfg, 'webproxy_port', 8080))}",
                 "stats": self.stats}

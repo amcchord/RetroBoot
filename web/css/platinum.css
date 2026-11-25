@@ -2989,3 +2989,53 @@ html:not(.pt) details.disclosure[open] > summary::before {
   letter-spacing: 0.08em;
   font-variant-numeric: tabular-nums;
 }
+
+/* Network page quick-jump strip & Modern Web Helper whitelist (network.js, webhelper.js). */
+.net-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.wb-section {
+  margin-bottom: 10px;
+}
+
+.wb-head {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.wb-list {
+  margin: 6px 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.wb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 6px;
+}
+
+.wb-host {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.wb-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.wb-add-row input {
+  flex: 1 1 auto;
+  min-width: 140px;
+}

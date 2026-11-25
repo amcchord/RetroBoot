@@ -352,11 +352,11 @@ class MixerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await m.probe("vc4hdmi0", detect_switch=True))
         self.assertFalse(m.has_switch)
         await m.set_volume(40)
-        self.assertEqual(calls[-1], ["amixer", "-c", "vc4hdmi0", "-q", "sset", "PCM", "40%"])
+        self.assertEqual(calls[-1], ["amixer", "-c", "vc4hdmi0", "-q", "sset", "PCM", "13%"])
         await m.set_mute(True)
         self.assertEqual(calls[-1][-1], "0%")
         await m.set_mute(False)
-        self.assertEqual(calls[-1][-1], "40%")
+        self.assertEqual(calls[-1][-1], "13%")
 
     async def test_plain_cards_unchanged(self):
         from retroboot.network import AudioMixer
@@ -368,9 +368,49 @@ class MixerTests(unittest.IsolatedAsyncioTestCase):
         m = AudioMixer(runner=run)
         self.assertTrue(await m.probe("PCH"))
         await m.set_volume(40)
-        self.assertEqual(calls[-1], ["amixer", "-c", "PCH", "-q", "sset", "Master", "40%", "unmute"])
+        self.assertEqual(calls[-1], ["amixer", "-c", "PCH", "-q", "sset", "Master", "13%", "unmute"])
         await m.set_mute(True)
         self.assertEqual(calls[-1], ["amixer", "-c", "PCH", "-q", "sset", "Master", "mute"])
+
+    async def test_db_control_uses_amixer_mapped_scale(self):
+        from retroboot.network import AudioMixer, perceptual_to_hw_percent
+        calls = []
+
+        async def run(argv, timeout=None):
+            calls.append(argv)
+            if argv[-2:] == ["sget", "Master"]:
+                return 0, ("Simple mixer control 'Master',0\n"
+                           "  Capabilities: pvolume pvolume-joined pswitch pswitch-joined\n"
+                           "  Limits: Playback 0 - 87\n"
+                           "  Mono: Playback 60 [69%] [-20.25dB] [on]\n"), ""
+            return 0, "Simple mixer control 'Master',0\nSimple mixer control 'Capture',0\n", ""
+
+        m = AudioMixer(runner=run)
+        self.assertTrue(await m.probe("PCH", detect_switch=True))
+        self.assertTrue(m.mapped)
+        self.assertTrue(m.has_switch)
+        await m.set_volume(40)
+        self.assertEqual(calls[-1], ["amixer", "-c", "PCH", "-M", "-q", "sset", "Master", "40%", "unmute"])
+        self.assertEqual(perceptual_to_hw_percent(0), 0)
+        self.assertEqual(perceptual_to_hw_percent(1), 1)
+        self.assertLess(perceptual_to_hw_percent(50), 30)
+        self.assertEqual(perceptual_to_hw_percent(100), 100)
+
+    async def test_pw_sink_uses_pactl(self):
+        from retroboot.network import AudioMixer
+        calls = []
+
+        async def run(argv, timeout=None):
+            calls.append(argv)
+            return 0, "", ""
+
+        m = AudioMixer(runner=run)
+        self.assertTrue(await m.probe(None, pw_sink="bluez_output.AA_BB_CC.1"))
+        self.assertTrue(m.available)
+        await m.set_volume(60)
+        self.assertIn(["pactl", "set-sink-volume", "bluez_output.AA_BB_CC.1", "60%"], calls)
+        await m.set_mute(True)
+        self.assertIn(["pactl", "set-sink-mute", "bluez_output.AA_BB_CC.1", "1"], calls)
 
 
 
@@ -984,11 +1024,11 @@ class Retroboot310MixerAndOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(m.control, "PCM")
         self.assertFalse(m.has_switch)
         await m.set_volume(55)
-        self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "55%"])
+        self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "27%"])
         await m.set_mute(True)
         self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "0%"])
         await m.set_mute(False)
-        self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "55%"])
+        self.assertEqual(calls[-1], ["amixer", "-c", "USBDAC", "-q", "sset", "PCM", "27%"])
 
     def test_choose_honors_audio_output_and_list_outputs(self):
         with tempfile.TemporaryDirectory() as td:

@@ -17,7 +17,7 @@ import socket
 import sys
 
 from . import __version__
-from .config import Config
+from .config import Config, is_bypassed
 from .dns import Forwarder
 from .proxy import App
 from .redirects import hosts as redirect_hosts
@@ -49,8 +49,10 @@ async def run(config_path: str | None, cfg: Config) -> int:
     try:
         await server.start(cfg.listen, cfg.port)
         if cfg.dns:
-            dns = Forwarder(lambda: redirect_hosts(app.cfg.redirects) if app.cfg.homepages else set(),
-                            lambda: app.cfg.redirect_address)
+            dns = Forwarder(
+                lambda: {h for h in redirect_hosts(app.cfg.redirects)
+                         if not is_bypassed(h, app.cfg.bypass_hosts)} if app.cfg.homepages else set(),
+                lambda: app.cfg.redirect_address)
             await dns.start(cfg.dns_listen, cfg.dns_port)
     except OSError as e:
         log.error("cannot listen: %s", e)
@@ -84,8 +86,8 @@ async def run(config_path: str | None, cfg: Config) -> int:
             return
         app.reconfigure(new)
         logging.getLogger().setLevel(new.log_level)
-        log.info("configuration reloaded: view %s, %d redirects, search %s, LAN %s", new.view,
-                 len(new.redirects), new.search, "on" if new.allow_lan else "off")
+        log.info("configuration reloaded: view %s, %d redirects, %d bypassed, search %s, LAN %s", new.view,
+                 len(new.redirects), len(new.bypass_hosts), new.search, "on" if new.allow_lan else "off")
         sd_notify("READY=1")
 
     loop.add_signal_handler(signal.SIGHUP, reload)

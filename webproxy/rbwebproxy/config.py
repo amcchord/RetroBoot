@@ -7,6 +7,7 @@ older helper from starting.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from dataclasses import dataclass, field, fields
@@ -69,6 +70,7 @@ class Config:
     user_agent: str = "modern"                        # "modern", "guest" (the browser's own) or a string
     passthrough_hosts: list = field(default_factory=lambda: [
         "system7today.com", "frogfind.com", "68k.news", "wiby.me", "theoldnet.com", "oldweb.today"])
+    bypass_hosts: list = field(default_factory=list)
     status_path: str | None = None
     ca_file: str | None = None                        # tests: extra trust anchor
     extra_blocked: list = field(default_factory=list)  # more networks to refuse
@@ -97,6 +99,7 @@ class Config:
         if isinstance(cfg.listen, str):
             cfg.listen = [cfg.listen]
         cfg.redirects = normalize_redirects(cfg.redirects)
+        cfg.bypass_hosts = normalize_bypass_hosts(cfg.bypass_hosts)
         cfg.image_max_width = max(160, min(2048, int(cfg.image_max_width)))
         return cfg
 
@@ -129,3 +132,53 @@ def normalize_redirects(entries: Any) -> list[dict]:
             continue
         out.append({"host": host, "path": path, "to": to})
     return out
+
+
+def normalize_bypass_hosts(entries: Any) -> list[str]:
+    """Normalized hostnames or IPv4 addresses that bypass helper rewriting."""
+    if not isinstance(entries, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in entries[:128]:
+        if not isinstance(raw, str):
+            continue
+        host = raw.strip().lower()
+        host = re.sub(r"^https?://", "", host)
+        host = host.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        if ":" in host and not host.startswith("["):
+            host = host.rsplit(":", 1)[0]
+        while host.startswith("*."):
+            host = host[2:]
+        host = host.strip(".")
+        if not host:
+            continue
+        ok = bool(HOST_RE.match(host))
+        if not ok:
+            try:
+                ok = isinstance(ipaddress.ip_address(host), ipaddress.IPv4Address)
+            except ValueError:
+                ok = False
+        if ok and host not in seen:
+            seen.add(host)
+            out.append(host)
+    return out
+
+
+def is_bypassed(host: str, bypass_hosts: list[str] | tuple[str, ...] | set[str]) -> bool:
+    """True if host (exact or subdomain) is in the bypass whitelist."""
+    h = (host or "").strip().lower().rstrip(".")
+    if not h or not bypass_hosts:
+        return False
+    is_ip = False
+    try:
+        ipaddress.ip_address(h)
+        is_ip = True
+    except ValueError:
+        pass
+    for b in bypass_hosts:
+        if h == b:
+            return True
+        if not is_ip and h.endswith("." + b):
+            return True
+    return False

@@ -37,10 +37,12 @@ import math
 import os
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .jobs import Busy, FAILED
+from .network import step_volume
 
 if TYPE_CHECKING:
     from .hostd import Hostd
@@ -394,14 +396,18 @@ class Laptop:
                 self.app.lifecycle.event("brightness", key=key, percent=pct)
             return None if pct is None else {"kind": "brightness", "level": pct / 100.0}
         elif key in ("volume_up", "volume_down"):
+            await self._ensure_mixer()
             settings = self.app.settings
             cur = int(settings.applied.get("audio.volume", 70))
-            new = max(0, min(100, cur + (6 if key == "volume_up" else -6)))
+            new = step_volume(cur, 1 if key == "volume_up" else -1)
             if self.muted and key == "volume_up":
                 await self._set_mute(False)
             if new != cur:
+                ctx = self.app.validation_context()
+                if ctx is not None:
+                    ctx = replace(ctx, check_capabilities=False)
                 try:
-                    settings.set_desired_and_applied({"audio.volume": new}, self.app.validation_context())
+                    settings.set_desired_and_applied({"audio.volume": new}, ctx)
                 except Exception:
                     log.exception("volume setting update failed")
                     return None
@@ -414,16 +420,46 @@ class Laptop:
                         if getattr(mixer, "available", False) and getattr(mixer, "control", None) and \
                                 getattr(mixer, "has_switch", True) and hasattr(mixer, "set_volume"):
                             await mixer.set_volume(new, unmute=False)
+            await self._refresh_display_sound(new)
             if not repeat:
                 self.app.lifecycle.event("volume", key=key, percent=new)
             return {"kind": "volume", "level": new / 100.0, "muted": self.muted}
         elif key == "mute":
             if not repeat:
+                await self._ensure_mixer()
                 await self._set_mute(not self.muted)
+                await self._refresh_display_sound()
                 self.app.lifecycle.event("volume", key=key, muted=self.muted)
             vol = int(self.app.settings.applied.get("audio.volume", 70))
             return {"kind": "mute", "level": vol / 100.0, "muted": self.muted}
         return None
+
+    async def _ensure_mixer(self) -> None:
+        mixer = getattr(self.app, "mixer", None)
+        if mixer is not None and getattr(mixer, "available", False):
+            return
+        sync = getattr(self.app, "sync_audio_output", None)
+        try:
+            if callable(sync):
+                await sync()
+            elif mixer is not None and hasattr(mixer, "probe"):
+                await mixer.probe(detect_switch=True)
+        except Exception:
+            log.debug("audio mixer re-probe failed", exc_info=True)
+
+    async def _refresh_display_sound(self, volume: int | None = None) -> None:
+        panel = getattr(self.app, "panel", None)
+        if panel is None or not getattr(panel, "visible", False):
+            return
+        screen = getattr(panel, "screen", None)
+        if getattr(screen, "doc_id", None) != "display-sound":
+            return
+        if volume is not None and isinstance(getattr(screen, "values", None), dict):
+            screen.values["audio.volume"] = volume
+        try:
+            await panel.refresh()
+        except Exception:
+            log.debug("panel refresh after hotkey failed", exc_info=True)
 
     @property
     def can_mute(self) -> bool:

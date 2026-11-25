@@ -16,6 +16,7 @@ RetroBoot serves its own control panel. Open it in a browser on the same network
 
 - **Files & Print-to-PDF:** Drag files into **RetroBoot Share**, preview text/PICT/PDF/images directly in the browser, download folders as ZIP, and browse files printed to PDF or copied from inserted USB flash drives.
 - **Sound & Input:** Pick startup chimes (Automatic by Mac model or a specific Mac family), switch audio outputs, test chimes, adjust **Mouse DPI**, enable **Natural scrolling**, and map game controllers.
+- **Network & Modern Web Helper:** The Web **Network** page includes quick-jump section links, places **Modern Web Helper** prominently at the top, and provides an always-visible **Sites not to help (whitelist)** editor so listed domains pass straight through unchanged. From **Ctrl+Alt+Delete**, open **Keyboard & Mouse**, **Modern Web Helper** (**Whitelist…**), or **Force Reboot…** (**Force Restart Mac OS** / **Force Reboot Computer**) directly.
 - **Storage & Media:** View installed Macs, restore automatic **Fresh Install** or manual checkpoints, browse catalog downloads (with SHA-256 details collapsed until needed), or import an archive. Under **Image Servers**, enter one HTTPS catalog URL per line and apply the settings. [Host your own catalog](image-servers.md)
 
 ![Storage & Media in a paired browser shows installed Macs and catalog imports](../images/web-storage.jpg)

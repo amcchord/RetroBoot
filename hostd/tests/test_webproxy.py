@@ -324,6 +324,24 @@ class PanelTests(Base):
         await self.until_doc("web-helper")
         self.assertIn("Modern Web Helper is off.", json.dumps(self.fp.doc, ensure_ascii=False))
 
+    async def test_whitelist_from_panel(self):
+        await self.running()
+        self.fp.emit({"event": "chord", "name": "recovery"})
+        await self.until_doc("recovery-main")
+        self.fp.click("webhelper")
+        await self.until_doc("web-helper")
+        self.fp.click("bypass")
+        await self.until_doc("web-helper-bypass")
+        self.fp.click("add", {"host": "https://Example.COM/foo/bar"})
+        await helpers.wait_for(lambda: "example.com" in self.app.settings.applied["network.web_proxy_bypass"],
+                               5, what="whitelist added")
+        self.assertIn("example.com", json.dumps(self.fp.doc, ensure_ascii=False))
+        self.fp.change("hosts", "example.com")
+        await helpers.wait_for(lambda: self.app.panel.screen.selected == "example.com", 5, what="selected")
+        self.fp.click("remove")
+        await helpers.wait_for(lambda: "example.com" not in self.app.settings.applied["network.web_proxy_bypass"],
+                               5, what="whitelist removed")
+
 
 if __name__ == "__main__":
     unittest.main()
