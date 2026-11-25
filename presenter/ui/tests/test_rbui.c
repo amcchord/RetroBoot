@@ -1637,6 +1637,23 @@ static void test_feedback(void)
     rbui_draw_feedback(a, w, RBUI_FEEDBACK_MUTE, 0.5, 1);
     rbui_draw_feedback(b, w, RBUI_FEEDBACK_MUTE, 0.5, 0);
     CHECK(memcmp(a, b, w * 22 * 4) != 0, "Mute On / Mute Off titles differ");
+    /* Volume & Mute OSD right icon is speaker_high, not the Sound control panel icon ("sound"). */
+    uint32_t *c = calloc((size_t)w * h, 4);
+    for (int k = 0; k < 2; ++k) {
+        int fk = k == 0 ? RBUI_FEEDBACK_VOLUME : RBUI_FEEDBACK_MUTE;
+        rbui_draw_feedback(a, w, fk, 0.5, 0);
+        memcpy(b, a, (size_t)w * h * 4);
+        memcpy(c, a, (size_t)w * h * 4);
+        rb_gfx gb = {b, w, w, h, rr(0, 0, w, h), 0, 0};
+        rb_gfx gc = {c, w, w, h, rr(0, 0, w, h), 0, 0};
+        g_fill(&gb, w - 14 - 16, 30, 16, 16, C_DE);
+        g_fill(&gc, w - 14 - 16, 30, 16, 16, C_DE);
+        icon_draw_named(&gb, "speaker_high", 16, w - 14 - 16, 30, 0);
+        icon_draw_named(&gc, "sound", 16, w - 14 - 16, 30, 0);
+        CHECK(memcmp(a, b, (size_t)w * h * 4) == 0, "feedback kind %d right icon is speaker_high", fk);
+        CHECK(memcmp(a, c, (size_t)w * h * 4) != 0, "feedback kind %d right icon is not sound panel icon", fk);
+    }
+    free(c);
     free(a);
     free(b);
 }
@@ -1778,6 +1795,31 @@ static void test_ui_310(void)
     rbui_pointer(ui, bx, ty0 + 2, 0);
     free(f0);
     free(f1);
+
+    /* Middot-separated status wraps cleanly without orphan leading or trailing middots. */
+    const char *wrap_doc = "{\"id\":\"wrap\",\"width\":180,\"items\":["
+                           "{\"type\":\"text\",\"id\":\"dl\",\"text\":\"57% \xC2\xB7 328 of 574 MB \xC2\xB7 73.4 MB/s \xC2\xB7 3 s left\"},"
+                           "{\"type\":\"text\",\"id\":\"lead\",\"text\":\"\xC2\xB7 leading bullet item that wraps cleanly\"}"
+                           "]}";
+    CHECK(set(ui, wrap_doc) == 0, "middot wrap doc");
+    rb_node *dl_n = node_by_id(ui->doc.root, "dl");
+    CHECK(dl_n && dl_n->nlines >= 2, "dl wrapped across >=2 lines (%d)", dl_n ? dl_n->nlines : 0);
+    if (dl_n) {
+        for (int li = 0; li < dl_n->nlines; ++li) {
+            const char *ls = dl_n->text + dl_n->lines[2 * li];
+            int ll = dl_n->lines[2 * li + 1];
+            int starts_middot = (ll >= 2 && (unsigned char)ls[0] == 0xC2 && (unsigned char)ls[1] == 0xB7);
+            int ends_middot = (ll >= 2 && (unsigned char)ls[ll - 2] == 0xC2 && (unsigned char)ls[ll - 1] == 0xB7);
+            CHECK(!starts_middot, "line %d does not start with orphan middot", li);
+            CHECK(!ends_middot, "line %d does not end with trailing middot", li);
+        }
+    }
+    rb_node *lead_n = node_by_id(ui->doc.root, "lead");
+    CHECK(lead_n && lead_n->nlines >= 1 && lead_n->lines[1] >= 2
+          && (unsigned char)lead_n->text[lead_n->lines[0]] == 0xC2
+          && (unsigned char)lead_n->text[lead_n->lines[0] + 1] == 0xB7,
+          "paragraph-leading middot bullet preserved");
+
     ev_clear(&e);
     rbui_free(ui);
 }

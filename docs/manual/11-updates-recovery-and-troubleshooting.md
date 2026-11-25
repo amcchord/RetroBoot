@@ -19,7 +19,7 @@ RetroBoot updates its own Linux system, emulator packages, presenter, and web ma
 
 ### Signed Ed25519 `.rbu` Bundles
 
-Every RetroBoot update is packaged as an uncompressed POSIX tar bundle ending in `.rbu`—for example `retroboot-update-3.4.1-product.rbu` (x86-64 PC) or `retroboot-update-3.4.1-rpi-product.rbu` (Raspberry Pi 4/5/400). Each bundle contains four members in strict order:
+Every RetroBoot update is packaged as an uncompressed POSIX tar bundle ending in `.rbu`—for example `retroboot-update-3.4.2-product.rbu` (x86-64 PC) or `retroboot-update-3.4.2-rpi-product.rbu` (Raspberry Pi 4/5/400). Each bundle contains four members in strict order:
 
 1. `manifest.json` — version, `build_id`, flavor (`product` or `debug`), `min_version`, `settings_schema`, kernel arguments, and payload hashes.
 2. `manifest.sig` — an **Ed25519** signature (`retroboot-update-sig/1`) over the exact bytes of `manifest.json`.

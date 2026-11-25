@@ -1,6 +1,6 @@
 # Button feedback icons (rb-presenter's indicator for the brightness, volume
-# and mute keys; rbui_draw_feedback): quiet and muted speakers, small and
-# large suns.  The loud speaker is system.icons' "sound".
+# and mute keys; rbui_draw_feedback): quiet, loud (speaker_high), and muted
+# speakers, plus small and large suns.
 # Original RetroBoot pixel art, drawn from scratch for rbui in the
 # spirit of Mac OS 8/9 Platinum; no Apple bitmaps were copied or traced.
 # One character per pixel; letters come from palette.txt, "." is transparent.

@@ -58,7 +58,7 @@ The Web UI mirrors Classic Mac OS 9 Platinum (using the active Mac OS system's C
 
 <img src="../images/manual/web-sound.png" width="760" alt="Web Sound page showing Volume, Startup chime selector, Sound output, and Test Sound button">
 
-7. **Printers (`#/printers`)** — **Mac Printer Output** destination (`Save as PDF` vs any configured CUPS printer, **Also save a PDF copy**, **Auto-configure Mac OS 9 Desktop Printer**, manual LPD/IPP/AppSocket addresses), **Configured Linux Printers**, **Add a Printer** (**Find Nearby & USB Printers** / **Add Printer by Address…**), and **Recent Print Jobs** with **Open PDF** and **Cancel** (detailed in [Chapter 8](08-files-usb-and-printing.md#85-printing-in-retroboot-341-print-to-pdf--physicalnetworkusb-cups)).
+7. **Printers (`#/printers`)** — **Enable Mac printing** toggle (off by default), **Mac Printer Output** destination (`Save as PDF` vs any configured CUPS printer, **Also save a PDF copy**, **Auto-configure Mac OS 9 Desktop Printer**, manual LPD/IPP/AppSocket addresses), **Configured Linux Printers**, **Add a Printer** (**Find Nearby & USB Printers** / **Add Printer by Address…**), and **Recent Print Jobs** with **Open PDF** and **Cancel** (detailed in [Chapter 8](08-files-usb-and-printing.md#85-printing-in-retroboot-342-print-to-pdf--physicalnetworkusb-cups)).
 
 <img src="../images/manual/web-printers.png" width="760" alt="Web Printers page showing Mac Printer Output, Configured Linux Printers, Add a Printer, and Recent Print Jobs">
 

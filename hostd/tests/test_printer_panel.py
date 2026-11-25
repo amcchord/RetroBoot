@@ -223,23 +223,30 @@ class TestPrinterPanel(unittest.IsolatedAsyncioTestCase):
         app_no_cups = _FakeApp(self.root, with_cups=False)
         panel = Panel(app_no_cups)
         win = RetroBootWindow(panel)
-        self.assertEqual(win._printer_summary(), "Save as PDF")
+        # Printers are off by default until turned on via the checkmark.
+        self.assertFalse(app_no_cups.settings.applied["printer.enabled"])
+        self.assertEqual(win._printer_summary(), "Off")
         doc = win.doc()
         pane_rows = {r["id"]: r for r in _find_id(doc, "pane")["items"]}
         self.assertIn("printers", pane_rows)
         self.assertEqual(pane_rows["printers"]["label"], "Printers…")
-        self.assertEqual(pane_rows["printers"]["detail"], "Save as PDF")
+        self.assertEqual(pane_rows["printers"]["detail"], "Off")
 
-        # Turn printing off -> summary says Off
-        app_no_cups.settings.applied["printer.enabled"] = False
-        self.assertEqual(win._printer_summary(), "Off")
-
-        # Open Printers screen without app.cups -> PDF works, CUPS buttons disabled
-        app_no_cups.settings.applied["printer.enabled"] = True
+        # Open Printers while off -> checkbox unchecked, Test Page disabled, CUPS buttons disabled
         await win.open("printers")
         self.assertIsInstance(panel.screen, Printers)
+        off_doc = panel.screen.doc()
+        self.assertFalse(_find_id(off_doc, "enabled")["value"])
+        self.assertTrue(_all_buttons(off_doc)["test"].get("disabled"))
+        self.assertIn("Enable Mac printing", _all_text(off_doc))
+
+        # Turn printing on via the checkmark -> summary says Save as PDF, Test Page enabled
+        await panel.screen.change("enabled", True)
+        self.assertTrue(app_no_cups.settings.applied["printer.enabled"])
+        self.assertEqual(win._printer_summary(), "Save as PDF")
         pdoc = panel.screen.doc()
         btns = _all_buttons(pdoc)
+        self.assertTrue(_find_id(pdoc, "enabled")["value"])
         self.assertTrue(btns["discover"].get("disabled"))
         self.assertTrue(btns["add"].get("disabled"))
         self.assertFalse(btns["test"].get("disabled"))
@@ -252,6 +259,8 @@ class TestPrinterPanel(unittest.IsolatedAsyncioTestCase):
         await win.open("printers")
         scr = panel.screen
         self.assertIsInstance(scr, Printers)
+        await scr.change("enabled", True)
+        self.assertIn(["printer.enabled"], app.apply_engine.applied_live)
 
         # Select CUPS printer and click Use for Mac
         await scr.change("target", "cups:HP_LaserJet_4000")
@@ -335,6 +344,7 @@ class TestPrinterPanel(unittest.IsolatedAsyncioTestCase):
 
         # Now available=(True, None) with async list_printers()
         app.cups._available = True
+        app.settings.applied["printer.enabled"] = True
         app.settings.applied["printer.target"] = "cups:HP_LaserJet_4000"
         win = RetroBootWindow(panel)
         await asyncio.sleep(0)

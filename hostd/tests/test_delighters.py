@@ -111,6 +111,20 @@ class TransferSpeedTests(unittest.TestCase):
         self.assertEqual(ui.format_download_status(0.22, line), "44% · 87 of 197 MB · 14.2 MB/s · 8 s left")
         # Legacy strings without leading % keep working identically
         self.assertEqual(ui.format_download_status(0.44, "Downloading… 87 of 197 MB"), "44% · 87 of 197 MB")
+        # Named Software Update downloads split onto two lines without duplicating the job's scaled %
+        named = "Downloading RetroBoot 3.4.2… 57% · 328 of 574 MB · 73.4 MB/s · 3 s left"
+        self.assertEqual(
+            ui.format_download_status(0.29, named),
+            "Downloading RetroBoot 3.4.2…\n57% · 328 of 574 MB · 73.4 MB/s · 3 s left",
+        )
+        self.assertEqual(
+            ui.format_job_status(0.29, named),
+            "Downloading RetroBoot 3.4.2…\n57% · 328 of 574 MB · 73.4 MB/s · 3 s left",
+        )
+        self.assertEqual(
+            ui.format_job_status(0.10, "Copying the update from the USB disk… 48% · 275 of 574 MB · 55 MB/s · 5 s left"),
+            "Copying the update from the USB disk…\n48% · 275 of 574 MB · 55 MB/s · 5 s left",
+        )
 
 
 class _LocalHttpsMixin:

@@ -704,17 +704,28 @@ class PrinterWebApiTests(unittest.IsolatedAsyncioTestCase):
         }, headers=self.h())
         self.assertEqual(bad_add.status, 422)
 
-        # 4. GET /api/v1/printers & /api/v1/status
+        # 4. GET /api/v1/printers & /api/v1/status (off by default, then enable via checkmark API)
         gr = await self.client.get("/api/v1/printers", headers=self.h())
         self.assertEqual(gr.status, 200)
         gbody = await gr.json()
         self.assertTrue(gbody["cups_available"])
+        self.assertFalse(gbody["virtual"]["enabled"])
         self.assertEqual(gbody["virtual"]["target"], "cups:Brother-HL")
         self.assertTrue(next(p for p in gbody["printers"] if p["name"] == "Brother-HL")["is_target"])
         self.assertEqual(gbody["jobs"][0]["job_id"], "Brother_HL-5")
 
         st = await (await self.client.get("/api/v1/status", headers=self.h())).json()
         self.assertEqual(st["printer"]["target"], "cups:Brother-HL")
+        self.assertFalse(st["printer"]["enabled"])
+
+        # Test page rejected with 409 while printers are turned off, then allowed once enabled
+        tr_off = await self.client.post("/api/v1/printers/pdf/test", json={}, headers=self.h())
+        self.assertEqual(tr_off.status, 409)
+        self.app.printer.sync = AsyncMock(return_value={"enabled": True, "running": True})
+        en_r = await self.client.post("/api/v1/printers/enabled", json={"enabled": True}, headers=self.h())
+        self.assertEqual(en_r.status, 200)
+        self.assertTrue((await en_r.json())["enabled"])
+        self.assertTrue(self.app.settings.applied["printer.enabled"])
 
         # 5. Test page to PDF and CUPS printer, plus unknown 404
         tr_pdf = await self.client.post("/api/v1/printers/pdf/test", json={}, headers=self.h())

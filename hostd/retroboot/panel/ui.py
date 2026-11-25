@@ -261,18 +261,37 @@ def format_fingerprint(fp: str | None, group_bytes: int = 8) -> list[str]:
 
 
 def format_download_status(fraction: float | None, message: str = "") -> str:
-    """Combine a download percentage and byte/speed summary into one crisp status line."""
+    """Combine a download percentage and byte/speed summary into clean status line(s)."""
     detail = " ".join(str(message or "").split())
+    pct = f"{int(round(max(0.0, min(1.0, fraction)) * 100))}%" if isinstance(fraction, (int, float)) else ""
+    named = re.match(r"^(Downloading\s+.+?(?:…|\.\.\.))\s+(.+)$", detail, re.IGNORECASE)
+    if named:
+        head, tail = named.group(1).strip(), named.group(2).strip()
+        if re.search(r"(?:^|\s|·)\d+%(?:\s|·|$)", tail):
+            return f"{head}\n{tail}"
+        return f"{head}\n{pct} · {tail}" if pct else f"{head}\n{tail}"
     for prefix in ("Downloading…", "Downloading...", "downloading…", "downloading..."):
         if detail.lower().startswith(prefix.lower()):
             detail = detail[len(prefix):].strip()
             break
-    if re.match(r"^\d+%(?:\s|·|$)", detail):
+    if re.search(r"(?:^|\s|·)\d+%(?:\s|·|$)", detail):
         return detail
-    pct = f"{int(round(max(0.0, min(1.0, fraction)) * 100))}%" if isinstance(fraction, (int, float)) else ""
     if pct and detail:
         return f"{pct} · {detail}"
     return pct or detail or "Downloading…"
+
+
+def format_job_status(fraction: float | None, message: str = "") -> str:
+    """Format a progress job status message without duplicate percentages or awkward wrapping."""
+    msg = " ".join(str(message or "").split())
+    if not msg:
+        return "Working…"
+    if msg.lower().startswith("downloading"):
+        return format_download_status(fraction, msg)
+    named = re.match(r"^((?:Copying|Installing|Unpacking)\s+.+?(?:…|\.\.\.))\s+(.+)$", msg, re.IGNORECASE)
+    if named:
+        return f"{named.group(1).strip()}\n{named.group(2).strip()}"
+    return msg
 
 
 def human_bytes(n: int | None) -> str:

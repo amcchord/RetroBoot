@@ -174,6 +174,25 @@ export function render() {
     const ippPort = v.ipp_port || 631;
     const rawPort = v.raw_port || 9100;
     const ippUrl = `ipp://${guestIp}:${ippPort}/printers/${queue}`;
+    const enabled = !!v.enabled;
+    const enableId = uid('pr-enable');
+    const enableToggle = h(
+      'div',
+      { class: 'printer-toggle' },
+      h(
+        'label',
+        { class: 'check', for: enableId },
+        h('input', {
+          type: 'checkbox',
+          id: enableId,
+          'data-focus-key': 'enable-mac-printing',
+          checked: enabled,
+          disabled: busy,
+          onchange: (e) => setEnabled(e.target.checked),
+        }),
+        h('span', null, 'Enable Mac printing'),
+      ),
+    );
 
     swap(
       outputEl,
@@ -182,9 +201,10 @@ export function render() {
         { class: 'state-line' },
         h('span', null, 'Emulated Printer:'),
         h('strong', null, 'Color LaserWriter 12/600 PS'),
-        v.running ? badge('Running', 'ok') : badge('Off', 'off'),
+        enabled && v.running ? badge('Running', 'ok') : enabled ? badge('Enabled', 'pending') : badge('Off', 'off'),
         v.jobs ? h('span', { class: 'muted small' }, `${v.jobs} job${v.jobs === 1 ? '' : 's'} processed`) : null,
       ),
+      enableToggle,
       h(
         'div',
         { class: 'field' },
@@ -198,7 +218,7 @@ export function render() {
           icon: 'printer',
           className: 'btn-small',
           busy: testingTarget === testQueue,
-          disabled: busy || (testingTarget !== null && testingTarget !== testQueue),
+          disabled: busy || !enabled || (testingTarget !== null && testingTarget !== testQueue),
           focusKey: 'test-mac-printer',
           onClick: () => printTest(testQueue),
         }),
@@ -206,7 +226,6 @@ export function render() {
       h(
         'div',
         { class: 'printer-toggles' },
-        settingToggle('printer.enabled', 'Enable Mac printing', v.enabled !== false),
         settingToggle('printer.keep_pdf', 'Also save a PDF copy in RetroBoot Share', v.keep_pdf),
         settingToggle(
           'printer.mac_auto_setup',
@@ -219,8 +238,10 @@ export function render() {
         'div',
         { class: 'subsection' },
         h('h4', { class: 'sub-title' }, 'How to print from Mac OS'),
-        h('p', { class: 'muted small' }, 'Mac OS 9 starts with “RetroBoot Printer” (Color LaserWriter 12/600 PS) already selected — just choose File → Print. AppleTalk stays off so startup stays fast.'),
-        h('p', { class: 'muted small' }, `Mac OS X: Printer Setup Utility → Add → IP Printer → HP JetDirect - Socket (or IPP) at ${guestIp}, model Apple Color LaserWriter 12/600 PS.`),
+        h('p', { class: 'muted small' }, enabled
+          ? 'Mac OS 9 starts with “RetroBoot Printer” (Color LaserWriter 12/600 PS) already selected — just choose File → Print. AppleTalk stays off so startup stays fast.'
+          : 'Turn on “Enable Mac printing” above to print from Mac OS to PDF or a configured printer.'),
+        enabled ? h('p', { class: 'muted small' }, `Mac OS X: Printer Setup Utility → Add → IP Printer → HP JetDirect - Socket (or IPP) at ${guestIp}, model Apple Color LaserWriter 12/600 PS.`) : null,
       ),
       h(
         'details',
@@ -483,6 +504,23 @@ export function render() {
     renderConfigured();
     renderAdd();
     renderJobs();
+  }
+
+  async function setEnabled(enabled) {
+    if (busy) return;
+    busy = true;
+    renderOutput();
+    renderConfigured();
+    try {
+      await post('/api/v1/printers/enabled', { enabled: !!enabled });
+      toast(enabled ? 'Mac printing enabled.' : 'Mac printing turned off.', { level: 'ok' });
+      await Promise.all([load(), refreshSettings().catch(() => {}), refreshStatus().catch(() => {})]);
+    } catch (err) {
+      toast(friendlyMessage(err), { level: 'error' });
+    } finally {
+      busy = false;
+      renderAll();
+    }
   }
 
   async function setTarget(target) {

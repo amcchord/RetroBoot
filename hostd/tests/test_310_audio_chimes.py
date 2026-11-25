@@ -160,6 +160,26 @@ class StartupChimeTests(unittest.TestCase):
                 ))
                 self.assertEqual(spawned[-1], ["pw-play", "--target", "bluez_output.AA.1", str(cdir / "os9.wav")])
 
+    def test_prepare_output_skips_redundant_hda_warmup_and_stage(self):
+        warmed = []
+        run_calls = []
+
+        def fake_run(argv, **kw):
+            run_calls.append(list(argv))
+            return SimpleNamespace(returncode=0, stdout="")
+
+        # Non-ASoC AMD HDA keepalive output must NOT run sof_es8336 warm_up or repeat hda_output_stage.
+        amd_out = {
+            "kind": "hdmi", "card_id": "Generic", "device": 7, "driver": "HDA-Intel",
+            "alsa": "rb_softvol_keepalive:CARD=Generic,DEV=7", "keepalive": True,
+            "needs_softvol": True, "softvol": True, "stage": ["IEC958,0"],
+        }
+        audio.prepare_output_for_playback(
+            amd_out, run=fake_run, warm_up_fn=lambda *a, **kw: warmed.append(a) or True
+        )
+        self.assertEqual(warmed, [])
+        self.assertEqual(run_calls, [])
+
     def test_sound_generates_diagnostic_beep_or_uses_chime_and_rejects_missing_output(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -372,3 +392,56 @@ class Supervisor310IntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(seen_opts), 1)
             self.assertTrue(seen_opts[0].osx_48k_output)
+
+    async def test_startup_chime_plays_once_and_finishes_before_qemu_launches(self):
+        with helpers.scratch()[0] as td:
+            root = Path(td).resolve()
+            helpers.make_package(root)
+            helpers.make_machine(root)
+            paths = Paths(root)
+            paths.ensure()
+            m = MachineRegistry(paths).get("mac-os-9")
+            out = {"kind": "analog", "card_id": "PCH", "device": 0, "driver": "HDA-Intel",
+                   "alsa": "plughw:CARD=PCH,DEV=0", "stage": ["Speaker"]}
+            app, events, _, _ = _fake_supervisor_app(root, m, audio_out=out)
+            sup = Supervisor(app)
+            app.supervisor = sup
+            sup.prepare_disk = AsyncMock(return_value=None)
+            sup.mac_cities = AsyncMock(return_value=None)
+            sup.usb_pointer = AsyncMock(return_value=(False, None))
+
+            # Wire the same lifecycle chime hook Hostd uses when guest_start fires.
+            timeline = []
+            orig_event = app.lifecycle.event
+
+            def hooked_event(name, **kw):
+                orig_event(name, **kw)
+                if name == "guest_start" and not getattr(sup, "chime_played", False):
+                    timeline.append("duplicate_chime")
+
+            app.lifecycle.event = hooked_event
+
+            class _FakeProc:
+                def wait(self, timeout=None):
+                    timeline.append("chime_wait")
+                    return 0
+
+            def fake_start_chime(*a, **kw):
+                timeline.append("chime_start")
+                return _FakeProc()
+
+            async def fake_runner_start(session):
+                timeline.append("runner_start")
+                raise RuntimeError("stop-after-runner")
+
+            app.runner = SimpleNamespace(start=fake_runner_start)
+
+            with patch("retroboot.audio.start_startup_chime", side_effect=fake_start_chime), \
+                    patch("retroboot.supervisor.launch_spec", return_value={"session": "s1", "argv": []}):
+                ok = await sup._start_locked("boot")
+                self.assertFalse(ok)
+
+            self.assertTrue(sup.chime_played)
+            self.assertEqual(timeline, ["chime_start", "chime_wait", "runner_start"])
+            app.lifecycle.event("guest_start", machine=m.id)
+            self.assertEqual(timeline, ["chime_start", "chime_wait", "runner_start"])

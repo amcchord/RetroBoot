@@ -222,6 +222,7 @@ class Supervisor:
         # The kind of Mac of this session (machines.FAMILIES): a 68k Mac (quadra.py) has no PMU,
         # AirPort, ATI or USB, and its Mac OS keeps the CPU busy unless RetroBoot Idle runs.
         self.family: str = POWERMAC
+        self.chime_played: bool = False
         self.unavailable: str | None = None       # why the last start was refused (MachineUnavailable)
         self.corrupt_disk_recovery: dict | None = None  # failed pre-launch disk repair state (#48)
         self.manual_resize_notice: str | None = None    # Monitors mode blocking live RESIZE (#19)
@@ -528,7 +529,7 @@ class Supervisor:
         await self.app.platinum.ensure(machine.disk)     # Platinum web/panel assets, once, disk idle
         if not getattr(machine, "osx", False) and not getattr(machine, "quadra", False):
             applied = getattr(getattr(self.app, "settings", None), "applied", {}) or {}
-            if applied.get("printer.enabled", True) and applied.get("printer.mac_auto_setup", True):
+            if applied.get("printer.enabled", False) and applied.get("printer.mac_auto_setup", True):
                 gp = getattr(self.app, "guestprep", None)
                 if gp is not None and hasattr(gp, "ensure_printer"):
                     await gp.ensure_printer(machine.disk)
@@ -636,15 +637,15 @@ class Supervisor:
             "fresh_install_checkpoint": fresh_install,
         }
 
-    async def play_startup_chime(self, machine=None, audio_out: dict | None = None) -> bool:
-        """Play the configured Macintosh startup chime asynchronously on the active output."""
+    async def _start_startup_chime(self, machine=None, audio_out: dict | None = None):
+        """Start the configured Macintosh startup chime asynchronously and return its player handle."""
         if not self.app.audio_capable():
-            return False
+            return None
         settings = dict(getattr(getattr(self.app, "settings", None), "applied", {}) or {})
         if not settings.get("audio.enabled", True):
-            return False
+            return None
         if getattr(getattr(self.app, "laptop", None), "muted", False):
-            return False
+            return None
         m = machine if machine is not None else self.active_machine()
         family = getattr(m, "family", POWERMAC) if m is not None else POWERMAC
         chime_setting = str(settings.get("audio.startup_chime", "auto") or "auto")
@@ -654,7 +655,22 @@ class Supervisor:
         if out is None and hasattr(self.app, "choose_audio_output"):
             out = await asyncio.to_thread(self.app.choose_audio_output)
         prefer = "analog" if getattr(self.app.platform, "is_laptop", False) else "hdmi"
-        return await asyncio.to_thread(
+        start_fn = getattr(hostaudio, "start_startup_chime", None)
+        if callable(start_fn):
+            proc = await asyncio.to_thread(
+                start_fn,
+                family,
+                chime_setting,
+                output=output_pref,
+                audio_out=out,
+                prefer=prefer,
+                volume=vol,
+                muted=False,
+            )
+            if proc is not None:
+                self.chime_played = True
+            return proc
+        ok = await asyncio.to_thread(
             hostaudio.play_startup_chime,
             family,
             chime_setting,
@@ -664,6 +680,32 @@ class Supervisor:
             volume=vol,
             muted=False,
         )
+        if ok:
+            self.chime_played = True
+        return None
+
+    async def _finish_startup_chime(self, proc, timeout: float = 6.0) -> None:
+        """Let an active startup chime finish playing before QEMU opens the audio device."""
+        if proc is None:
+            return
+        wait_fn = getattr(proc, "wait", None)
+        if not callable(wait_fn):
+            return
+        def _wait():
+            try:
+                wait_fn(timeout=timeout)
+            except Exception:  # noqa: BLE001 -- never block or fail guest launch on chime drain
+                pass
+        await asyncio.to_thread(_wait)
+
+    async def play_startup_chime(self, machine=None, audio_out: dict | None = None, *, wait: bool = False) -> bool:
+        """Play the configured Macintosh startup chime on the active output."""
+        proc = await self._start_startup_chime(machine, audio_out=audio_out)
+        if proc is None:
+            return self.chime_played
+        if wait:
+            await self._finish_startup_chime(proc)
+        return True
 
     async def test_sound(self, output: str | None = None) -> dict:
         """Play a short test sound on the specified or active audio output."""
@@ -848,6 +890,7 @@ class Supervisor:
             return False
         self.attempts += 1
         self.failure = None
+        self.chime_played = False
         # A start from a CD has its own timing: it never teaches the disk's startup model.
         await self.app.startup.on_start(reason, self.attempts, f"{machine.id}@cd" if plan["boot"] else machine.id)
         await self.app.show_scene("splash")
@@ -976,8 +1019,13 @@ class Supervisor:
                             await self.app.mixer.set_mute(True)
                         else:
                             await self.app.apply_engine.push_volume()
+            chime_proc = None
             if not plan["no_system"]:
-                await self.play_startup_chime(machine, audio_out=audio_out)
+                if type(self).play_startup_chime is Supervisor.play_startup_chime:
+                    chime_proc = await self._start_startup_chime(machine, audio_out=audio_out)
+                else:
+                    await self.play_startup_chime(machine, audio_out=audio_out)
+            self.chime_played = True
             if quadra or machine.osx:   # OS X uses native drivers; no OS9 device hooks
                 power_socket = buttons = cities = None
                 usb_mouse, wheel = False, None
@@ -1084,6 +1132,7 @@ class Supervisor:
         self.t_start = mono()
         self.started_wall = wall()
         self.probe_until = self.t_start + self.cfg.finder_wait_timeout
+        await self._finish_startup_chime(chime_proc)
         try:
             handle = await self.app.runner.start(session)
         except Exception as exc:

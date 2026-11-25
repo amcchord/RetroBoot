@@ -99,13 +99,15 @@ Disc images uploaded via **Mount as CD** or the media API live in `/var/lib/retr
 
 ---
 
-## 8.5 Printing in RetroBoot 3.4.1 (Print-to-PDF & Physical/Network/USB CUPS)
+## 8.5 Printing in RetroBoot 3.4.2 (Print-to-PDF & Physical/Network/USB CUPS)
 
-RetroBoot 3.4.1 includes an integrated PostScript/PDF print server in `hostd` paired with socket-isolated Linux **CUPS** so Mac OS 9 can print straight to PDFs or real network and USB printers without enabling AppleTalk.
+RetroBoot includes an integrated PostScript/PDF print server in `hostd` paired with socket-isolated Linux **CUPS** so Mac OS 9 can print straight to PDFs or real network and USB printers without enabling AppleTalk.
+
+Mac printing is **off by default** (`printer.enabled` = `false`). To turn it on, check **Enable Mac printing** at the top of **Ctrl+Alt+Delete ▸ Printers…** or **Printers** in the Web UI.
 
 ### Automatic Mac OS 9 Setup (`RetroBoot Printer`)
 
-By default, **Auto-configure Mac OS 9 Desktop Printer** (`printer.mac_auto_setup`, `guest_restart`) is enabled. Before Mac OS 9 starts, `rbguestprep` inspects the stopped HFS+ disk and automatically provisions:
+When **Enable Mac printing** (`printer.enabled`) and **Auto-configure Mac OS 9 Desktop Printer** (`printer.mac_auto_setup`, `guest_restart`) are both enabled, `rbguestprep` inspects the stopped HFS+ disk before Mac OS 9 starts and automatically provisions:
 
 - **Desktop Printer:** **`RetroBoot Printer`** using **Apple Color LaserWriter 12/600 PS** (`LaserWriter 8` with the built-in `LaserWriter Color 12/600 PS` PPD) over TCP/IP LPR to `10.0.2.2` (queue `retroboot`).
 - **AppleTalk stays OFF:** Startup stays fast because AppleTalk is never activated.

@@ -1,23 +1,23 @@
 [← Previous](02-architecture-how-it-works.md) · [Table of Contents](README.md) · [Next →](04-first-start-and-mac-library.md)
 
-# Chapter 3: Installing RetroBoot 3.4.1
+# Chapter 3: Installing RetroBoot 3.4.2
 
-You can install RetroBoot **3.4.1** onto an x86-64 PC, an Intel Mac, a Raspberry Pi 4/5/400/CM4/CM5, a Raspberry Pi Zero 2 W, or a Planet Computers Gemini PDA. All **13 ready-to-run Mac editions**—including **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6**, **Clean Mac OS 9.2.2**, 68k System 7.5.5/8.1, and Mac OS X Jaguar/Panther/Tiger—are available directly from RetroBoot's built-in HTTPS catalog during or after installation.
+You can install RetroBoot **3.4.2** onto an x86-64 PC, an Intel Mac, a Raspberry Pi 4/5/400/CM4/CM5, a Raspberry Pi Zero 2 W, or a Planet Computers Gemini PDA. All **13 ready-to-run Mac editions**—including **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6**, **Clean Mac OS 9.2.2**, 68k System 7.5.5/8.1, and Mac OS X Jaguar/Panther/Tiger—are available directly from RetroBoot's built-in HTTPS catalog during or after installation.
 
 ---
 
-## Step 1: Download & Verify RetroBoot 3.4.1
+## Step 1: Download & Verify RetroBoot 3.4.2
 
-Download the release image and its `.sha256` checksum file from the [RetroBoot 3.4.1 downloads portal](https://mcchord.net/retroboot-downloads/). Choose **Product** (`-product`) builds for everyday use; **Debug** (`-debug`) builds are only for developer SSH and serial-console bring-up.
+Download the release image and its `.sha256` checksum file from the [RetroBoot 3.4.2 downloads portal](https://mcchord.net/retroboot-downloads/). Choose **Product** (`-product`) builds for everyday use; **Debug** (`-debug`) builds are only for developer SSH and serial-console bring-up.
 
 | Target Platform | File / URL | Medium & Notes |
 | --- | --- | --- |
-| **x86-64 PC & Intel Mac** | `retroboot-installer-3.4.1-product.iso` | Hybrid UEFI + Legacy BIOS installer ISO (USB flash drive or DVD) |
-| **Universal (x86-64 PC + Raspberry Pi 4/5)** | `retroboot-installer-3.4.1-universal-product.img.xz` | Single MBR raw image booting both x86-64 PCs and Pi 4/5 from USB or microSD |
-| **Raspberry Pi 4 / 5 / 400 / CM4 / CM5** | `retroboot-3.4.1-rpi-product.img.xz` | Ready-to-flash GPT SD/SSD image (or use Raspberry Pi Imager feed below) |
+| **x86-64 PC & Intel Mac** | `retroboot-installer-3.4.2-product.iso` | Hybrid UEFI + Legacy BIOS installer ISO (USB flash drive or DVD) |
+| **Universal (x86-64 PC + Raspberry Pi 4/5)** | `retroboot-installer-3.4.2-universal-product.img.xz` | Single MBR raw image booting both x86-64 PCs and Pi 4/5 from USB or microSD |
+| **Raspberry Pi 4 / 5 / 400 / CM4 / CM5** | `retroboot-3.4.2-rpi-product.img.xz` | Ready-to-flash GPT SD/SSD image (or use Raspberry Pi Imager feed below) |
 | **Raspberry Pi Imager Feed** | `https://mcchord.net/retroboot-downloads/rpi-imager.json` | Custom OS list URL for Raspberry Pi Imager (`"init_format": ""` disables OS customization) |
-| **Raspberry Pi Zero 2 W (512 MB)** | `retroboot-3.4.1-rpi-zero2w-product.img.xz` | Ready-to-flash MBR SD image tuned for 68040 System 7.5.5 & Mac OS 8.1 |
-| **Planet Computers Gemini PDA** | `retroboot-3.4.1-gemini.tar` | Tarball extracted under Gemian; installs `/retroboot` + `boot.img` via `gemini-install.sh` |
+| **Raspberry Pi Zero 2 W (512 MB)** | `retroboot-3.4.2-rpi-zero2w-product.img.xz` | Ready-to-flash MBR SD image tuned for 68040 System 7.5.5 & Mac OS 8.1 |
+| **Planet Computers Gemini PDA** | `retroboot-3.4.2-gemini.tar` | Tarball extracted under Gemian; installs `/retroboot` + `boot.img` via `gemini-install.sh` |
 
 ### Verify SHA-256 Checksums
 
@@ -26,20 +26,20 @@ Always verify your download before flashing:
 **macOS (Terminal):**
 
 ```sh
-shasum -a 256 -c retroboot-installer-3.4.1-product.iso.sha256
+shasum -a 256 -c retroboot-installer-3.4.2-product.iso.sha256
 ```
 
 **Linux (Terminal):**
 
 ```sh
-sha256sum -c retroboot-installer-3.4.1-product.iso.sha256
+sha256sum -c retroboot-installer-3.4.2-product.iso.sha256
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-Get-FileHash .\retroboot-installer-3.4.1-product.iso -Algorithm SHA256
-Get-Content .\retroboot-installer-3.4.1-product.iso.sha256
+Get-FileHash .\retroboot-installer-3.4.2-product.iso -Algorithm SHA256
+Get-Content .\retroboot-installer-3.4.2-product.iso.sha256
 ```
 
 Confirm the printed 64-character hexadecimal digest matches the `.sha256` file identically.
@@ -56,13 +56,13 @@ RetroBoot installation media use hybrid partition tables (`RBINSTEFI` FAT32 + `R
 ### Option A: balenaEtcher (Windows, macOS, Linux)
 
 1. Open **balenaEtcher** and click **Flash from file**.
-2. Select `retroboot-installer-3.4.1-product.iso`, `retroboot-installer-3.4.1-universal-product.img.xz`, or the Raspberry Pi `.img.xz` directly (Etcher decompresses `.xz` automatically).
+2. Select `retroboot-installer-3.4.2-product.iso`, `retroboot-installer-3.4.2-universal-product.img.xz`, or the Raspberry Pi `.img.xz` directly (Etcher decompresses `.xz` automatically).
 3. Click **Select target**, choose your USB stick or microSD card, and click **Flash!**.
 
 ### Option B: Raspberry Pi Imager (Recommended for Raspberry Pi)
 
 1. Open **Raspberry Pi Imager**.
-2. To load RetroBoot's curated feed directly, pass `--repo https://mcchord.net/retroboot-downloads/rpi-imager.json` when launching Imager (or add it under custom repositories), then pick **RetroBoot 3.4.1**.
+2. To load RetroBoot's curated feed directly, pass `--repo https://mcchord.net/retroboot-downloads/rpi-imager.json` when launching Imager (or add it under custom repositories), then pick **RetroBoot 3.4.2**.
    - Alternatively, click **Choose OS → Use custom** and select your downloaded `.img.xz` file manually.
 3. Choose your microSD card under **Choose Storage** (16 GB or larger).
 4. **Leave OS Customisation OFF.** The `rpi-imager.json` feed disables Imager's customization dialog automatically (`"init_format": ""`); if flashing manually, click **No** when prompted to apply OS customisation so Imager does not alter `cmdline.txt`.
@@ -74,7 +74,7 @@ RetroBoot installation media use hybrid partition tables (`RBINSTEFI` FAT32 + `R
 
 ### Option D: Rufus on Windows (DD Image Mode Required)
 
-1. Open **Rufus**, select your USB drive under **Device**, and click **SELECT** to pick `retroboot-installer-3.4.1-product.iso` (or an extracted `.img`).
+1. Open **Rufus**, select your USB drive under **Device**, and click **SELECT** to pick `retroboot-installer-3.4.2-product.iso` (or an extracted `.img`).
 2. Click **START**.
 3. When Rufus displays the *ISOHybrid image detected* prompt, **always choose `Write in DD Image mode`** and click **OK**. (Choosing *ISO Image mode* breaks hybrid UEFI/BIOS boot and `RBINSTEFI`.)
 
@@ -86,9 +86,9 @@ RetroBoot installation media use hybrid partition tables (`RBINSTEFI` FAT32 + `R
 diskutil list
 diskutil unmountDisk /dev/diskN
 # For .iso:
-sudo dd if=retroboot-installer-3.4.1-product.iso of=/dev/rdiskN bs=4m
+sudo dd if=retroboot-installer-3.4.2-product.iso of=/dev/rdiskN bs=4m
 # Or for .img.xz (requires xz installed):
-xz -dc retroboot-installer-3.4.1-universal-product.img.xz | sudo dd of=/dev/rdiskN bs=4m
+xz -dc retroboot-installer-3.4.2-universal-product.img.xz | sudo dd of=/dev/rdiskN bs=4m
 diskutil eject /dev/diskN
 ```
 
@@ -97,9 +97,9 @@ diskutil eject /dev/diskN
 ```sh
 lsblk -o NAME,SIZE,MODEL,TRAN
 # For .iso:
-sudo dd if=retroboot-installer-3.4.1-product.iso of=/dev/sdX bs=4M conv=fsync status=progress
+sudo dd if=retroboot-installer-3.4.2-product.iso of=/dev/sdX bs=4M conv=fsync status=progress
 # Or for .img.xz:
-xzcat retroboot-3.4.1-rpi-product.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+xzcat retroboot-3.4.2-rpi-product.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
 sync
 ```
 
@@ -117,7 +117,7 @@ Before booting the installer on an x86-64 PC or Intel Mac:
   - Set **Fast Boot = Disabled / Off** (ensures USB keyboards, mice, and flash drives initialize reliably at power-on).
   - Open the one-time boot menu at startup (`F12`, `F11`, `F10`, `F8`, or `Esc` depending on motherboard/laptop vendor) and select your flashed USB stick (UEFI or Legacy BIOS).
 - **Intel Mac:** Hold the **Option (`⌥`)** key immediately after powering on, then select **EFI Boot** from the Mac Startup Manager.
-- **Raspberry Pi 4:** Verify your Pi 4 bootloader EEPROM is dated **2020-09-03 or newer** before booting the GPT SD card (`retroboot-3.4.1-rpi-product.img.xz`). If you have an older EEPROM, run Raspberry Pi Imager's *Misc utility images → Bootloader* update first. (The Universal `.img.xz` uses MBR and boots on any Pi 4 EEPROM.)
+- **Raspberry Pi 4:** Verify your Pi 4 bootloader EEPROM is dated **2020-09-03 or newer** before booting the GPT SD card (`retroboot-3.4.2-rpi-product.img.xz`). If you have an older EEPROM, run Raspberry Pi Imager's *Misc utility images → Bootloader* update first. (The Universal `.img.xz` uses MBR and boots on any Pi 4 EEPROM.)
 
 ---
 
@@ -149,12 +149,12 @@ RetroBoot imports `network.conf` automatically into root-only `0600` NetworkMana
 
 ```mermaid
 flowchart TD
-    DL["Download & Verify RetroBoot 3.4.1 (SHA-256)"] --> Target{"Select Hardware Target"}
+    DL["Download & Verify RetroBoot 3.4.2 (SHA-256)"] --> Target{"Select Hardware Target"}
 
     Target -->|"x86-64 PC or Intel Mac"| ISO["Flash product.iso (Etcher / Rufus DD / Fedora Media Writer / dd)"]
     Target -->|"Dual-Arch Stick or Pi 4/5 Free Space"| Univ["Flash universal-product.img.xz"]
     Target -->|"Raspberry Pi 4/5 or Zero 2 W SD Card"| PiSD["Flash rpi-product or zero2w-product (Pi Imager / Etcher / dd)"]
-    Target -->|"Planet Computers Gemini PDA"| Gem["Extract retroboot-3.4.1-gemini.tar under Gemian"]
+    Target -->|"Planet Computers Gemini PDA"| Gem["Extract retroboot-3.4.2-gemini.tar under Gemian"]
 
     ISO --> OptWifi["Optional: Add retroboot/network.conf to RBINSTEFI"]
     Univ --> OptWifi
@@ -176,7 +176,7 @@ flowchart TD
 
 ## PC & Intel Mac Installer Walkthrough
 
-Boot from the USB stick (`retroboot-installer-3.4.1-product.iso`). After your computer's firmware logo, the RetroBoot checkerboard appears with the Mac OS 9.2-style *Welcome to RetroBoot* startup box while the live environment loads silently underneath.
+Boot from the USB stick (`retroboot-installer-3.4.2-product.iso`). After your computer's firmware logo, the RetroBoot checkerboard appears with the Mac OS 9.2-style *Welcome to RetroBoot* startup box while the live environment loads silently underneath.
 
 ### 1. Welcome to RetroBoot
 
@@ -238,7 +238,7 @@ When installation finishes, `rb-live-toram` releases the USB drive so you can pu
 
 <img src="../images/manual/installer-done.png" width="428" alt="RetroBoot is installed dialog prompting to remove installation media and restart">
 
-After restarting, RetroBoot transitions directly from the checkerboard into your Mac OS Finder—complete with **RetroBoot Share**, **RetroBoot Printer**, and an automatic **Fresh Install** checkpoint:
+After restarting, RetroBoot transitions directly from the checkerboard into your Mac OS Finder—complete with **RetroBoot Share** and an automatic **Fresh Install** checkpoint (enable **RetroBoot Printer** anytime in **Ctrl+Alt+Delete → Printers…**):
 
 <img src="../images/manual/finder-mega-deluxe-v6.png" width="720" alt="Mac OS 9.2.2 Mega Deluxe v6 Finder desktop after first boot">
 
@@ -246,7 +246,7 @@ After restarting, RetroBoot transitions directly from the checkerboard into your
 
 ## Universal Raw USB / SD Installer
 
-`retroboot-installer-3.4.1-universal-product.img.xz` combines an MBR partition table with a `512 MiB` FAT32 partition (`RBINSTEFI`) containing Raspberry Pi boot firmware/kernel plus `EFI/BOOT/BOOTX64.EFI` for PCs, followed by an ISO 9660 payload partition (`RETROBOOT`) holding both `x86_64` and `aarch64` squashfs roots.
+`retroboot-installer-3.4.2-universal-product.img.xz` combines an MBR partition table with a `512 MiB` FAT32 partition (`RBINSTEFI`) containing Raspberry Pi boot firmware/kernel plus `EFI/BOOT/BOOTX64.EFI` for PCs, followed by an ISO 9660 payload partition (`RETROBOOT`) holding both `x86_64` and `aarch64` squashfs roots.
 
 - **On an x86-64 PC or Intel Mac:** Runs the exact same live installer walkthrough above onto an internal or external disk (`>= 8 GiB`).
 - **On a Raspberry Pi 4 / 5:** Lets you install either onto **another disk** (such as a USB SSD or second SD card via `--mode disk`), or directly into the **free space at the end of the same SD card/USB stick** (`--mode free-space`). In free-space mode, RetroBoot keeps the installer's partitions intact and saves its configuration as `tryboot.txt`, allowing you to re-enter the installer once at any time via **Recovery → Start Installer…**.
@@ -255,7 +255,7 @@ After restarting, RetroBoot transitions directly from the checkerboard into your
 
 ## Raspberry Pi 4/5 & Pi Zero 2 W SD Installation
 
-When flashing the dedicated Raspberry Pi SD images (`retroboot-3.4.1-rpi-product.img.xz` or `retroboot-3.4.1-rpi-zero2w-product.img.xz`), no separate PC-style installation step is required:
+When flashing the dedicated Raspberry Pi SD images (`retroboot-3.4.2-rpi-product.img.xz` or `retroboot-3.4.2-rpi-zero2w-product.img.xz`), no separate PC-style installation step is required:
 
 1. Flash the `.img.xz` to a **16 GB+** microSD card using Raspberry Pi Imager (with OS Customisation **OFF**), balenaEtcher, or `dd`.
 2. *(Optional)* Before inserting the card into the Pi, edit `retroboot/network.conf` for Wi-Fi or copy a display preset from `retroboot/displays/` to `retroboot/display.txt` (see `DISPLAY-SETUP.txt` on the `RETROBOOT` FAT partition).
@@ -277,12 +277,12 @@ When flashing the dedicated Raspberry Pi SD images (`retroboot-3.4.1-rpi-product
 
 RetroBoot runs on the Gemini PDA as a dual-boot tree (`/retroboot`) inside Gemian's `PARTNAME=linux` (p29) partition, leaving Gemian intact and keeping a hardware-safe 3-boot fallback (`/.retroboot-boot-attempts` -> `para=boot-recovery` -> Gemian).
 
-1. Boot into **Gemian**, download or copy `retroboot-3.4.1-gemini.tar` onto the device, verify its SHA-256 checksum, and extract it:
+1. Boot into **Gemian**, download or copy `retroboot-3.4.2-gemini.tar` onto the device, verify its SHA-256 checksum, and extract it:
 
    ```sh
-   sha256sum -c retroboot-3.4.1-gemini.tar.sha256
-   tar -xf retroboot-3.4.1-gemini.tar
-   cd retroboot-3.4.1-gemini
+   sha256sum -c retroboot-3.4.2-gemini.tar.sha256
+   tar -xf retroboot-3.4.2-gemini.tar
+   cd retroboot-3.4.2-gemini
    ```
 
 2. Verify payload hashes before modifying any partitions:

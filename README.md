@@ -2,11 +2,18 @@
 
 RetroBoot turns a spare PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini PDA into a dedicated classic Mac for kids, families, and retro enthusiasts—no collector hardware required. Power on, hear a genuine classic Mac startup chime, and the selected Mac takes over the screen. Press **Ctrl+Alt+Delete** on a PC keyboard (or **Windows+Alt+Backspace** on some laptops) at any time to open the local **RetroBoot** panel, or manage everything from a phone or browser on your local network.
 
-[User Manual](docs/manual/README.md) · [Download RetroBoot 3.4.1](https://mcchord.net/retroboot-downloads/#devices) · [Install](docs/guide/installing.md) · [Families & kids](docs/guide/families-and-kids.md) · [Upgrade to 3.4.1](docs/guide/upgrading.md) · [Mac disk library](docs/guide/disk-library.md) · [Web management](docs/guide/web-management.md) · [How it works](docs/dev/how-it-works.md)
+[User Manual](docs/manual/README.md) · [Download RetroBoot 3.4.2](https://mcchord.net/retroboot-downloads/#devices) · [Install](docs/guide/installing.md) · [Families & kids](docs/guide/families-and-kids.md) · [Upgrade to 3.4.2](docs/guide/upgrading.md) · [Mac disk library](docs/guide/disk-library.md) · [Web management](docs/guide/web-management.md) · [How it works](docs/dev/how-it-works.md)
 
 ![A cold boot in Proxmox shows the RetroBoot checkerboard, Mac OS 9 startup and Finder](docs/images/retroboot-proxmox-boot.gif)
 
 *RetroBoot cold-booting straight to the Mac OS 9 Finder in Proxmox. Playback is shortened.*
+
+## Related project: ClassicMac
+
+RetroBoot is a sister project to **[ClassicMac](https://github.com/amcchord/ClassicMac)**—the two are very similar and share much of the same custom QEMU classic Mac emulation stack, guest drivers, Apple Platinum UI, and ready-to-run Mac OS image library.
+
+- **Choose RetroBoot** if you want to turn a **spare PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini PDA** into a dedicated, boot-straight-to-Mac-OS appliance with a startup chime and no host desktop—ideal for kids, families, or a standalone retro machine with gamepad support, plug-and-play USB drives, and phone/browser management over your local network.
+- **Choose ClassicMac** if you want to run classic Mac OS in a window on your everyday **Apple Silicon Mac, Windows 11 PC, or Linux desktop** (or **iPad** via the beta) alongside modern apps without dedicating a machine, keep portable `.classic` machine files, or try experimental **Copland** on macOS.
 
 ## 3-step quick start
 
@@ -14,9 +21,10 @@ RetroBoot turns a spare PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini 
 2. **Flash to USB or SD:** Write it with **balenaEtcher**, **Raspberry Pi Imager**, **Fedora Media Writer**, or **Rufus** in **DD Image** mode.
 3. **Boot & pick a Mac:** Choose **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6** (146 unique apps across 8 tabs in a 4-row Launcher, ACTION Menus™, 2-second GoMac bar delay, and on-demand Virtual CDs with 0 mounted at boot—featuring Kid Pix Studio Deluxe & Logical Journey of the Zoombinis) or **Mac OS 9.2.2 (Classic Clean desktop)**—or expand **Browse all 13 Library Macs**.
 
-## What's in RetroBoot 3.4.1
+## What's in RetroBoot 3.4.2
 
-- **Seamless CUPS & Mac OS 9 Color LaserWriter printing (`3.4.1`).** Fixes CUPS network printer discovery and IPP/JetDirect/LPD setup (keeping partial results on slow Avahi/mDNS backends, supporting USB/DNS-SD query `&` URIs, deduplicating protocols, and falling back cleanly to generic PostScript instead of failing `lpadmin` IPP Everywhere on JetDirect/LPD queues), replaces the speaking-message icon with an authentic Mac OS 9 `LaserWriter 8` printer icon, automatically provisions a ready-to-print **`RetroBoot Printer`** (**Apple Color LaserWriter 12/600 PS** over TCP/IP LPR `10.0.2.2`, with **AppleTalk kept off** for fast Mac OS 9 startup), and fixes Mac OS 9 Desktop PrintMonitor duplicate-header LPD streaming.
+- **Polish & bugfixes (`3.4.2`).** Fixes download progress text wrapping (`layout_text_lines` avoids orphan leading `·`, removes duplicate scaled percentages, and uses a wider two-line dialog), turns Mac printing **off by default** (`printer.enabled = false`) with a prominent **Enable Mac printing** toggle at the top of local **Printers…** and Web **Printers**, ensures the Mac startup chime finishes cleanly without being interrupted or doubled during boot (`start_startup_chime`, ALSA `dmix` `buffer_size 8192`), and uses the authentic Mac OS 9 three-wave speaker icon (`speaker_high`) on the Volume/Mute OSD.
+- **Seamless CUPS & Mac OS 9 Color LaserWriter printing (`3.4.1`).** Fixes CUPS network printer discovery and IPP/JetDirect/LPD setup (keeping partial results on slow Avahi/mDNS backends, supporting USB/DNS-SD query `&` URIs, deduplicating protocols, and falling back cleanly to generic PostScript instead of failing `lpadmin` IPP Everywhere on JetDirect/LPD queues), replaces the speaking-message icon with an authentic Mac OS 9 `LaserWriter 8` printer icon, automatically provisions **`RetroBoot Printer`** (**Apple Color LaserWriter 12/600 PS** over TCP/IP LPR `10.0.2.2`, with **AppleTalk kept off** for fast Mac OS 9 startup) when enabled, and fixes Mac OS 9 Desktop PrintMonitor duplicate-header LPD streaming.
 - **Automatic time zone detection & live transfer speed/ETA (`3.4.0`).** Prefetches and pre-selects your likely IANA time zone over HTTPS right after Wi-Fi/network setup (instead of defaulting to UTC), adds a local **Detect** button, live local clock preview, and Web **Use This Device’s Time Zone** action, shows live speed (`MB/s` / `KB/s`) and remaining time (`left`) across catalog downloads, determinate A/B Software Updates, USB copies, disk archive unpacking, and Web uploads, and displays your connected IP/SSID directly in **Hardware Check**.
 - **HDMI & mixerless volume control (`3.3.0`).** Adds ALSA `softvol` (`RetroBoot Playback Volume` over shared `audio`-group `dmix` / `plughw`) for HDMI codecs and USB DACs that lack hardware mixer controls, enables **Volume**, **Mute**, and **Test Sound** across Web **Sound**, **Display & Sound**, and keyboard volume hotkeys, and syncs mute state cleanly when adjusting volume.
 - **Physical, network & USB CUPS printing (`3.3.0`).** Routes classic Mac PostScript/PDF print jobs from LPD (`515`), IPP (`631`), or AppSocket/JetDirect (`9100`) to either **`RetroBoot Share/Printed PDFs/`** or any discovered/manual **CUPS** printer (with optional **Also save a PDF copy**), managed in the **Printers** web page and **Ctrl+Alt+Delete → Printers…** while keeping CUPS isolated on `/run/cups/cups.sock`.
@@ -27,7 +35,7 @@ RetroBoot turns a spare PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini 
 - **Print to PDF, plug-and-play USB drives & Web Files previews.** Print straight from Mac apps into **`RetroBoot Share/Printed PDFs/`**, plug FAT32 or exFAT USB flash drives into **`RetroBoot Share/USB Drives/`**, preview Apple `PICT`, images, PDFs, and text directly in any browser, move files, and download folders as `.zip`.
 - **Game controllers & authentic Classic Mac input.** Play games with USB or Bluetooth controllers (`Arrow keys` or `WASD`), toggle **Natural scrolling**, choose PC (`Ctrl`) or Mac (`Win`) **Command key** mapping, and keep native unaccelerated Classic Mac mouse tracking with live **Mouse DPI** control.
 - **Safety checkpoints, BitLocker warnings & privacy masking.** Every downloaded or imported catalog Mac automatically saves a zero-cost reflink **Fresh Install** checkpoint, interrupted HFS+ disks snapshot before repair, the installer flags encrypted Windows partitions (`Windows (encrypted)`), and remote **Screen** feeds automatically hide local pairing codes (`PAIRING CODE HIDDEN`).
-- **A/B Software Updates & Raspberry Pi Imager JSON.** x86-64 PCs update live via signed A/B slots (`Software Update`) and Raspberry Pi 4/5 gains offline signed `tryboot` `.rbu` bundles alongside [Release `v3.4.1`](https://github.com/amcchord/RetroBoot/releases/tag/v3.4.1).
+- **A/B Software Updates & Raspberry Pi Imager JSON.** x86-64 PCs update live via signed A/B slots (`Software Update`) and Raspberry Pi 4/5 gains offline signed `tryboot` `.rbu` bundles alongside [Release `v3.4.2`](https://github.com/amcchord/RetroBoot/releases/tag/v3.4.2).
 
 ## Choose your hardware
 
@@ -38,15 +46,15 @@ RetroBoot turns a spare PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini 
 | **Raspberry Pi Zero 2 W** | Dedicated microSD image preloaded with System 7.5.5 & Mac OS 8.1 (USB OTG hub required) | 68040 Macs |
 | **Planet Computers Gemini PDA** | Installer bundle run from Gemian | Classic PowerPC & Quadra 800 |
 
-Consult the [installation guide](docs/guide/installing.md) and [verify checksums (`SHA256SUMS`)](https://github.com/amcchord/RetroBoot/releases/tag/v3.4.1) before flashing or erasing a disk. [Open RetroBoot downloads](https://mcchord.net/retroboot-downloads/#devices)
+Consult the [installation guide](docs/guide/installing.md) and [verify checksums (`SHA256SUMS`)](https://github.com/amcchord/RetroBoot/releases/tag/v3.4.2) before flashing or erasing a disk. [Open RetroBoot downloads](https://mcchord.net/retroboot-downloads/#devices)
 
 ## Screenshots
 
 | PC Installer (Mac Selection) | Local RetroBoot Panel | Mega Deluxe v6 Finder | Web Overview | Web Printers |
 | --- | --- | --- | --- | --- |
-| [<img src="docs/images/manual/installer-macs.png" width="160" alt="Choose Macs to Install showing Mega Deluxe v6 vs Mac OS 9.2.2 clean desktop plus Browse all 13 Library Macs">](docs/manual/03-installation.md) | [<img src="docs/images/manual/panel-main-341.png" width="160" alt="RetroBoot 3.4.1 local Platinum control panel over Mac OS 9.2.2">](docs/manual/README.md) | [<img src="docs/images/manual/finder-mega-deluxe-v6.png" width="160" alt="Mac OS 9.2.2 Mega Deluxe v6 Finder with 4-row 8-tab Launcher and ACTION Menus">](docs/manual/04-first-start-and-mac-library.md) | [<img src="docs/images/manual/web-overview.png" width="160" alt="Paired browser Overview showing the running Mac, startup timeline, and live screen">](docs/manual/09-web-management-and-remote-screen.md) | [<img src="docs/images/manual/web-printers.png" width="160" alt="Web Printers page showing Print-to-PDF and CUPS printer queues">](docs/manual/08-files-usb-and-printing.md) |
+| [<img src="docs/images/manual/installer-macs.png" width="160" alt="Choose Macs to Install showing Mega Deluxe v6 vs Mac OS 9.2.2 clean desktop plus Browse all 13 Library Macs">](docs/manual/03-installation.md) | [<img src="docs/images/manual/panel-main-341.png" width="160" alt="RetroBoot 3.4.2 local Platinum control panel over Mac OS 9.2.2">](docs/manual/README.md) | [<img src="docs/images/manual/finder-mega-deluxe-v6.png" width="160" alt="Mac OS 9.2.2 Mega Deluxe v6 Finder with 4-row 8-tab Launcher and ACTION Menus">](docs/manual/04-first-start-and-mac-library.md) | [<img src="docs/images/manual/web-overview.png" width="160" alt="Paired browser Overview showing the running Mac, startup timeline, and live screen">](docs/manual/09-web-management-and-remote-screen.md) | [<img src="docs/images/manual/web-printers.png" width="160" alt="Web Printers page showing Enable Mac printing, Print-to-PDF, and CUPS printer queues">](docs/manual/08-files-usb-and-printing.md) |
 
-*Boot GIF captured live on Proxmox in 3.0.0; local 3.4.1 panel and Mega Deluxe v6 Finder captured live on Proxmox; installer and Web UI screens rendered/captured in RetroBoot 3.4.1's MIT Platinum theme.*
+*Boot GIF captured live on Proxmox in 3.0.0; local 3.4.2 panel and Mega Deluxe v6 Finder captured live on Proxmox; installer and Web UI screens rendered/captured in RetroBoot 3.4.2's MIT Platinum theme.*
 
 ## Under the hood
 
@@ -56,10 +64,10 @@ The Debian 13 host handles your hardware quietly behind the scenes—Linux stays
 
 | Guide | Covers |
 | --- | --- |
-| [User Manual](docs/manual/README.md) | Complete 12-chapter RetroBoot 3.4.1 manual, architecture, printing, Web UI, and full settings reference |
+| [User Manual](docs/manual/README.md) | Complete 12-chapter RetroBoot 3.4.2 manual, architecture, printing, Web UI, and full settings reference |
 | [Install](docs/guide/installing.md) | PC, Raspberry Pi, Universal USB/SD, BitLocker & flashing safety |
 | [Families & kids](docs/guide/families-and-kids.md) | Mega Deluxe (Kid Pix, Zoombinis), Print-to-PDF, gamepads & Fresh Install checkpoints |
-| [Upgrade to 3.4.1](docs/guide/upgrading.md) | A/B Software Updates (PC & Pi 4/5) and Zero 2 W / Gemini upgrades |
+| [Upgrade to 3.4.2](docs/guide/upgrading.md) | A/B Software Updates (PC & Pi 4/5) and Zero 2 W / Gemini upgrades |
 | [Mac disk library](docs/guide/disk-library.md) | All 13 included guest systems and editions |
 | [Image servers](docs/guide/image-servers.md) | Custom HTTPS catalogs and packaging `retroboot-thin-1` disk archives |
 | [Web management](docs/guide/web-management.md) | Browser pairing, Overview, Files (PICT/ZIP/Move) & remote Screen audio |

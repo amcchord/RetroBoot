@@ -241,7 +241,7 @@ class Hostd:
         self.cups = CupsManager()
         self.printer = PrintServer(
             self.paths.share,
-            enabled=lambda: bool(self.settings.applied.get("printer.enabled", True)),
+            enabled=lambda: bool(self.settings.applied.get("printer.enabled", False)),
             on_printed=self._on_printed_pdf,
             cups=self.cups,
             target=lambda: str(self.settings.applied.get("printer.target", "pdf")),

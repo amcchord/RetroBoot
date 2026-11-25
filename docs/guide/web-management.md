@@ -4,7 +4,7 @@ Every RetroBoot serves its own management page. Open it from a phone or another 
 
 <img src="../images/manual/web-overview.png" width="760" alt="The paired RetroBoot Overview shows the running Mac, startup timeline and system status">
 
-<sub>Rendered from RetroBoot 3.4.1 in RetroBoot's MIT Platinum theme.</sub>
+<sub>Rendered from RetroBoot 3.4.2 in RetroBoot's MIT Platinum theme.</sub>
 
 The page looks like Mac OS 9. It uses the Charcoal, Geneva and Monaco fonts, the icons and the desktop pattern of the Mac OS system on your RetroBoot, and its buttons, check boxes and windows match Mac OS 9.2.1 pixel for pixel. Until a Mac OS system is installed, the same layout appears with plain fonts and RetroBoot's own icons.
 
@@ -121,4 +121,4 @@ If Mac OS doesn't respond to a clean request, the page says so and offers the ma
 - Wi-Fi passwords go to the computer's network manager and are never shown, logged or given to Mac OS.
 - Mac OS itself can't reach this page or any other service on the computer.
 
-<sub>Screenshots on this page are rendered from RetroBoot 3.4.1's MIT Platinum Web UI and local panel. See [Conventions and Screenshot Provenance](../manual/README.md#conventions-and-screenshot-provenance) for details.</sub>
+<sub>Screenshots on this page are rendered from RetroBoot 3.4.2's MIT Platinum Web UI and local panel. See [Conventions and Screenshot Provenance](../manual/README.md#conventions-and-screenshot-provenance) for details.</sub>

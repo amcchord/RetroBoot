@@ -83,8 +83,18 @@ int layout_text_lines(rbui *ui, rb_node *n, int width)
                 int a = rbf_advance(f, cp) * scale;
                 if (w + a > width && i > line) break;
                 w += a;
-                if (cp == ' ') last_break = (int)j;
-                else if ((cp == '/' || cp == '-' || cp == ':' || cp == ',') && (int)j < end) last_break = (int)j;
+                if (cp == ' ') {
+                    size_t peek = j;
+                    uint32_t next_cp = (peek < (size_t)end) ? rbf_utf8_next(s, (size_t)end, &peek) : 0;
+                    if (next_cp == 0x00B7) {
+                        /* Break before " · ..." so the separator never strands on either line. */
+                        last_break = i;
+                    } else if (!(i >= line + 2 && (unsigned char)s[i - 2] == 0xC2 && (unsigned char)s[i - 1] == 0xB7)) {
+                        last_break = (int)j;
+                    }
+                } else if ((cp == '/' || cp == '-' || cp == ':' || cp == ',') && (int)j < end) {
+                    last_break = (int)j;
+                }
                 i = (int)j;
             }
             int brk = i;
@@ -94,6 +104,11 @@ int layout_text_lines(rbui *ui, rb_node *n, int width)
             if (push_line(n, &cap, line, l)) return -1;
             line = brk;
             while (line < end && s[line] == ' ') ++line;
+            if (brk < end && line + 1 < end && (unsigned char)s[line] == 0xC2 && (unsigned char)s[line + 1] == 0xB7) {
+                /* Drop the middot separator when wrapping across lines. */
+                line += 2;
+                while (line < end && s[line] == ' ') ++line;
+            }
         }
         para = end + 1;
     }

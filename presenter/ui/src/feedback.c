@@ -59,12 +59,12 @@ void rbui_draw_feedback(uint32_t *xrgb, int stride_px, int kind, double level, i
     case RBUI_FEEDBACK_MUTE:
         title = muted ? "Mute On" : "Mute Off";
         left = muted ? "speaker_mute" : "speaker_low";
-        right = "sound";
+        right = "speaker_high";
         break;
     default:
         title = "Volume";
         left = muted ? "speaker_mute" : "speaker_low";
-        right = "sound";
+        right = "speaker_high";
         break;
     }
     if (font) {

@@ -22,7 +22,7 @@ When the boot checkerboard appears, RetroBoot plays a Macintosh power-on chime (
 | **Macintosh SE** | Classic 68000 single-beep chime (`se`). |
 | **Off** | Silent startup (`off`). |
 
-RetroBoot prepares the audio output stage (`ucm_prepare`, `hda_output_stage`, `vc4_softvol` / `ensure_softvol`, and `warm_up` on ES8336 codecs) before playing the chime so amplifiers never pop on cold boot.
+RetroBoot prepares the audio output stage (`ucm_prepare`, `hda_output_stage`, `vc4_softvol` / `ensure_softvol`, and `warm_up` on ES8336 codecs) before playing the chime once per launch and waiting for it to finish cleanly before starting QEMU so amplifiers never pop or get cut off on cold boot.
 
 ### Happy Mac Progress Bar
 

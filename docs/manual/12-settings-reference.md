@@ -88,7 +88,7 @@ Both the local Platinum panel and the Web UI read and validate the exact same 55
 | `media.cd` | CD-ROM drive | `"none"` | `"none"` or registered Media Library disc image name | Mac OS Restart | Mounts the chosen ISO/disc image into Mac OS's CD-ROM drive on next start. |
 | `share.enabled` | Shared volume | `true` | `true`, `false` | Mac OS Restart | Exposes **RetroBoot Share** via `virtio-9p`; unavailable on Mac OS X. |
 | `share.volume_name` | Shared volume name | `"RetroBoot Share"` | 1–27 chars (`^[A-Za-z0-9 _-]{1,27}$`) | Mac OS Restart | Volume label shown on the Mac OS desktop; unavailable on Mac OS X. |
-| `printer.enabled` | Print to PDF | `true` | `true`, `false` | Live | Enables RetroBoot's virtual PostScript printer (`LPD 515`, `IPP 631`, `AppSocket 9100`). |
+| `printer.enabled` | Enable Mac printing | `false` | `true`, `false` | Live | Enables RetroBoot's virtual PostScript printer (`LPD 515`, `IPP 631`, `AppSocket 9100`). |
 | `printer.target` | Mac printer output | `"pdf"` | `"pdf"` or `cups:<queue-name>` (`^(pdf\|cups:[A-Za-z0-9][A-Za-z0-9_-]{0,47})$`) | Live | Routes Mac OS print jobs to `RetroBoot Share/Printed PDFs` or a configured CUPS queue. |
 | `printer.keep_pdf` | Also save a PDF copy in RetroBoot Share | `false` | `true`, `false` | Live | When printing to a CUPS queue, also archives a PDF in `RetroBoot Share/Printed PDFs`. |
 | `printer.mac_auto_setup` | Automatically set up Mac OS 9 Desktop Printer | `true` | `true`, `false` | Mac OS Restart | Provisions *RetroBoot Printer* (LPR `10.0.2.2`, queue `retroboot`, AppleTalk off) on Mac OS 9 startup. |

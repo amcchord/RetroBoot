@@ -48,7 +48,7 @@ Because QEMU translates 68040 and PowerPC instructions in software using its Tin
   - **8 GiB absolute minimum:** `install-to-disk` and `list-disks` reject any target drive smaller than **8 GiB** because the fixed system partitions (`RBEFI` 256 MiB + `BIOSBOOT` 1 MiB + `RBROOT_A` 3 GiB + `RBROOT_B` 3 GiB) consume ~6.25 GiB before `RBDATA` and its mandatory 1 GiB free margin.
   - **16–32+ GiB (or 64+ GiB) recommended:** Required for **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6** (~4.25 GiB thin archive / ~4.29 GiB allocated inside a 32 GiB sparse disk), **Mac OS X Period & Tiger Deluxe** editions, additional Mac installations, XFS reflink checkpoints, `RetroBoot Share` files, and uploaded CD images in `/var/lib/retroboot/media/`.
 - **Raspberry Pi microSD / USB SSD:** **16 GB minimum** microSD card (Class 10 / A1 / U1 or better) or USB SSD/NVMe; `RBDATA` automatically expands to fill the remaining card space on first boot.
-- **Installer USB Stick:** **4 GB+** USB drive for `retroboot-installer-3.4.1-product.iso` or `retroboot-installer-3.4.1-universal-product.img.xz`.
+- **Installer USB Stick:** **4 GB+** USB drive for `retroboot-installer-3.4.2-product.iso` or `retroboot-installer-3.4.2-universal-product.img.xz`.
 
 ### Firmware Settings
 
@@ -176,7 +176,7 @@ Measured inside Proxmox VE virtual machines (`q35`, 4 vCPU `x86-64-v3`, OVMF/Sea
 | --- | --- | --- | --- |
 | **Proxmox VM 164 / 165** (x86-64) | Mac OS 9.2.2 Standard (PowerPC) | `~44.8–46.2 s` power-on → Finder (`~14.4–19.2 s` kernel launch → Finder) | `15.8%` whole-VM idle CPU; 0 display transition glitches across cold boots |
 | **Proxmox VM 165 / 169** (x86-64) | System 7.5.5 & Mac OS 8.1 (68040 Quadra 800) | `~8.8–9.1 s` kernel launch → Finder (`~4.7–4.8 s` after QEMU start) | `7.4%` (8.1) / `10.8%` (7.5.5) whole-VM idle CPU (`3.0–3.5%` emulator with `RetroBoot Idle`); Speedometer 4.02 CPU `~34.7`, Gfx `34.0` |
-| **Proxmox VM 348 / 349** (x86-64) | RetroBoot `3.4.1` + Mega Deluxe v6 | Fresh ISO install & signed A/B `3.4.0 -> 3.4.1 -> 3.4.0` verified | Confirmed `RetroBoot Printer` LPR PDF print, CUPS fallback, and `rbplatinum` v7 |
+| **Proxmox VM 350 / 351** (x86-64) | RetroBoot `3.4.2` + Mega Deluxe v6 | Fresh ISO install & signed A/B `3.4.1 -> 3.4.2 -> 3.4.1` verified | Confirmed default-off `Enable Mac printing` checkmark + PDF test page + `RetroBoot Printer` on restart, 3-wave Volume OSD, clean download wrap, & serialized startup chime |
 | **ARM64 QEMU `virt`** (`qa-pi45`, `qa-zero2w`) | Pi 4/5 Setup & Zero 2 W System 7.5.5 | Reaches Setup (`pi45`) & System 7.5.5 Finder (`zero2w`) in software QA | Validates rootfs, `rpi-profile.json`, and 68k guest path only; does not test Pi firmware, HDMI/DSI/GPIO wiring, touch, Wi-Fi, or physical speed |
 
 ---

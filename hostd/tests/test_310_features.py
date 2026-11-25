@@ -106,7 +106,7 @@ class SchemaAndApplyTests(unittest.TestCase):
         self.assertEqual(by_key["input.natural_scroll"]["apply"], "live")
         self.assertEqual(schema.BY_KEY["printer.enabled"].group, "storage")
         self.assertEqual(by_key["printer.enabled"]["group"], "Storage")
-        self.assertEqual(by_key["printer.enabled"]["default"], True)
+        self.assertEqual(by_key["printer.enabled"]["default"], False)
         self.assertEqual(by_key["printer.enabled"]["apply"], "live")
         self.assertEqual(schema.BY_KEY["usb_share.enabled"].group, "storage")
         self.assertEqual(by_key["usb_share.enabled"]["group"], "Storage")
@@ -125,7 +125,7 @@ class SchemaAndApplyTests(unittest.TestCase):
         base = schema.defaults()
         ok = schema.validate_changes(base, {"audio.output": "hdmi:0", "audio.startup_chime": "quadra",
                                             "input.gamepad_mode": "wasd", "input.natural_scroll": True,
-                                            "printer.enabled": False, "usb_share.enabled": False}, ctx=ctx)
+                                            "printer.enabled": True, "usb_share.enabled": False}, ctx=ctx)
         self.assertEqual(ok["input.gamepad_mode"], "wasd")
         with self.assertRaises(schema.ValidationError):
             schema.validate_changes(base, {"audio.output": "bad;cmd"}, ctx=ctx)
@@ -180,7 +180,7 @@ class ApplyAndApiFeatureTests(unittest.IsolatedAsyncioTestCase):
             "input.gamepad_mode": "wasd",
             "input.natural_scroll": True,
             "audio.output": "hdmi-test",
-            "printer.enabled": False,
+            "printer.enabled": True,
             "usb_share.enabled": False,
         }, origin="web")
         cfg_msgs = [m for m in sent if m.get("t") == "set_config"]

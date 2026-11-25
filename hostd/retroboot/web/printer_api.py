@@ -29,6 +29,7 @@ def register(server: "WebServer", router: web.UrlDispatcher) -> None:
     api = PrinterApi(server)
     router.add_get("/api/v1/printers", api.status)
     router.add_post("/api/v1/printers/discover", api.discover)
+    router.add_post("/api/v1/printers/enabled", api.set_enabled)
     router.add_post("/api/v1/printers/target", api.set_target)
     router.add_post("/api/v1/printers/jobs/{job_id}/cancel", api.cancel_job)
     router.add_post("/api/v1/printers", api.add_printer)
@@ -180,10 +181,27 @@ class PrinterApi:
             "target": self.hostd.settings.applied.get("printer.target", "pdf"),
         })
 
+    async def set_enabled(self, request):
+        from .server import ApiError
+        data = await self.server.body(request)
+        unknown = set(data) - {"enabled"}
+        if unknown:
+            raise ApiError(422, "invalid", "Some fields aren't recognized.", {k: "Unknown field." for k in sorted(unknown)})
+        enabled = data.get("enabled")
+        if type(enabled) is not bool:
+            raise ApiError(422, "invalid", "enabled must be true or false.", {"enabled": "Boolean."})
+        self.hostd.settings.set_desired_and_applied({"printer.enabled": enabled}, self.hostd.validation_context())
+        await self.hostd.apply_engine.apply_live_keys(["printer.enabled"])
+        self.hostd.lifecycle.event("printer_enabled_changed", enabled=enabled, origin="web")
+        return web.json_response({
+            "enabled": bool(self.hostd.settings.applied.get("printer.enabled", False)),
+            "virtual": self.printer.public(),
+        })
+
     async def set_target(self, request):
         from .server import ApiError
         data = await self.server.body(request)
-        unknown = set(data) - {"target", "keep_pdf"}
+        unknown = set(data) - {"target", "keep_pdf", "enabled"}
         if unknown:
             raise ApiError(422, "invalid", "Some fields aren't recognized.", {k: "Unknown field." for k in sorted(unknown)})
 
@@ -208,11 +226,16 @@ class PrinterApi:
             if type(data["keep_pdf"]) is not bool:
                 raise ApiError(422, "invalid", "keep_pdf must be true or false.", {"keep_pdf": "Boolean."})
             changes["printer.keep_pdf"] = data["keep_pdf"]
+        if "enabled" in data:
+            if type(data["enabled"]) is not bool:
+                raise ApiError(422, "invalid", "enabled must be true or false.", {"enabled": "Boolean."})
+            changes["printer.enabled"] = data["enabled"]
 
         self.hostd.settings.set_desired_and_applied(changes, self.hostd.validation_context())
         await self.hostd.apply_engine.apply_live_keys(list(changes))
         self.hostd.lifecycle.event("printer_target_changed", target=target, origin="web")
         return web.json_response({
+            "enabled": bool(self.hostd.settings.applied.get("printer.enabled", False)),
             "target": self.hostd.settings.applied.get("printer.target", "pdf"),
             "keep_pdf": bool(self.hostd.settings.applied.get("printer.keep_pdf", False)),
         })

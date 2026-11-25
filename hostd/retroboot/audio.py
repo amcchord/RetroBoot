@@ -1014,16 +1014,46 @@ def prepare_output_for_playback(output: dict | None, run=subprocess.run, root: P
     try:
         if has_ucm(output):
             ucm_prepare(output, run=run, asound=root)
-        if output.get("vc4"):
+        if output.get("vc4") and output.get("softvol") is not True:
             vc4_softvol(output, run=run)
-        if output.get("needs_softvol"):
+        if output.get("needs_softvol") and output.get("softvol") is not True:
             ensure_softvol(output, run=run)
-        hda_output_stage(output, run=run)
+        if output.get("stage") is None:
+            hda_output_stage(output, run=run)
         alsa = output.get("alsa")
-        if output.get("keepalive") and alsa and warm_up_fn is not None:
+        if (output.get("keepalive") and (output.get("asoc") or output.get("driver") in KEEPALIVE_DRIVERS)
+                and not output.get("warmed") and alsa and warm_up_fn is not None):
             warm_up_fn(output, alsa, run=run, root=root)
     except Exception as exc:
         log.debug("audio output prep skipped: %s", exc)
+
+
+def start_startup_chime(family: str = "powermac", chime_setting: str = "auto", *,
+                        output: str = "auto", audio_out: dict | None = None,
+                        root: Path = ASOUND, prefer: str = "hdmi",
+                        driving: list[str] | None = None, drm: Path = DRM_SYSFS,
+                        chimes_dir: Path | str | None = None,
+                        muted: bool = False, volume: int | None = None,
+                        run=subprocess.run, popen=subprocess.Popen,
+                        warm_up_fn=warm_up, which=shutil.which,
+                        bluetooth_sinks: list[dict] | None = None):
+    """Start playing a genuine WAV startup chime asynchronously and return the player handle (or None)."""
+    if muted or (volume is not None and int(volume) <= 0):
+        return None
+    wav = chime_path(family, chime_setting, chimes_dir)
+    if wav is None:
+        return None
+    out = audio_out
+    if out is None:
+        out = choose(root=root, prefer=prefer, driving=driving, drm=drm,
+                     output=output, bluetooth_sinks=bluetooth_sinks)
+    prepare_output_for_playback(out, run=run, root=root, warm_up_fn=warm_up_fn)
+    cmd = playback_command(wav, out, which=which)
+    try:
+        return popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.info("startup chime not played: %s", exc)
+        return None
 
 
 def play_startup_chime(family: str = "powermac", chime_setting: str = "auto", *,
@@ -1034,25 +1064,26 @@ def play_startup_chime(family: str = "powermac", chime_setting: str = "auto", *,
                        muted: bool = False, volume: int | None = None,
                        run=subprocess.run, popen=subprocess.Popen,
                        warm_up_fn=warm_up, which=shutil.which,
-                       bluetooth_sinks: list[dict] | None = None) -> bool:
-    """Play a genuine WAV startup chime asynchronously without popping amps or failing if missing."""
-    if muted or (volume is not None and int(volume) <= 0):
+                       bluetooth_sinks: list[dict] | None = None,
+                       wait: bool = False, timeout: float = 6.0) -> bool:
+    """Play a genuine WAV startup chime without popping amps or failing if missing."""
+    proc = start_startup_chime(
+        family, chime_setting, output=output, audio_out=audio_out,
+        root=root, prefer=prefer, driving=driving, drm=drm,
+        chimes_dir=chimes_dir, muted=muted, volume=volume,
+        run=run, popen=popen, warm_up_fn=warm_up_fn, which=which,
+        bluetooth_sinks=bluetooth_sinks,
+    )
+    if proc is None:
         return False
-    wav = chime_path(family, chime_setting, chimes_dir)
-    if wav is None:
-        return False
-    out = audio_out
-    if out is None:
-        out = choose(root=root, prefer=prefer, driving=driving, drm=drm,
-                     output=output, bluetooth_sinks=bluetooth_sinks)
-    prepare_output_for_playback(out, run=run, root=root, warm_up_fn=warm_up_fn)
-    cmd = playback_command(wav, out, which=which)
-    try:
-        popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        return True
-    except (OSError, subprocess.SubprocessError) as exc:
-        log.info("startup chime not played: %s", exc)
-        return False
+    if wait:
+        wait_fn = getattr(proc, "wait", None)
+        if callable(wait_fn):
+            try:
+                wait_fn(timeout=timeout)
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return True
 
 
 def _test_beep_wav(rate: int = 48000) -> bytes:

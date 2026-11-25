@@ -1,6 +1,6 @@
-# RetroBoot 3.4.1 User Manual
+# RetroBoot 3.4.2 User Manual
 
-Welcome to the complete **RetroBoot 3.4.1** user manual. RetroBoot turns a spare x86-64 PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini PDA into a dedicated classic Macintosh—no Linux experience or collector hardware required. Power on, hear a genuine classic Mac startup chime, and your chosen Mac OS desktop takes over the screen.
+Welcome to the complete **RetroBoot 3.4.2** user manual. RetroBoot turns a spare x86-64 PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini PDA into a dedicated classic Macintosh—no Linux experience or collector hardware required. Power on, hear a genuine classic Mac startup chime, and your chosen Mac OS desktop takes over the screen.
 
 <table>
   <tr>
@@ -9,8 +9,8 @@ Welcome to the complete **RetroBoot 3.4.1** user manual. RetroBoot turns a spare
       <br><sub>Live Proxmox 3.0.0 cold boot to the Mac OS 9 Finder (playback shortened).</sub>
     </td>
     <td align="center">
-      <img src="../images/manual/panel-main-341.png" width="390" alt="RetroBoot 3.4.1 local Ctrl+Alt+Delete Platinum panel over Mac OS 9.2.2">
-      <br><sub>Live Proxmox 3.4.1 local <strong>Ctrl+Alt+Delete</strong> Platinum panel.</sub>
+      <img src="../images/manual/panel-main-341.png" width="390" alt="RetroBoot 3.4.2 local Ctrl+Alt+Delete Platinum panel over Mac OS 9.2.2">
+      <br><sub>Live Proxmox 3.4.2 local <strong>Ctrl+Alt+Delete</strong> Platinum panel.</sub>
     </td>
   </tr>
 </table>
@@ -88,6 +88,6 @@ Manual instructions use PC key labels unless noted otherwise:
 RetroBoot separates built-in MIT-licensed UI chrome from live guest captures (decisions D012, D079, D082):
 
 - **Built-in MIT Platinum UI renders:** Installer screens, local panel dialogs, and browser Web UI pages under `docs/images/manual/` are rendered using RetroBoot's built-in MIT-licensed Platinum theme, fonts, and original icons—never proprietary Apple assets (`RBUI_ASSETS` / `--platinum`).
-- **Live Proxmox captures:** `../images/retroboot-proxmox-boot.gif` (captured on Proxmox in 3.0.0) and live Mac OS / local panel shots (`panel-main-341.png`, `panel-printers-341.png`, `macos9-print-dialog.png`, `macos9-volume-osd.png`, `finder-mega-deluxe-v6.png`, `zero2w-system755.png`) are captured from running RetroBoot systems and clearly labeled as virtual-machine or board captures.
+- **Live Proxmox captures:** `../images/retroboot-proxmox-boot.gif` (captured on Proxmox in 3.0.0) and live Mac OS / local panel shots (`panel-main-341.png`, `panel-printers-341.png`, `macos9-print-dialog.png`, `macos9-volume-osd.png`, `finder-mega-deluxe-v6.png`, `zero2w-system755.png`) are captured from running RetroBoot systems (`3.4.2` for local panels, Finder, and Volume OSD) and clearly labeled as virtual-machine or board captures.
 - **Redacted & synthetic examples:** Live pairing codes, session cookies, and home Wi-Fi credentials are never published; pairing screens show temporary/synthetic example values.
 - **Public guides:** Topic-focused quick guides remain available for [Installing](../guide/installing.md), [Families & Kids](../guide/families-and-kids.md), [Mac Disk Library](../guide/disk-library.md), [Web Management](../guide/web-management.md), [Image Servers](../guide/image-servers.md), and [Upgrading](../guide/upgrading.md).

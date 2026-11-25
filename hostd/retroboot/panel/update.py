@@ -112,7 +112,8 @@ class SoftwareUpdate(Screen):
         action = None                   # the main button, the default one
         discard = None                  # Don't Install, at the left of the bottom row
         if job and job.kind == "update.install":
-            items += [ui.text(job.message or "Downloading…", "emphasis"), ui.progress(job.progress)]
+            items += [ui.text(ui.format_job_status(job.progress, job.message or "Downloading…"), "emphasis"),
+                      ui.progress(job.progress)]
         elif st.get("status") in ("ready", "failed"):
             again = st.get("status") == "failed"
             clean_mode = self._clean_override if self._clean_override is not None else bool(st.get("clean"))
@@ -326,4 +327,4 @@ class UpdateProgress(Screen):
         if self.detail:
             items.append(ui.text(self.detail))
         items.append(ui.progress(self.value))
-        return ui.window(self.doc_id, "Software Update", items, width=440)
+        return ui.window(self.doc_id, "Software Update", items, width=500)

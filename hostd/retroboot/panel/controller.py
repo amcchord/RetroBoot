@@ -307,9 +307,7 @@ class JobScreen(Screen):
 
     def doc(self):
         j = self.job
-        msg = j.message or "Working…"
-        if msg.startswith("Downloading") and isinstance(j.progress, (int, float)):
-            msg = ui.format_download_status(j.progress, msg)
+        msg = ui.format_job_status(j.progress, j.message or "Working…")
         items = [ui.text(self.title, "emphasis"), ui.text(msg), ui.progress(j.progress)]
         if self.allow_force:
             items.append(ui.text("If Mac OS is not responding, you can force it to stop. Unsaved changes may be lost.",
@@ -318,7 +316,7 @@ class JobScreen(Screen):
         if self.allow_cancel and j.cancellable and not j.done.is_set():
             items.append(ui.text("A stopped download continues where it left off next time.", "small"))
             items.append(ui.buttons(ui.btn("cancel", "Stop Download")))
-        return ui.window(self.doc_id, "RetroBoot", items, width=480)
+        return ui.window(self.doc_id, "RetroBoot", items, width=500)
 
     async def on_tick(self):
         if not self.job.done.is_set():
@@ -488,7 +486,7 @@ class RetroBootWindow(Screen):
 
     def _printer_summary(self) -> str:
         s = self.app.settings.applied
-        if not s.get("printer.enabled", True):
+        if not s.get("printer.enabled", False):
             return "Off"
         target = str(s.get("printer.target") or "pdf")
         if target.startswith("cups:"):
@@ -1582,7 +1580,7 @@ class Printers(Screen):
 
     def doc(self):
         s = self.app.settings.applied
-        enabled = bool(s.get("printer.enabled", True))
+        enabled = bool(s.get("printer.enabled", False))
         target = str(s.get("printer.target") or "pdf")
         keep_pdf = bool(s.get("printer.keep_pdf", False))
         printer_srv = getattr(self.app, "printer", None)
@@ -1610,20 +1608,20 @@ class Printers(Screen):
                 ui.icon("printer", 32),
                 ui.stack(
                     ui.text(f"Color LaserWriter 12/600 PS: {status_word}", "emphasis"),
-                    ui.text(f"Active output: {active_label}", "small"),
-                    ui.text("Mac OS 9 auto-adds “RetroBoot Printer” (10.0.2.2, AppleTalk off).", "small"),
+                    ui.text(f"Active output: {active_label}" if enabled else "Mac printing is turned off.", "small"),
+                    ui.text("Mac OS 9 auto-adds “RetroBoot Printer” (10.0.2.2, AppleTalk off)." if enabled else
+                            "Check “Enable Mac printing” below to print from Mac OS to PDF or a configured printer.",
+                            "small"),
                 ),
             ),
+            ui.checkbox("enabled", "Enable Mac printing", enabled),
             ui.lst("target", rows, self.selected, rows=5),
         ]
         if not self.cups_available:
             items.append(ui.text(self.cups_reason or
                                  "CUPS is not installed on this computer. Print to PDF in RetroBoot Share still works.",
                                  "small"))
-        items.append(ui.columns(
-            ui.checkbox("keep_pdf", "Also save PDF copy", keep_pdf),
-            ui.checkbox("enabled", "Enable Mac printing", enabled),
-        ))
+        items.append(ui.checkbox("keep_pdf", "Also save PDF copy", keep_pdf, disabled=not enabled))
         if self.notice:
             items.append(ui.text(self.notice, "small"))
         if self.error:
@@ -1631,7 +1629,7 @@ class Printers(Screen):
         is_cups_sel = bool(self.selected and self.selected.startswith("cups:") and self.cups_available)
         items.append(ui.buttons(
             ui.btn("use", "Use for Mac", disabled=not self.selected or self.selected == target),
-            ui.btn("test", "Test Page", disabled=not self.selected),
+            ui.btn("test", "Test Page", disabled=(not self.selected) or (not enabled)),
             ui.btn("remove", "Remove…", disabled=not is_cups_sel),
         ))
         items.append(ui.buttons(
@@ -1651,8 +1649,16 @@ class Printers(Screen):
             self.notice = "PDF copy in RetroBoot Share enabled." if value else "PDF copy in RetroBoot Share turned off."
             await self.panel.refresh()
         elif id == "enabled":
-            await _apply_printer_settings(self.app, {"printer.enabled": bool(value)})
-            self.notice = "Mac printing enabled." if value else "Mac printing turned off."
+            on = bool(value)
+            await _apply_printer_settings(self.app, {"printer.enabled": on})
+            if on:
+                sup = getattr(self.app, "supervisor", None)
+                running_guest = bool(sup and getattr(sup, "active", False))
+                auto_setup = bool(self.app.settings.applied.get("printer.mac_auto_setup", True))
+                self.notice = ("Mac printing enabled. Restart Mac OS to auto-add “RetroBoot Printer”."
+                               if running_guest and auto_setup else "Mac printing enabled.")
+            else:
+                self.notice = "Mac printing turned off."
             await self.panel.refresh()
 
     async def action(self, id, values):

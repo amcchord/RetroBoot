@@ -215,29 +215,29 @@ def verify_png(path: Path) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 GROUP_A_DIALOGS = [
-    ("installer-welcome.png", "3.4.1/qa-348-step1.png"),
-    ("installer-hardware.png", "3.4.1/qa-348-hwcheck.png"),
-    ("installer-disk.png", "3.4.1/qa-348-disk.png"),
-    ("installer-erase.png", "3.4.1/qa-348-erase.png"),
-    ("installer-macs.png", "3.4.1/qa-348-macs.png"),
+    ("installer-welcome.png", "3.4.2/qa-350-step1.png"),
+    ("installer-hardware.png", "3.4.2/qa-350-hwcheck.png"),
+    ("installer-disk.png", "3.4.2/qa-350-disk.png"),
+    ("installer-erase.png", "3.4.2/qa-350-erase.png"),
+    ("installer-macs.png", "3.4.2/qa-350-macs.png"),
     ("installer-display.png", "3.4.0/qa-348-tz-actual.png"),
     ("installer-timezone.png", "3.4.0/qa-348-tz-screen.png"),
-    ("installer-progress.png", "3.4.0/dl/qa-348-dl-4.png"),
-    ("installer-done.png", "3.4.1/qa-348-done.png"),
-    ("pi45-first-setup.png", "3.4.1/qa-pi45-latest.png"),
+    ("installer-progress.png", "3.4.2/qa-350-inst-dl.png"),
+    ("installer-done.png", "3.4.2/qa-350-inst2.png"),
+    ("pi45-first-setup.png", "3.4.2/qa-pi45-latest.png"),
 ]
 
 GROUP_A_FULL = [
-    ("finder-mega-deluxe-v6.png", "3.4.1/qa-348-finder.png"),
-    ("panel-main-341.png", "3.4.1/qa-348-cad.png"),
-    ("panel-printers-341.png", "3.4.1/qa-348-printers.png"),
+    ("finder-mega-deluxe-v6.png", "3.4.2/qa-350-finder.png"),
+    ("panel-main-341.png", "3.4.2/qa-350-cad.png"),
+    ("panel-printers-341.png", "3.4.2/qa-350-printers-click.png"),
     ("macos9-print-dialog.png", "3.4.1/qa-348-printdlg2.png"),
     ("panel-keyboard-mouse.png", "3.2.0/qa-342-keyboard-mouse.png"),
     ("panel-web-helper.png", "3.2.0/qa-342-webhelper.png"),
     ("panel-web-helper-whitelist.png", "3.2.0/qa-342-whitelist.png"),
     ("panel-force-reboot.png", "3.2.0/qa-342-force-reboot.png"),
-    ("macos9-volume-osd.png", "3.2.0/qa-342-volume-osd.png"),
-    ("zero2w-system755.png", "3.4.1/qa-zero2w-latest.png"),
+    ("macos9-volume-osd.png", "3.4.2/qa-350-vol-osd.png"),
+    ("zero2w-system755.png", "3.4.2/qa-zero2w-latest.png"),
 ]
 
 
@@ -478,8 +478,8 @@ def build_manual_mock():
     # Scrub 0.2.0-dev from seeded logs
     for src_name, lines in m.logs.items():
         m.logs[src_name] = [
-            line.replace("0.2.0-dev", "3.4.1")
-            .replace("0.2.0", "3.4.1")
+            line.replace("0.2.0-dev", "3.4.2")
+            .replace("0.2.0", "3.4.2")
             .replace("os921", "os922-mega-deluxe-v6")
             .replace("9.2.0-rb3", "9.2.0-rb18")
             for line in lines
@@ -567,18 +567,18 @@ def build_manual_mock():
         "available": True,
         "reason": None,
         "current": {
-            "version": "3.4.1",
-            "build_id": "3.4.1-20261125T163512Z-27de0be8",
+            "version": "3.4.2",
+            "build_id": "3.4.2-20261125T224558Z-43e6d5b7",
             "flavor": "product",
-            "label": "3.4.1 (build 2026-11-25 16:35)",
+            "label": "3.4.2 (build 2026-11-25 22:45)",
             "slot": "a",
         },
         "boot": {"kind": "normal", "committed": True},
         "staged": None,
         "previous": {
-            "version": "3.4.0",
-            "build_id": "3.4.0-20261125T134114Z-ec555aef",
-            "label": "3.4.0 (build 2026-11-25 13:41)",
+            "version": "3.4.1",
+            "build_id": "3.4.1-20261125T163512Z-27de0be8",
+            "label": "3.4.1 (build 2026-11-25 16:35)",
             "newer": False,
             "update_capable": True,
             "slot": "b",
@@ -586,11 +586,18 @@ def build_manual_mock():
         "last_result": {
             "kind": "update",
             "result": "installed",
-            "version": "3.4.1",
-            "at": "2026-11-25T16:40:00Z",
-            "message": "RetroBoot was updated to 3.4.1.",
+            "version": "3.4.2",
+            "at": "2026-11-25T22:50:00Z",
+            "message": "RetroBoot was updated to 3.4.2.",
         },
         "history": [
+            {
+                "kind": "update",
+                "result": "installed",
+                "version": "3.4.2",
+                "at": "2026-11-25T22:50:00Z",
+                "message": "RetroBoot was updated to 3.4.2.",
+            },
             {
                 "kind": "update",
                 "result": "installed",
@@ -598,24 +605,17 @@ def build_manual_mock():
                 "at": "2026-11-25T16:40:00Z",
                 "message": "RetroBoot was updated to 3.4.1.",
             },
-            {
-                "kind": "update",
-                "result": "installed",
-                "version": "3.4.0",
-                "at": "2026-11-25T13:50:00Z",
-                "message": "RetroBoot was updated to 3.4.0.",
-            },
         ],
         "usb": [],
         "check": {
-            "at": "2026-11-25T17:00:00Z",
+            "at": "2026-11-25T23:00:00Z",
             "url": "https://updates.mcchord.net/retroboot/",
             "found": None,
             "latest": {
-                "version": "3.4.1",
-                "build_id": "3.4.1-20261125T163512Z-27de0be8",
-                "label": "3.4.1 (build 2026-11-25 16:35)",
-                "bytes": 590_000_000,
+                "version": "3.4.2",
+                "build_id": "3.4.2-20261125T224558Z-43e6d5b7",
+                "label": "3.4.2 (build 2026-11-25 22:45)",
+                "bytes": 602_152_960,
                 "notes": None,
             },
         },
@@ -627,16 +627,16 @@ def build_manual_mock():
 
     def patched_status_json() -> dict:
         d = orig_status_json()
-        d["host"]["version"] = "3.4.1"
+        d["host"]["version"] = "3.4.2"
         d["versions"] = {
-            "RetroBoot": "3.4.1",
-            "RetroBoot service": "3.4.1",
-            "Display service": "3.4.1",
+            "RetroBoot": "3.4.2",
+            "RetroBoot service": "3.4.2",
+            "Display service": "3.4.2",
             "Emulator": "QEMU 9.2.0 + ClassicMac patches",
             "68k emulator": "QEMU 9.2.0 (Quadra 800)",
             "Host kernel": "6.12.48-amd64",
-            "Image": "retroboot-3.4.1-20261125T163512Z-27de0be8",
-            "Previous slot": "3.4.0-20261125T134114Z-ec555aef",
+            "Image": "retroboot-3.4.2-20261125T224558Z-43e6d5b7",
+            "Previous slot": "3.4.1-20261125T163512Z-27de0be8",
             "Package manifest": "sha256:7d1e9c0b4a…31f0",
             "Settings schema": str(m.schema_version),
         }
@@ -645,8 +645,8 @@ def build_manual_mock():
 
     m.status_json = patched_status_json
 
-    # Serve real 3.4.1 Mega Deluxe v6 Finder frame for live screen previews & WebSocket stream
-    finder_png = (MAIN_REPO / "private" / "releases" / "3.4.1" / "qa-348-finder.png").read_bytes()
+    # Serve real 3.4.2 Mega Deluxe v6 Finder frame for live screen previews & WebSocket stream
+    finder_png = (MAIN_REPO / "private" / "releases" / "3.4.2" / "qa-350-finder.png").read_bytes()
     orig_screenshot = m.screenshot
 
     def patched_screenshot(what: str) -> bytes:
@@ -798,7 +798,7 @@ def capture_web(chrome: str, url: str, out: Path, size: tuple[int, int], scale: 
 
 
 def build_group_c() -> None:
-    print("=== Group C: 3.4.1 Web Management UI Screenshots ===")
+    print("=== Group C: 3.4.2 Web Management UI Screenshots ===")
     chrome = find_chrome()
     print(f"  Using browser: {chrome}")
     mock_server, _m, handler_cls = build_manual_mock()
@@ -1189,23 +1189,23 @@ async def generate_group_d_docs(doc_dir: Path) -> list[tuple[str, str]]:
         ds = c.DisplaySound(p, page="monitor")
         ds_doc = ds.doc()
 
-        # 39. Software Update (3.4.1 installed, 3.4.0 previous, Clean Update)
+        # 39. Software Update (3.4.2 installed, 3.4.1 previous, Clean Update)
         app.updates.public = lambda: {
             "available": True,
             "reason": None,
             "current": {
                 "version": __version__,
-                "build_id": "3.4.1-20261125T163512Z-27de0be8",
+                "build_id": "3.4.2-20261125T224558Z-43e6d5b7",
                 "flavor": "product",
-                "label": "3.4.1 (build 2026-11-25 16:35)",
+                "label": "3.4.2 (build 2026-11-25 22:45)",
                 "slot": "a",
             },
             "boot": {"kind": "normal", "committed": True},
             "staged": None,
             "previous": {
-                "version": "3.4.0",
-                "build_id": "3.4.0-20261125T134114Z-ec555aef",
-                "label": "3.4.0 (build 2026-11-25 13:41)",
+                "version": "3.4.1",
+                "build_id": "3.4.1-20261125T163512Z-27de0be8",
+                "label": "3.4.1 (build 2026-11-25 16:35)",
                 "newer": False,
                 "update_capable": True,
                 "slot": "b",
@@ -1214,14 +1214,14 @@ async def generate_group_d_docs(doc_dir: Path) -> list[tuple[str, str]]:
             "history": [],
             "usb": [],
             "check": {
-                "at": "2026-11-25T17:00:00Z",
+                "at": "2026-11-25T23:00:00Z",
                 "url": "https://updates.mcchord.net/retroboot/",
                 "found": None,
                 "latest": {
-                    "version": "3.4.1",
-                    "build_id": "3.4.1-20261125T163512Z-27de0be8",
-                    "label": "3.4.1 (build 2026-11-25 16:35)",
-                    "bytes": 590_000_000,
+                    "version": "3.4.2",
+                    "build_id": "3.4.2-20261125T224558Z-43e6d5b7",
+                    "label": "3.4.2 (build 2026-11-25 22:45)",
+                    "bytes": 602_152_960,
                     "notes": None,
                 },
             },
@@ -1247,7 +1247,7 @@ async def generate_group_d_docs(doc_dir: Path) -> list[tuple[str, str]]:
         bt_scr = bt_panel.BluetoothDevices(p)
         bt_doc = bt_scr.doc()
 
-        # 41. Diagnostics (3.4.1 and 192.168.1.50)
+        # 41. Diagnostics (3.4.2 and 192.168.1.50)
         diag = c.Diagnostics(p)
         await asyncio.sleep(0.2)
         diag.addresses = ["192.168.1.50"]
@@ -1272,7 +1272,7 @@ async def generate_group_d_docs(doc_dir: Path) -> list[tuple[str, str]]:
 
 
 def build_group_d() -> None:
-    print("=== Group D: 3.4.1 Local Platinum Panel Renders (MIT Platinum) ===")
+    print("=== Group D: 3.4.2 Local Platinum Panel Renders (MIT Platinum) ===")
     if not RBUI_RENDER.exists():
         raise SystemExit(f"Missing rbui-render binary: {RBUI_RENDER}")
 
