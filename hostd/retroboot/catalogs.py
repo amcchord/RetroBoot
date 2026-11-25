@@ -380,13 +380,17 @@ class Catalogs:
         clients = self.clients()
         got = await asyncio.gather(*(c.fetch(max_age=max_age) for _, c in clients), return_exceptions=True)
         results, errors = [], {}
+        loop = getattr(self.app, "loop", None)
         for (sid, _), res in zip(clients, got):
             if isinstance(res, BaseException):
                 errors[sid] = getattr(res, "message", None) or "The catalog could not be loaded."
                 self.errors[sid] = errors[sid]
+                if loop is not None:
+                    self._retry_at[sid] = loop.time() + RETRY_S
                 results.append((sid, []))
             else:
                 self.errors[sid] = None
+                self._retry_at.pop(sid, None)
                 results.append((sid, res))
         return results, errors
 
@@ -429,7 +433,7 @@ class Catalogs:
                 continue
             task = self._warming.get(sid)
             failure = self.errors.get(sid)
-            if failure and task is not None and task.done():
+            if failure and (task is None or task.done()):
                 state = "error"
                 if self._retry_at.get(sid, 0.0) < loop.time():
                     self._retry_at[sid] = loop.time() + RETRY_S
@@ -446,8 +450,12 @@ class Catalogs:
         try:
             await client.fetch()
             self.errors[sid] = None
+            self._retry_at.pop(sid, None)
         except Exception as exc:  # reported as that catalog's "error" state with a user-facing reason
             self.errors[sid] = getattr(exc, "message", None) or "The catalog could not be loaded."
+            loop = getattr(self.app, "loop", None)
+            if loop is not None:
+                self._retry_at[sid] = loop.time() + RETRY_S
 
 
 def overall(states: list[dict]) -> tuple[str, str | None]:

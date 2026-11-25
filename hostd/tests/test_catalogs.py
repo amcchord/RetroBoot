@@ -330,6 +330,39 @@ class ArrangeTests(unittest.TestCase):
         self.assertEqual(catalogs.overall([{"state": "error", "error": "e"}]), ("error", "e"))
         self.assertEqual(catalogs.overall([{"state": "loading"}, {"state": "ready"}]), ("loading", None))
 
+    def test_snapshot_respects_retry_window_after_failure(self):
+        async def run():
+            class FailClient:
+                cache = None
+                url = "https://example.invalid/catalog.json"
+
+                async def fetch(self, max_age=60.0):
+                    raise catalogs.ImportError_("Network down", "network")
+
+            class DummyApp:
+                def __init__(self):
+                    self.loop = asyncio.get_running_loop()
+                    self.lab_auth = None
+                    self.catalog = FailClient()
+                    self.settings = type("S", (), {"applied": {"catalog.urls": []}})()
+
+            cats = catalogs.Catalogs(DummyApp())
+            _res, st1 = cats.snapshot()
+            self.assertEqual(st1[0]["state"], "loading")
+            await asyncio.sleep(0.02)
+            _res, st2 = cats.snapshot()
+            self.assertEqual(st2[0]["state"], "error")
+            self.assertEqual(st2[0]["error"], "Network down")
+
+            # Failure from fetch_all() also stays in error state until RETRY_S elapses.
+            cats2 = catalogs.Catalogs(DummyApp())
+            await cats2.fetch_all()
+            _res, st3 = cats2.snapshot()
+            self.assertEqual(st3[0]["state"], "error")
+            self.assertEqual(st3[0]["error"], "Network down")
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

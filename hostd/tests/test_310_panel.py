@@ -705,3 +705,57 @@ class TestPanel310(unittest.IsolatedAsyncioTestCase):
         await panel.screen.action("force-reboot-host", {})
         await asyncio.sleep(0)
         self.assertIn(("host", "reboot", True, "panel"), app.power_calls)
+
+    async def test_catalog_list_blank_machine_show_scene_race_and_error(self):
+        entries = validate_catalog(json.loads(PUBLIC_CATALOG.read_text()))
+
+        # 1. Blank disk (os_version=None) must not crash _load() or stick on striped progress bar.
+        blank = _FakeMachine("blank-1", "Untitled Mac", os_version=None)
+        app = _FakeApp(self.root, machines=[blank])
+        app.catalogs = _FakeCatalogs(entries, app)
+        panel = Panel(app)
+        cl = CatalogList(panel, back=panel.show_recovery)
+        await panel.show(cl)
+        await asyncio.sleep(0.02)
+        self.assertIsNotNone(cl.items)
+        self.assertGreater(len(cl.items), 0)
+        self.assertIsNone(cl.error)
+        last_doc = app.presenter.docs[-1]
+        self.assertFalse(any(n.get("type") == "progress" for n in _walk(last_doc)))
+        self.assertIsNotNone(_find_id(last_doc, "hero_pick"))
+
+        # 2. Fast/cached fetch finishing while show_scene awaits must still render loaded doc, not stale loading.
+        app2 = _FakeApp(self.root, machines=[_FakeMachine("m1", "Mac OS 9.2.2", os_version="9.2.2")])
+        orig_show_scene = app2.show_scene
+
+        async def yielding_show_scene(*a, **k):
+            await asyncio.sleep(0.01)
+            return await orig_show_scene(*a, **k)
+
+        app2.show_scene = yielding_show_scene
+        app2.catalogs = _FakeCatalogs(entries, app2)
+        panel2 = Panel(app2)
+        cl2 = CatalogList(panel2, back=panel2.show_recovery)
+        await panel2.show(cl2)
+        await asyncio.sleep(0.02)
+        final_doc = app2.presenter.docs[-1]
+        self.assertFalse(any(n.get("type") == "progress" for n in _walk(final_doc)))
+        self.assertIsNotNone(_find_id(final_doc, "hero_pick"))
+
+        # 3. Unexpected exception during listing transitions to error notice instead of hanging on progress.
+        app3 = _FakeApp(self.root)
+        bad_cats = _FakeCatalogs(entries, app3)
+
+        def boom_listing(_results):
+            raise RuntimeError("boom")
+
+        bad_cats.listing = boom_listing
+        app3.catalogs = bad_cats
+        panel3 = Panel(app3)
+        cl3 = CatalogList(panel3, back=panel3.show_recovery)
+        await panel3.show(cl3)
+        await asyncio.sleep(0.02)
+        err_doc = app3.presenter.docs[-1]
+        self.assertFalse(any(n.get("type") == "progress" for n in _walk(err_doc)))
+        self.assertIn("The catalog could not be loaded.", _all_text(err_doc))
+        self.assertIn("retry", _all_buttons(err_doc))

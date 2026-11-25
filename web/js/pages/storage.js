@@ -84,7 +84,7 @@ export function render() {
     renderMachines();
     renderCatalog();
     renderFileImport();
-    if (data && data.catalog_state === 'loading') waitForCatalog();
+    if (data && data.catalog_state === 'loading' && !catalogError) waitForCatalog();
     loadRoms();
     await loadCheckpoints();
   }
@@ -318,9 +318,10 @@ export function render() {
       : null;
     // A catalog that failed while another loaded: say which one (RetroBoot downloads, Internet).
     const failed = all.length ? catalogs.filter((k) => k.state === 'error') : [];
+    const err = catalogError || (data.catalog_state === 'error' ? { message: data.catalog_error || 'The catalog could not be loaded.' } : null);
     let body;
     if (items.length) body = h('ul', { class: 'catalog-list' }, ...items.map((c) => catalogItem(c, several)));
-    else if (catalogError) body = notice({ level: 'warning', title: 'The catalog couldn’t be loaded', message: friendlyMessage(catalogError), actions: [button('Try Again', { icon: 'refresh', className: 'btn-small', focusKey: 'catalog-retry', onClick: () => (renderCatalogLoading(), waitForCatalog()) })] });
+    else if (err) body = notice({ level: 'warning', title: 'The catalog couldn’t be loaded', message: friendlyMessage(err), actions: [button('Try Again', { icon: 'refresh', className: 'btn-small', focusKey: 'catalog-retry', onClick: () => (renderCatalogLoading(), waitForCatalog()) })] });
     else if (fetching) body = loading('Loading the catalog…');
     else body = emptyState('The catalog has no machines right now.', 'network');
     swap(

@@ -78,14 +78,16 @@ class Panel:
     async def show(self, screen: Screen, background: str | None = None, reset: bool = True) -> None:
         self.screen = screen
         bg = background or self._background(screen)
-        doc = screen.doc()
-        if reset:
-            doc["reset"] = True
-        self.last_doc = doc
         if not self.visible or bg != self.background:
             await self.app.show_scene("panel", background=bg)
             self.visible = True
             self.background = bg
+            if self.screen is not screen:
+                return
+        doc = screen.doc()
+        if reset:
+            doc["reset"] = True
+        self.last_doc = doc
         await self.app.presenter.try_request("ui_show", doc=doc)
         self._restart_ticker()
 
@@ -2827,14 +2829,14 @@ def _catalog_hero_picks(items: list) -> tuple[Any, Any]:
         except Exception:
             pass
     deluxe = next((it for it in items if not getattr(it, "older", False) and (
-        "os922-mega-deluxe" in it.entry.get("id", "").lower()
-        or "mega-deluxe" in it.entry.get("id", "").lower()
+        "os922-mega-deluxe" in str(it.entry.get("id") or "").lower()
+        or "mega-deluxe" in str(it.entry.get("id") or "").lower()
     )), None)
     base = next((it for it in items if not getattr(it, "older", False) and (
-        "os922-full" in it.entry.get("id", "").lower()
+        "os922-full" in str(it.entry.get("id") or "").lower()
         or (it.entry.get("osVersion") == "9.2.2"
-            and "deluxe" not in it.entry.get("id", "").lower()
-            and "deluxe" not in it.entry.get("name", "").lower())
+            and "deluxe" not in str(it.entry.get("id") or "").lower()
+            and "deluxe" not in str(it.entry.get("name") or "").lower())
     )), None)
     if deluxe is not None and base is not None and deluxe.key != base.key:
         return deluxe, base
@@ -2871,32 +2873,39 @@ class CatalogList(Screen):
             self.sources = [sid for sid, _ in results]
             self.items = cats.listing(results)
             self.error = next(iter(self.errors.values())) if self.errors and len(self.errors) == len(results) else None
-        except Exception:  # noqa: BLE001 -- shown as a catalog error, never a crash
+            from ..catalogs import recommended
+            items = self.items or []
+            rec = recommended(items)
+            # Never recommend downgrading to 9.2.1 when any 9.2.2 Mac is already installed (#32).
+            has_922 = any(
+                str((getattr(m, "meta", None) or {}).get("os_version") or "").startswith("9.2.2")
+                for m in self.app.machines.list()
+            ) or any(
+                it.known and str(it.entry.get("osVersion") or "").startswith("9.2.2") for it in items
+            )
+            if rec is not None and has_922 and str(rec.entry.get("osVersion") or "").startswith("9.2.1"):
+                rec = None
+            self.recommended = rec
+            deluxe, _ = _catalog_hero_picks(items)
+            d_id = str((deluxe.entry.get("id") if deluxe else "") or "").lower()
+            prefer_hero = deluxe is not None and not deluxe.known and (
+                "mega-deluxe" in d_id or not any(str(it.entry.get("osVersion") or "").startswith("9.2.2") for it in items)
+            )
+            first = (deluxe if prefer_hero else None) or (
+                self.recommended or next((it for it in self.visible() if not it.known), None)
+                or next(iter(self.visible()), None)
+            )
+            self.selected = first.key if first else None
+        except Exception:  # noqa: BLE001 -- shown as a catalog error, never a stuck progress bar
             log.exception("catalog listing failed")
             self.items, self.errors, self.error = [], {}, "The catalog could not be loaded."
-        from ..catalogs import recommended
-        items = self.items or []
-        rec = recommended(items)
-        # Never recommend downgrading to 9.2.1 when any 9.2.2 Mac is already installed (#32).
-        has_922 = any(getattr(m, "meta", {}).get("os_version", "").startswith("9.2.2")
-                      for m in self.app.machines.list()) or any(
-            it.known and str(it.entry.get("osVersion") or "").startswith("9.2.2") for it in items
-        )
-        if rec is not None and has_922 and str(rec.entry.get("osVersion") or "").startswith("9.2.1"):
-            rec = None
-        self.recommended = rec
-        deluxe, _ = _catalog_hero_picks(items)
-        d_id = (deluxe.entry.get("id", "") if deluxe else "").lower()
-        prefer_hero = deluxe is not None and not deluxe.known and (
-            "mega-deluxe" in d_id or not any(str(it.entry.get("osVersion") or "").startswith("9.2.2") for it in items)
-        )
-        first = (deluxe if prefer_hero else None) or (
-            self.recommended or next((it for it in self.visible() if not it.known), None)
-            or next(iter(self.visible()), None)
-        )
-        self.selected = first.key if first else None
-        if self.panel.screen is self:
-            await self.panel.refresh()
+            self.recommended = None
+            self.selected = None
+        finally:
+            if self.items is None:
+                self.items = []
+            if self.panel.screen is self:
+                await self.panel.refresh()
 
     def visible(self) -> list:
         return [it for it in self.items or [] if self.show_older or not it.older or it.key == self.selected]

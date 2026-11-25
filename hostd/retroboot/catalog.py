@@ -204,9 +204,9 @@ class CatalogClient:
         ctx.load_verify_locations(cafile=self.ca_file)
         return ctx
 
-    def _session(self):
+    def _session(self, *, total: float | None = None):
         import aiohttp
-        return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=self.timeout,
+        return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=total, sock_connect=self.timeout,
                                                                    sock_read=self.timeout),
                                      connector=aiohttp.TCPConnector(ssl=self._ssl()),
                                      auto_decompress=False)
@@ -236,7 +236,7 @@ class CatalogClient:
         if not secure_url(self.url):
             raise ImportError_("The catalog address is not secure.", "invalid_catalog")
         try:
-            async with self._session() as s:
+            async with self._session(total=max(float(self.timeout) * 2.0, 30.0)) as s:
                 resp = await self._get(s, self.url)
                 async with resp:
                     if resp.status == 401:

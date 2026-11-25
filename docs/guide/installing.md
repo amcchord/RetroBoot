@@ -1,4 +1,4 @@
-# Install RetroBoot 3.2.0
+# Install RetroBoot 3.2.1
 
 Select the installer for your computer and download its checksum. The same page includes step-by-step flashing instructions, the Raspberry Pi Imager custom JSON repository, and the Mac disk library. [RetroBoot downloads](https://mcchord.net/retroboot-downloads/#devices)
 
@@ -6,7 +6,7 @@ If RetroBoot already runs on the device, use the [upgrade guide](upgrading.md). 
 
 ## x86-64 PC
 
-1. Choose the **Hybrid Installer ISO** or the **Universal Raw USB Image** (`retroboot-installer-3.2.0-universal-product.img.xz`), and verify it against its `.sha256` checksum.
+1. Choose the **Hybrid Installer ISO** or the **Universal Raw USB Image** (`retroboot-installer-3.2.1-universal-product.img.xz`), and verify it against its `.sha256` checksum.
 2. Write it to a USB flash drive as a raw disk image with **balenaEtcher**, **Fedora Media Writer**, **Raspberry Pi Imager** (**Use custom**), `dd`, or **Rufus in DD Image mode** (or attach the ISO to a virtual machine).
 3. Boot the installer in UEFI or legacy BIOS mode with **Secure Boot turned off**.
 4. Choose your **Command key** preference (Mac or PC keyboard), select the destination disk, review the erase confirmation, then pick **Mac OS 9.2.2 Mega Deluxe** (Kid Pix Studio Deluxe, Zoombinis & all 146 classic games and apps), **Mac OS 9.2.2 (Classic Clean desktop)**, expand **Browse all 13 Library Macs**, add a custom catalog via **Image Servers…**, or choose **Install RetroBoot Only…**.

@@ -1,6 +1,6 @@
 # RetroBoot for families and kids
 
-RetroBoot 3.2.0 is built to turn any spare laptop, mini PC, Intel Mac, or Raspberry Pi into an approachable, joyful classic Macintosh that kids and families can explore right away—with no locked-down modes getting in the way of curiosity.
+RetroBoot 3.2.1 is built to turn any spare laptop, mini PC, Intel Mac, or Raspberry Pi into an approachable, joyful classic Macintosh that kids and families can explore right away—with no locked-down modes getting in the way of curiosity.
 
 ## Recommended first pick: Mega Deluxe v5 vs. Clean Mac OS 9.2.2
 
