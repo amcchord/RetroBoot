@@ -577,7 +577,7 @@ class ChooseMacs(Screen):
         items = []
         if hero_shown:
             hero_val = deluxe.key if deluxe.key in ps.checked else (base.key if base.key in ps.checked else "")
-            is_mega = "mega-deluxe" in d_id
+            is_mega = d_id.startswith("os922-mega-deluxe")
             d_label = "Mac OS 9.2.2 Mega Deluxe (Recommended)" if is_mega else f"{deluxe.name} (Recommended)"
             b_label = "Mac OS 9.2.2 (Classic Clean desktop)" if is_mega else f"{base.name} (Classic Clean desktop)"
             d_desc = ("Mega Deluxe: Kids & Family — Kid Pix Studio Deluxe, Zoombinis & 111 classic games · "

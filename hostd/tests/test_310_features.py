@@ -543,6 +543,22 @@ class CatalogAndMaintenanceTests(unittest.TestCase):
         deluxe3, base3 = catalogs.first_boot_picks([items[4]], max_bytes=1024 ** 3)
         self.assertEqual((deluxe3, base3["id"]), (None, "sys755-full"))
 
+        # 68k Mega Deluxe outranks plain 8.1 Deluxe regardless of catalog order in first_boot_picks,
+        # and is recommended next when catalog places Mega Deluxe ahead of Deluxe.
+        quadra_items = [
+            item("mac-os-8-1-deluxe-v3", "Mac OS 8.1 Deluxe v3", "macos-8.1", "quadra800", size=220 * 1024 ** 2),
+            item("mac-os-8-1-mega-deluxe-v1", "Mac OS 8.1 Mega Deluxe v1", "macos-8.1", "quadra800", size=607 * 1024 ** 2),
+            item("mac-os-8-1-v2", "Mac OS 8.1 (v2)", "macos-8.1", "quadra800", size=46 * 1024 ** 2),
+        ]
+        q_deluxe, q_base = catalogs.first_boot_picks(quadra_items, max_bytes=2 * 1024 ** 3)
+        self.assertEqual((q_deluxe["id"], q_base["id"]), ("mac-os-8-1-mega-deluxe-v1", "mac-os-8-1-v2"))
+        catalog_ordered_q81 = [
+            dict(quadra_items[1], installed=False),
+            dict(quadra_items[0], installed=False),
+            dict(quadra_items[2], installed=True),
+        ]
+        self.assertEqual(catalogs.recommended(catalog_ordered_q81)["id"], "mac-os-8-1-mega-deluxe-v1")
+
         # Smart recommendation: when 9.2.2 standard is installed, recommend mega-deluxe (NEVER 9.2.1!).
         installed_922 = [dict(i, installed=(i["id"] == "os922-full-v5")) for i in items]
         self.assertEqual(catalogs.recommended(installed_922)["id"], "os922-mega-deluxe-v4")

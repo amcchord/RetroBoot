@@ -40,8 +40,42 @@ MAX_FILES = 64 * 1024 * 1024
 MAX_ROOT = 3 * 1024 ** 3
 KEYS_DIR = "/usr/lib/retroboot/update/keys"
 VERSION_RE = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")
-BUILD_RE = re.compile(r"^(\d{1,4}\.\d{1,4}\.\d{1,4})-(\d{8}T\d{6}Z)-([0-9a-z-]{1,40})$")
+BUILD_RE = re.compile(r"^(\d{1,4}\.\d{1,4}\.\d{1,4})(?:-[a-z0-9-]+)?-(\d{8}T\d{6}Z)-([0-9a-z-]{1,40})$")
 FLAVORS = ("debug", "product")
+
+
+def normalize_arch(arch: str | None) -> str:
+    val = str(arch or "").strip().lower()
+    if val == "amd64":
+        return "x86_64"
+    if val == "aarch64":
+        return "arm64"
+    return val
+
+
+def normalize_board(board: str | None) -> str:
+    val = str(board or "").strip().lower()
+    if val == "x86":
+        return "pc"
+    return val
+
+
+def normalize_model(model: str | None) -> str:
+    val = str(model or "").strip().lower()
+    if val in ("pi4", "pi5", "pi4-5"):
+        return "pi4-5"
+    return val
+
+
+def effective_rpi_model(doc: dict | None) -> str:
+    if not isinstance(doc, dict) or normalize_board(doc.get("board")) != "rpi":
+        return ""
+    explicit = normalize_model(doc.get("model"))
+    if explicit:
+        return explicit
+    if "-rpi-zero2w-" in str(doc.get("build_id") or "").lower():
+        return "zero2w"
+    return "pi4-5"
 
 
 class BundleError(Exception):
@@ -276,10 +310,15 @@ def compatibility(manifest: dict, installed: dict, settings_schema: int, *, allo
     if manifest["flavor"] != installed.get("flavor") and not allow_flavor:
         raise BundleError("This update is for a different kind of RetroBoot "
                           f"({manifest['flavor']}, this one is {installed.get('flavor')}).", "wrong-flavor")
-    if manifest.get("arch") and installed.get("arch") and manifest["arch"] != installed["arch"]:
+    m_arch, i_arch = normalize_arch(manifest.get("arch")), normalize_arch(installed.get("arch"))
+    if m_arch and i_arch and m_arch != i_arch:
         raise BundleError("This update is for a different kind of computer.", "wrong-arch")
-    if manifest.get("board") and installed.get("board") and manifest["board"] != installed["board"]:
+    m_board, i_board = normalize_board(manifest.get("board")), normalize_board(installed.get("board"))
+    if m_board and i_board and m_board != i_board:
         raise BundleError("This update is for a different kind of computer.", "wrong-board")
+    m_model, i_model = effective_rpi_model(manifest), effective_rpi_model(installed)
+    if m_model and i_model and m_model != i_model:
+        raise BundleError("This update is for a different Raspberry Pi model.", "wrong-model")
     new, cur = version_key(manifest["version"], manifest["build_id"]), version_key(cur_v, cur_b)
     if manifest["build_id"] == cur_b and not allow_same:
         raise BundleError(f"RetroBoot {describe_version(cur_v, cur_b)} is already installed.", "same-version")

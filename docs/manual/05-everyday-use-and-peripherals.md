@@ -48,7 +48,7 @@ While Linux, audio, and the emulator initialize silently underneath the checkerb
 
 ### Automatic After Dark Screensaver Wake Before Shut Down
 
-Curated editions such as **Deluxe v10**, **SuperDeluxe v7**, **7.5.5 Deluxe v2**, and **8.1 Deluxe v2** include **After Dark** (*Flying Toasters*), which activates after 30 idle minutes. After Dark keeps the emulated Mac busy, draws over Mac OS's Shut Down dialog, and does not dismiss on an ADB power key alone.
+Curated editions such as **Deluxe v11**, **SuperDeluxe v8**, **7.5.5 Deluxe v3**, **8.1 Deluxe v3**, and **8.1 Mega Deluxe v1** include **After Dark** (*Flying Toasters*), which activates after 30 idle minutes. After Dark keeps the emulated Mac busy, draws over Mac OS's Shut Down dialog, and does not dismiss on an ADB power key alone.
 
 Before sending a clean Shut Down or Restart request (from the power button, **Ctrl+Alt+Delete → Shut Down…**, Web Overview, or Software Update), RetroBoot checks whether the Mac menu bar is obscured (`supervisor._wake_screen`). If a screensaver is active, RetroBoot automatically nudges the pointer 8 pixels for 0.5 seconds and back (`qmp.pointer_nudge()`), waits up to `4.0` seconds (`power_wake_settle_s`) for Mac OS to redraw the desktop, and then opens the Shut Down dialog cleanly.
 

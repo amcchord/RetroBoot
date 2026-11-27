@@ -95,11 +95,11 @@ Disc images uploaded via **Mount as CD** or the media API live in `/var/lib/retr
 
 - **Manual mounting:** Copy `.iso`, `.toast`, or `.cdr` images onto **Macintosh HD** first—mounting directly from `RetroBoot Share` fails with an insufficient-resources error. Plain disc uploads through RetroBoot Share receive `GImg`/`VCDM` metadata automatically; for files downloaded inside Mac OS, drop them onto **Virtual CD Typer** (**Start → Utilities → Prepare Disc Image**) once.
 - **Eject before restart:** Always select manually mounted Virtual CD desktop volumes and press **Command-E** before restarting or shutting down Mac OS 9 (mounted Virtual CD volumes block Restart until ejected).
-- **On-demand discs in Mega Deluxe v6:** In **Mac OS 9.2.2 Mega Deluxe v6**, all 7 game CDs sit on `Macintosh HD` as standalone APM-wrapped `.iso` images paired with stay-open AppleScript launchers (`0` CDs mounted at boot). Launching a game mounts its disc automatically and puts it away cleanly when you quit.
+- **On-demand discs in Mega Deluxe v7:** In **Mac OS 9.2.2 Mega Deluxe v7**, all 7 game CDs sit on `Macintosh HD` as standalone APM-wrapped `.iso` images paired with stay-open AppleScript launchers (`0` CDs mounted at boot). Launching a game mounts its disc automatically and puts it away cleanly when you quit.
 
 ---
 
-## 8.5 Printing in RetroBoot 3.4.2 (Print-to-PDF & Physical/Network/USB CUPS)
+## 8.5 Printing in RetroBoot (Print-to-PDF & Physical/Network/USB CUPS)
 
 RetroBoot includes an integrated PostScript/PDF print server in `hostd` paired with socket-isolated Linux **CUPS** so Mac OS 9 can print straight to PDFs or real network and USB printers without enabling AppleTalk.
 

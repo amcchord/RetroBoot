@@ -21,15 +21,16 @@ require_root
 root=${1:?rootdir}; boot=${2:?bootdir}; out=${3:?out}; data_mib=${4:?data MiB}
 machine_dir=${5:-}; machine_id=${6:-}; factory_macs=${7:-0}
 esp=$(rcfg esp_mib); bios=$(rcfg biosboot_mib); rootsz=$(rcfg root_mib)
-total=$((1 + esp + bios + rootsz + rootsz + data_mib + 1))
-root_num=3; data_num=5; last_num=5
+root_num=3; root_b_num=4; data_num=5; last_num=5
 rm -f "$out"
 if [ "${RB_RPI_MODEL:-pi4-5}" = zero2w ]; then
   # BCM2710's boot ROM needs an MBR FAT partition, rather than the Pi 4/5 GPT.
-  # No unused root slot: Software Update is not available on the Pi.
+  # 4 primary MBR partitions: 1 FAT32 boot, 2 RBROOT_A, 3 RBROOT_B (tryboot A/B), 4 RBDATA.
+  rootsz=$(rcfg root_mib_zero2w)
   python3 "$here/sd_profile.py" mbr "$out" --boot-mib "$esp" --root-mib "$rootsz" --data-mib "$data_mib" >/dev/null
-  root_num=2; data_num=3; last_num=3
+  root_num=2; root_b_num=3; data_num=4; last_num=4
 else
+total=$((1 + esp + bios + rootsz + rootsz + data_mib + 1))
 truncate -s "${total}M" "$out"
 sgdisk -Z "$out" >/dev/null 2>&1 || true
 sgdisk -a 2048 \
@@ -58,9 +59,7 @@ fi
 log "formatting partitions on $loop"
 mkfs.vfat -F 32 -n RETROBOOT "${loop}p1" >/dev/null
 mkfs.ext4 -q -L RBROOT_A -E lazy_itable_init=0,lazy_journal_init=0 "${loop}p$root_num"
-if [ "$last_num" = 5 ]; then
-  mkfs.ext4 -q -L RBROOT_B -E lazy_itable_init=0,lazy_journal_init=0 "${loop}p4"
-fi
+mkfs.ext4 -q -L RBROOT_B -E lazy_itable_init=0,lazy_journal_init=0 "${loop}p$root_b_num"
 mkfs.xfs -q -f -L RBDATA -m reflink=1 "${loop}p$data_num"
 
 log "populating RBROOT_A"
@@ -72,9 +71,7 @@ log "populating the boot partition (root=PARTUUID=$root_partuuid)"
 mount "${loop}p1" "$mnt"
 cp -r "$boot/bootfs/." "$mnt/"
 sed "s/@ROOT_PARTUUID@/$root_partuuid/" "$boot/cmdline.txt.in" > "$mnt/cmdline.txt"
-# Same slot files as the x86 ESP (slot a active), so hostd's slot code sees the layout
-# it knows; nothing on the Pi boots through them (updates are unavailable on the Pi).
-# (slot-a.cfg holds the arguments a boot loader adds to its own root=/retroboot.slot=)
+# A/B slot state for Software Update (slot a active; tryboot uses retroboot/slots.env + slot-a.json).
 cmdline=$(tr ' ' '\n' < "$mnt/cmdline.txt" | grep -vE '^(root|retroboot\.slot|retroboot\.trial|init)=' | paste -sd' ' -)
 read -r rel_version rel_build < <(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r["version"], r["build_id"])' "$root/usr/lib/retroboot/release.json")
 python3 -I "$root/usr/lib/retroboot/hostd/retroboot/update/slotenv.py" init-esp "$mnt" "$cmdline" "$rel_version" "$rel_build"

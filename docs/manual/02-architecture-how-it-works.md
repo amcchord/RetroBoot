@@ -35,7 +35,7 @@ Standard Linux distributions print kernel messages, initialize framebuffer conso
 | **PowerPC Mac OS X QEMU** | `/usr/lib/retroboot/qemu-osx/` | Isolated `qemu-system-ppc` (`10.0.13`) package with `openbios-ppc-osx` and `macosx-flash-seed.img` (16 KiB flash NVRAM) tuned for Mac OS X 10.2.8–10.4.11. |
 | **`rbwebproxy`** | `/usr/lib/retroboot/webproxy/rbwebproxy` | Sandboxed **Modern Web Helper** (`retroboot-webproxy.service`, `DynamicUser`). Intercepts guest HTTP (`:8080`) and DNS (`:8053`) to translate modern HTTPS pages into HTML/images readable by Internet Explorer 5, Netscape 4, and Classilla. |
 | **Socket-Isolated `cupsd`** | `/run/cups/cups.sock` (`cups.socket`) | Debian CUPS daemon constrained strictly to its Unix domain socket (`ListenStream=/run/cups/cups.sock`). TCP port `631` stays reserved for `hostd`'s virtual IPP server for Mac OS, preventing port collisions or external exposure. |
-| **`rbplatinum` v7** | `/usr/lib/retroboot/platinum/` | Runtime Platinum asset extractor. Extracts fonts, palettes, chrome sprites, brushed-metal assets, and icons (including v7 `LaserWriter 8` printer icon) from the user's own Mac OS disk into `/var/lib/retroboot/assets/platinum/`, falling back to built-in MIT art when no disk exists. |
+| **`rbplatinum` v8** | `/usr/lib/retroboot/platinum/` | Runtime Platinum asset extractor. Extracts fonts, palettes, chrome sprites, brushed-metal assets, and authentic Mac icons (HFS+ Mac OS 9 and HFS Standard System 7.5.5 / Mac OS 8.1) from the user's own Mac OS disk into `/var/lib/retroboot/assets/platinum/`, falling back to built-in MIT art when no disk exists. |
 | **`guestprep`** | `/usr/lib/retroboot/guestprep/` | Offline HFS/HFS+ and 68k disk preparer (`rbguestprep`). Runs before launch to check/repair volumes (`fsck.hfsplus`), set Energy Saver sleep to Never, configure DHCP TCP/IP & AirPort startup networks, disable AppleTalk, provision **`RetroBoot Printer`** (Color LaserWriter 12/600 PS), install `RetroBoot Idle` (68k), and place the Control Strip / ATI `radeon-3d` helpers. |
 
 ---
@@ -121,7 +121,7 @@ Because Mac OS paints its startup screen top-down, cutting immediately on the fi
 
 ## Disk Layout, A/B Root Slots & `RBDATA` Structure
 
-RetroBoot separates immutable OS slots from persistent user data so Software Updates can be written in the background while Mac OS keeps running, tested in a single trial boot, and rolled back automatically if anything goes wrong.
+RetroBoot separates immutable OS slots from persistent user data so Software Updates can be written in the background while Mac OS keeps running, tested in a single trial boot, and rolled back automatically if anything goes wrong. (On **Raspberry Pi Zero 2 W**, the same dual-slot A/B `tryboot` lifecycle runs on a 4-partition MBR table—`p1` FAT32 boot, `p2` `RBROOT_A`, `p3` `RBROOT_B`, `p4` `RBDATA`—identified by filesystem labels and MBR `PARTUUID`s.)
 
 ```mermaid
 flowchart TD
@@ -157,9 +157,9 @@ Every file in `RBDATA` survives A/B root updates and **Go Back to the Previous V
 | `/var/lib/retroboot/config/` | `root:root` | `settings.json` (+ `.bak` and `known_good`), `hostd.local.json` per-device overlay, `install-seed.json`, and optional `lab-auth.env` (`0600`). |
 | `/var/lib/retroboot/network/connections/` | `root:root` (`0700`/`0600`) | NetworkManager `.nmconnection` keyfiles containing Wi-Fi SSIDs and PSKs; mounted via `50-retroboot-keyfile.conf` before NetworkManager starts. |
 | `/var/lib/retroboot/bluetooth/` | `root:root` (`0700`) | BlueZ adapter/device link keys, bind-mounted onto `/var/lib/bluetooth` by `var-lib-bluetooth.mount` before `bluetoothd` starts. |
-| `/var/lib/retroboot/assets/platinum/` | `root:root` | Runtime Platinum v7 UI bundle generated from the user's Mac disk (never shipped inside OS images). |
+| `/var/lib/retroboot/assets/platinum/` | `root:root` | Runtime Platinum v8 UI bundle generated from the user's Mac disk (68k or PowerPC; never shipped inside OS images). |
 | `/var/lib/retroboot/update/` | `root:root` | Software Update journal (`state.json`), staged `.rbu` bundles (`incoming/`), and per-build settings backups (`settings/<build_id>/`). |
-| `/var/lib/retroboot/state/` | `root:root` (`0700`) | Pairing secrets, device TLS key/cert, `startup-timing.json`, captured `startup-icon.rbi`, `airport-names.json`, and `pi-display.json`. |
+| `/var/lib/retroboot/state/` | `root:root` (`0700`) | Pairing secrets, device TLS key/cert, `startup-timing.json`, captured `startup-icon.rbi`, `airport-names.json`, `oobe-pending.json` (first-boot setup marker), and `pi-display.json`. |
 | `/var/lib/retroboot/logs/` | `root:root` | Persistent `journal/` (bind-mounted at `/var/log/journal`), `lifecycle.jsonl`, `guest-serial.log`, `hostd.log`, `startup-details/`, and redacted `evidence/` bundles. |
 | `/var/lib/retroboot/downloads/` & `cups/` | `root` / `lp` | Temporary download staging for Mac catalog installs and CUPS spool/PPD state. |
 

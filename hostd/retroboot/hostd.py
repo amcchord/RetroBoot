@@ -51,7 +51,7 @@ from .settings import SettingsService, SettingsStore
 from .startup import StartupProgress
 from .supervisor import Supervisor
 from .update.manager import UpdateManager
-from .util import Redactor, mono, read_json, wall
+from .util import Redactor, atomic_write_json, mono, read_json, wall
 
 log = logging.getLogger("retroboot.hostd")
 
@@ -949,7 +949,8 @@ class Hostd:
         from .machines import GUEST_OS_CHOICES
         from .osx import package_capable as osx_capable
         for family in FAMILIES:
-            why = self.platform.machine_unavailable(family)
+            board_why = self.platform.machine_unavailable(family)
+            why = board_why
             if why is None and family == QUADRA800:
                 if not quadra.package_present(self.paths):
                     why = "This RetroBoot doesn't have the 68k emulator yet."
@@ -958,6 +959,7 @@ class Hostd:
                            "or install a 68k Mac that comes with its ROM.")
             sizes = list(blank_sizes_gb(family))
             out.append({"family": family, "label": FAMILY_CHOICES[family], "available": why is None, "reason": why,
+                        "supported": board_why is None,
                         "sizes_gb": sizes, "default_gb": QUADRA_BLANK_DEFAULT_GB if family == QUADRA800 else 8,
                         "note": QUADRA_BLANK_NOTE if family == QUADRA800 else None})
             if family == POWERMAC and osx_capable(self.paths.qemu_osx_package):
@@ -1845,6 +1847,18 @@ class Hostd:
             return
         self.loop.create_task(self.guess_timezone(), name="tz-prefetch")
 
+    @property
+    def oobe_pending_path(self) -> Path:
+        return self.paths.state / "oobe-pending.json"
+
+    def oobe_pending(self) -> bool:
+        return self.mode == "normal" and self.oobe_pending_path.is_file()
+
+    def complete_oobe(self) -> None:
+        if self.oobe_pending_path.is_file():
+            self.oobe_pending_path.unlink(missing_ok=True)
+            self.lifecycle.event("oobe_completed")
+
     def _seed_from_install(self) -> None:
         """First start after installation: adopt the installer's seed and startup Mac.
 
@@ -1855,6 +1869,7 @@ class Hostd:
         if not self.store.fresh:
             return
         changes: dict = {}
+        seed_oobe: bool | None = None
         ms = self.machines.list()
         seeds = [self.paths.data / "config" / "install-seed.json"] + [m.dir / "install-seed.json" for m in ms]
         for seed in seeds:
@@ -1864,6 +1879,8 @@ class Hostd:
                     for k, v in (data.get("settings") or {}).items():
                         if k in schema.BY_KEY:
                             changes[k] = v
+                    if isinstance(data.get("oobe"), bool) and seed_oobe is None:
+                        seed_oobe = data["oobe"]
                     seed.rename(seed.with_name("install-seed.applied.json"))
                 except (OSError, ValueError, AttributeError):
                     pass
@@ -1883,6 +1900,13 @@ class Hostd:
             if good:
                 self.settings.set_desired_and_applied(good, ctx)
                 self.lifecycle.event("install_seed_applied", keys=sorted(good))
+        is_rpi = self.platform.is_raspberry_pi or getattr(self.platform, "image_model", None) is not None
+        if self.mode == "normal" and (
+            seed_oobe is True
+            or (is_rpi and not ms and seed_oobe is not False)
+        ):
+            atomic_write_json(self.oobe_pending_path, {"created": wall(), "board": self.platform.board}, 0o600)
+            self.lifecycle.event("oobe_scheduled", preloaded=bool(ms), board=self.platform.board)
 
 
 def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, dict]:

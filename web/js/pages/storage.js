@@ -566,8 +566,10 @@ export function render() {
     const input = h('input', { type: 'text', id: nameId, maxlength: '63', value: def, autocomplete: 'off' });
     // The kind of Mac (hostd blank_kinds): PowerPC, or a 68k Quadra when this computer has the
     // 68k emulator and a Quadra 800 ROM; each kind has its own disk sizes.
-    const kinds = (data && data.blank_kinds) || [{ family: 'powermac', label: 'PowerPC: Mac OS 8.5–9.2.2', available: true, sizes_gb: (data && data.blank_sizes_gb) || [2, 4, 8, 16, 32, 64], default_gb: 8 }];
-    let kind = kinds[0];
+    const rawKinds = (data && data.blank_kinds) || [{ family: 'powermac', label: 'PowerPC: Mac OS 8.5–9.2.2', available: true, supported: true, sizes_gb: (data && data.blank_sizes_gb) || [2, 4, 8, 16, 32, 64], default_gb: 8 }];
+    const supportedKinds = rawKinds.filter((k) => k.supported !== false);
+    const kinds = supportedKinds.length ? supportedKinds : rawKinds;
+    let kind = kinds.find((k) => k.available) || kinds[0];
     const select = h('select', { id: sizeId });
     const note = h('p', { class: 'muted small' });
     const osSelect = h('select', { id: osId });
@@ -588,16 +590,19 @@ export function render() {
       fillOsHelp();
     };
     const kindName = uid('bk');
-    const kindRows = kinds.map((k, i) =>
+    const kindRows = kinds.map((k) =>
       h(
         'label',
         { class: 'radio' },
-        h('input', { type: 'radio', name: kindName, value: k.family, checked: i === 0, disabled: !k.available, onchange: () => ((kind = k), fillSizes()) }),
+        h('input', { type: 'radio', name: kindName, value: k.family, checked: k.family === kind.family, disabled: !k.available, onchange: () => ((kind = k), fillSizes()) }),
         h('span', null, k.label),
       ),
     );
     const why = kinds.filter((k) => !k.available && k.reason).map((k) => h('p', { class: 'muted small' }, k.reason));
     fillSizes();
+    const kindField = kinds.length > 1
+      ? h('div', { class: 'field', role: 'radiogroup', 'aria-label': 'Kind of Mac' }, h('span', { class: 'setting-label' }, 'Kind of Mac'), h('div', { class: 'radio-row' }, ...kindRows), ...why)
+      : h('div', { class: 'field' }, h('span', { class: 'setting-label' }, 'Kind of Mac'), h('p', { class: 'muted small' }, kind.label), ...why);
     const choice = await dialog({
       title: 'New Blank Disk',
       icon: 'note',
@@ -606,7 +611,7 @@ export function render() {
         'div',
         null,
         h('div', { class: 'field' }, h('label', { for: nameId }, 'Name'), input),
-        h('div', { class: 'field', role: 'radiogroup', 'aria-label': 'Kind of Mac' }, h('span', { class: 'setting-label' }, 'Kind of Mac'), h('div', { class: 'radio-row' }, ...kindRows), ...why),
+        kindField,
         osRow,
         how,
         h('div', { class: 'field' }, h('label', { for: sizeId }, 'Size'), h('div', { class: 'select-wrap' }, select)),

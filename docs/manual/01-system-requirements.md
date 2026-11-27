@@ -16,7 +16,7 @@ Because QEMU translates 68040 and PowerPC instructions in software using its Tin
 | **Intel Mac** | `x86_64` | Hybrid GRUB (UEFI via Option/Alt boot), GPT | 68040, PowerPC Classic, PowerPC Mac OS X | Signed A/B `.rbu` OTA & USB | Boot installer via Option/Alt startup manager; target drive erased completely |
 | **Raspberry Pi 4 / 400 / CM4 / CM4S** | `aarch64` (BCM2711, Cortex-A72) | Pi EEPROM + `kernel8.img` (4 KiB pages), GPT | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2) | A/B `tryboot` `.rbu` or card migration | Pi 4 requires EEPROM `>= 2020-09-03` for GPT SD/USB boot; 3.5 mm jack on Pi 4B |
 | **Raspberry Pi 5 / 500 / CM5** | `aarch64` (BCM2712, Cortex-A76) | Pi EEPROM + `kernel8.img` (4 KiB pages), GPT | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2) | A/B `tryboot` `.rbu` or card migration | Uses 4 KiB-page `kernel8.img` (not `kernel_2712.img`); hardware power button & RTC |
-| **Raspberry Pi Zero 2 W** | `aarch64` (BCM2837, Cortex-A53, 512 MB) | Pi firmware + `kernel8.img`, 3-partition MBR | **68040 Quadra 800 only** (7.5.5, 8.1) | Second-card migration | Excludes PowerPC runtimes; no DSI port; requires USB OTG adapter/hub |
+| **Raspberry Pi Zero 2 W** | `aarch64` (BCM2837, Cortex-A53, 512 MB) | Pi firmware (`dwc_otg` USB) + `kernel8.img`, 4-partition MBR | **68040 Quadra 800 only** (7.5.5, 8.1) | A/B `tryboot` `.rbu` (or 3-part card migration) | Excludes PowerPC runtimes; no DSI port; requires USB OTG adapter/hub |
 | **Planet Computers Gemini PDA** | `aarch64` (MT6797X / Helio X27) | MediaTek LK `boot.img` (`boot` p22), `/retroboot` in `linux` p29 | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2) | `gemini-install.sh --keep-data --activate` | Dual-boot alongside Gemian; lid sleep, Hall sensor, speaker/headphone switch |
 | **Proxmox / KVM / QEMU VMs** | `x86_64` (`q35`) or `aarch64` (`virt`) | OVMF (UEFI) or SeaBIOS (Legacy BIOS) | All 3 runtimes (`x86_64`); 68k/PPC (`aarch64`) | Signed A/B `.rbu` (`x86_64` VMs) | Software-path validation; does not qualify real display, Wi-Fi, audio, or speed |
 
@@ -46,9 +46,9 @@ Because QEMU translates 68040 and PowerPC instructions in software using its Tin
 
 - **PC / Intel Mac Internal or External Target Disk:**
   - **8 GiB absolute minimum:** `install-to-disk` and `list-disks` reject any target drive smaller than **8 GiB** because the fixed system partitions (`RBEFI` 256 MiB + `BIOSBOOT` 1 MiB + `RBROOT_A` 3 GiB + `RBROOT_B` 3 GiB) consume ~6.25 GiB before `RBDATA` and its mandatory 1 GiB free margin.
-  - **16–32+ GiB (or 64+ GiB) recommended:** Required for **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6** (~4.25 GiB thin archive / ~4.29 GiB allocated inside a 32 GiB sparse disk), **Mac OS X Period & Tiger Deluxe** editions, additional Mac installations, XFS reflink checkpoints, `RetroBoot Share` files, and uploaded CD images in `/var/lib/retroboot/media/`.
+  - **16–32+ GiB (or 64+ GiB) recommended:** Required for **Kids & Family: Mac OS 9.2.2 Mega Deluxe v7** (`4,254,239,361` B / `3.96 GiB` thin archive inside a 32 GiB sparse disk), **Mac OS X Period & Tiger Deluxe** editions, additional Mac installations, XFS reflink checkpoints, `RetroBoot Share` files, and uploaded CD images in `/var/lib/retroboot/media/`.
 - **Raspberry Pi microSD / USB SSD:** **16 GB minimum** microSD card (Class 10 / A1 / U1 or better) or USB SSD/NVMe; `RBDATA` automatically expands to fill the remaining card space on first boot.
-- **Installer USB Stick:** **4 GB+** USB drive for `retroboot-installer-3.4.2-product.iso` or `retroboot-installer-3.4.2-universal-product.img.xz`.
+- **Installer USB Stick:** **4 GB+** USB drive for `retroboot-installer-3.5.0-product.iso` or `retroboot-installer-3.5.0-universal-product.img.xz`.
 
 ### Firmware Settings
 
@@ -58,7 +58,7 @@ Because QEMU translates 68040 and PowerPC instructions in software using its Tin
   - **Fast Boot should be OFF:** Prevents the firmware from skipping USB controller initialization, which can hide USB keyboards or installer sticks at early boot (observed on GPD MicroPC and Ryzen mini PCs).
   - **Windows BitLocker warning:** Save your BitLocker Recovery Key at `https://aka.ms/myrecoverykey` before disabling Secure Boot or wiping any drive.
 - **Raspberry Pi 4:** Bootloader EEPROM dated **2020-09-03 or later** is required to boot the GPT SD/USB card layout. Update older Pi 4 EEPROMs using Raspberry Pi Imager before flashing RetroBoot. (The **Universal Installer** image uses MBR so it boots on older Pi 4 EEPROMs as well.)
-- **Raspberry Pi 5 & Zero 2 W:** Pi 5 supports GPT from its factory bootloader; Zero 2 W boots from a 3-partition MBR (`bootcode.bin`, `start.elf`, `fixup.dat`).
+- **Raspberry Pi 5 & Zero 2 W:** Pi 5 supports GPT from its factory bootloader; Zero 2 W boots from a 4-partition MBR (`bootcode.bin`, `start.elf`, `start_cd.elf`, `fixup.dat`) and uses the BCM2710 `dwc_otg` USB controller for full-speed USB mouse/hub compatibility.
 
 ### Display & GPU
 
@@ -131,7 +131,7 @@ RetroBoot uses a 5-partition GPT layout on x86-64 PCs and Raspberry Pi 4/5 (`ins
 | `4` | `RBROOT_B` | ext4 | `3 GiB` (`3072 MiB`) | `8300` | System slot `b` (populated in-place by A/B Software Update; untouched fallback target) |
 | `5` | `RBDATA` | XFS (`reflink=1`) | Remainder of disk | `8300` | Mounted at `/var/lib/retroboot`: Macs, instant reflink checkpoints, `share/`, `media/`, `roms/`, `network/`, `bluetooth/`, `logs/` |
 
-- **Raspberry Pi Zero 2 W SD layout:** Uses a 3-partition **MBR** table (`256 MiB` FAT32 boot `0x0C`, `3 GiB` ext4 `RBROOT_A`, remainder XFS `RBDATA`) because the BCM2837/BCM2710 boot ROM requires MBR; omits `RBROOT_B`.
+- **Raspberry Pi Zero 2 W SD layout:** Uses a 4-partition **MBR** table (`256 MiB` FAT32 boot `0x0C`, `2.5 GiB` ext4 `RBROOT_A`, `2.5 GiB` ext4 `RBROOT_B`, initial `1 GiB` expanding XFS `RBDATA`) because the BCM2837/BCM2710 boot ROM requires MBR; total raw size is `6,400 MiB` (fits 8 GB+ cards; 16 GB+ recommended) while enabling full `tryboot.txt` A/B Software Updates. Older 3-partition Zero 2 W cards must be flashed once to gain `RBROOT_B`.
 - **Planet Gemini PDA layout:** Uses a `/retroboot` directory inside Gemian's existing ext4 `PARTNAME=linux` (p29) partition alongside `boot` (p22) and `para` (p2), creating no new partitions.
 
 ---
@@ -177,6 +177,7 @@ Measured inside Proxmox VE virtual machines (`q35`, 4 vCPU `x86-64-v3`, OVMF/Sea
 | **Proxmox VM 164 / 165** (x86-64) | Mac OS 9.2.2 Standard (PowerPC) | `~44.8–46.2 s` power-on → Finder (`~14.4–19.2 s` kernel launch → Finder) | `15.8%` whole-VM idle CPU; 0 display transition glitches across cold boots |
 | **Proxmox VM 165 / 169** (x86-64) | System 7.5.5 & Mac OS 8.1 (68040 Quadra 800) | `~8.8–9.1 s` kernel launch → Finder (`~4.7–4.8 s` after QEMU start) | `7.4%` (8.1) / `10.8%` (7.5.5) whole-VM idle CPU (`3.0–3.5%` emulator with `RetroBoot Idle`); Speedometer 4.02 CPU `~34.7`, Gfx `34.0` |
 | **Proxmox VM 350 / 351** (x86-64) | RetroBoot `3.4.2` + Mega Deluxe v6 | Fresh ISO install & signed A/B `3.4.1 -> 3.4.2 -> 3.4.1` verified | Confirmed default-off `Enable Mac printing` checkmark + PDF test page + `RetroBoot Printer` on restart, 3-wave Volume OSD, clean download wrap, & serialized startup chime |
+| **Proxmox VM 352 / 353** (x86-64) | RetroBoot `3.5.0` (`8.1` 68k & `9.2.2`) | Fresh ISO install & signed A/B `3.4.2 -> 3.5.0 -> 3.4.2` verified | Confirmed 68k `rbplatinum` panel icons on Mac OS 8.1, public feed default URL, and live A/B upgrade commit & rollback |
 | **ARM64 QEMU `virt`** (`qa-pi45`, `qa-zero2w`) | Pi 4/5 Setup & Zero 2 W System 7.5.5 | Reaches Setup (`pi45`) & System 7.5.5 Finder (`zero2w`) in software QA | Validates rootfs, `rpi-profile.json`, and 68k guest path only; does not test Pi firmware, HDMI/DSI/GPIO wiring, touch, Wi-Fi, or physical speed |
 
 ---
@@ -189,7 +190,7 @@ flowchart TD
 
     Arch -->|"x86-64 PC or Intel Mac"| PC["x86-64 Hybrid GPT Layout (UEFI / BIOS)"]
     Arch -->|"Raspberry Pi 4, 5, 400, CM4, CM5"| Pi45["Pi 4/5 GPT Layout (EEPROM >= 2020-09-03 for Pi 4)"]
-    Arch -->|"Raspberry Pi Zero 2 W (512 MB)"| Zero["Zero 2 W 3-Partition MBR Layout"]
+    Arch -->|"Raspberry Pi Zero 2 W (512 MB)"| Zero["Zero 2 W 4-Partition MBR Layout (A/B tryboot)"]
     Arch -->|"Planet Computers Gemini PDA"| Gem["Gemini /retroboot Tree on Gemian p29"]
 
     PC --> PCRun["All 3 Runtimes Available"]

@@ -49,6 +49,10 @@ def record(event: str, **fields) -> None:
 
 def committed(esp: str, slot: str) -> bool:
     try:
+        os.listdir(esp)
+    except OSError:
+        pass
+    try:
         env, _ = slotenv.read_env(esp)
     except Exception:
         return False

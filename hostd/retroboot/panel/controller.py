@@ -213,6 +213,9 @@ class Panel:
     async def show_setup(self) -> None:
         await self.show(SetupWelcome(self))
 
+    async def show_rpi_oobe(self) -> None:
+        await self.show(RpiOobeWelcome(self))
+
     async def show_needs_cd(self, name: str, blank: bool) -> None:
         await self.show(NeedsCD(self, name, blank))
 
@@ -3015,9 +3018,11 @@ class NewBlankDisk(Screen):
         super().__init__(panel)
         self.disk = disk
         self.name = self._default_name()
-        self.family = POWERMAC
+        kinds = self.kinds()
+        default_kind = next((k for k in kinds if k.get("available")), kinds[0])
+        self.family = default_kind["family"]
         self.guest_os = "classic"
-        self.size = "8"
+        self.size = str(default_kind["default_gb"])
         self.error: str | None = None
 
     def _default_name(self) -> str:
@@ -3028,7 +3033,9 @@ class NewBlankDisk(Screen):
         return name
 
     def kinds(self) -> list[dict]:
-        return self.app.blank_kinds()
+        all_kinds = self.app.blank_kinds()
+        supported = [k for k in all_kinds if k.get("supported", True)]
+        return supported or all_kinds
 
     def kind(self) -> dict:
         kinds = self.kinds()
@@ -3041,17 +3048,21 @@ class NewBlankDisk(Screen):
             free = None
         kinds = self.kinds()
         kind = self.kind()
+        if self.family != kind["family"]:
+            self.family = kind["family"]
         if self.size not in [str(g) for g in kind["sizes_gb"]]:
             self.size = str(kind["default_gb"])
         unavailable = next((k for k in kinds if not k["available"]), None)
+        family_item = (ui.radio("family", "Kind of Mac:", [(k["family"], k["label"], not k["available"]) for k in kinds],
+                                self.family)
+                       if len(kinds) > 1 else ui.text(f"Kind of Mac: {kind['label']}", "small"))
         items = [ui.columns(ui.icon("disk", 32),
                             ui.stack(ui.text("Make an empty disk for a new Mac.", "emphasis"),
                                      ui.text("To install Mac OS X on it, start it up from an install disc."
                                              if self.guest_os != "classic" else
                                              "To install Mac OS on it, start it up from a Mac OS CD."))),
                  ui.field("name", "Name:", self.name, max_length=63),
-                 ui.radio("family", "Kind of Mac:", [(k["family"], k["label"], not k["available"]) for k in kinds],
-                          self.family),
+                 family_item,
                  ui.text(unavailable["reason"], "small") if unavailable else None,
                  ui.popup("guest_os", "Operating system:",
                           [(c["value"], c["label"]) for c in kind["guest_os_choices"]], self.guest_os)
@@ -3275,11 +3286,12 @@ class ConfirmRestore(Screen):
 class SetupWelcome(Screen):
     doc_id = "setup-welcome"
 
-    def __init__(self, panel, back=None):
+    def __init__(self, panel, back=None, skip_timezone: bool = False):
         super().__init__(panel)
         self.back = back
+        self.skip_timezone = skip_timezone
         self.source = "catalog"
-        if (self.app.settings.desired.get("system.timezone", "UTC") == "UTC"
+        if (not skip_timezone and self.app.settings.desired.get("system.timezone", "UTC") == "UTC"
                 and callable(getattr(self.app, "prefetch_timezone", None))):
             self.app.prefetch_timezone()
 
@@ -3323,7 +3335,7 @@ class SetupWelcome(Screen):
         if id == "continue":
             src = values.get("source") or self.source
             nxt = lambda: p.show(CatalogList(p, back=me) if src == "catalog" else UsbList(p, back=me))
-            if not self.app.machines.list() and self.app.settings.desired.get("system.timezone", "UTC") == "UTC":
+            if not self.skip_timezone and not self.app.machines.list() and self.app.settings.desired.get("system.timezone", "UTC") == "UTC":
                 # A new computer whose clock zone nobody chose yet; the installer's Time Zone
                 # step (or an earlier visit) already set one otherwise.
                 await p.show(TimeZone(p, back=me, next_=nxt))
@@ -3570,7 +3582,7 @@ class CatalogList(Screen):
             )
             if hero_shown:
                 hero_val = self.selected if self.selected in (deluxe.key, base.key) else ""
-                is_mega = "mega-deluxe" in d_id
+                is_mega = d_id.startswith("os922-mega-deluxe")
                 d_label = "Mac OS 9.2.2 Mega Deluxe — Recommended" if is_mega else f"{deluxe.entry['name']} — Recommended"
                 b_label = "Mac OS 9.2.2 — Classic Clean desktop" if is_mega else f"{base.entry['name']} — Classic Clean desktop"
                 d_desc = ("Mega Deluxe: Kids & Family — Kid Pix Studio Deluxe, Zoombinis & 111 classic games · "
@@ -3735,6 +3747,8 @@ async def after_import(panel: Panel, job: Job, back, on_installed=None):
         await on_installed(job)
         return
     app = panel.app
+    if callable(getattr(app, "complete_oobe", None)):
+        app.complete_oobe()
     mid = job.result["machine"]
     m = app.machines.get(mid)
     await panel.show(Installed(panel, m.name if m else mid))
@@ -3819,6 +3833,8 @@ class Installed(Screen):
 
     async def action(self, id, values):
         p = self.panel
+        if callable(getattr(self.app, "complete_oobe", None)):
+            self.app.complete_oobe()
         if id == "setup":
             await p.show_recovery()
         elif id == "start":
@@ -4012,3 +4028,200 @@ class TimeZone(Screen):
                                          then=lambda: self.panel.show(self))
                 return
         await (self.next_() if self.next_ else self.back())
+
+
+class RpiOobeWelcome(Screen):
+    """First-start Raspberry Pi onboarding: Network, Command key, Bluetooth -> Time Zone."""
+    doc_id = "oobe-welcome"
+    tick = 3.0
+    guest_background_ok = False
+
+    def __init__(self, panel):
+        super().__init__(panel)
+        self.addresses: list[str] | None = None
+        self.wifi: dict | None = None
+        self.wifi_state: dict | None = None
+        if getattr(self.app, "loop", None) is not None:
+            self.app.loop.create_task(self._load())
+
+    async def _load(self):
+        try:
+            self.addresses = await self.app.network.all_addresses()
+        except Exception:
+            self.addresses = []
+        try:
+            self.wifi = await self.app.network.wifi_hardware()
+        except Exception:
+            self.wifi = None
+        try:
+            self.wifi_state = await self.app.network.wifi_state()
+        except Exception:
+            self.wifi_state = None
+        if self.addresses and callable(getattr(self.app, "prefetch_timezone", None)):
+            self.app.prefetch_timezone()
+        if self.panel.screen is self and self.panel.visible:
+            await self.panel.refresh()
+
+    async def on_tick(self):
+        await self._load()
+
+    def doc(self):
+        plat = self.app.platform
+        subtitle = plat.model or "Set up network, time zone, and startup options for your Mac."
+        if self.addresses is None:
+            net_line = "Network: Checking…"
+        elif self.addresses:
+            ws = self.wifi_state or {}
+            ssid = ws.get("ssid") if ws.get("connected") else None
+            net_line = (f"Network: Connected to “{ssid}” ({self.addresses[0]})" if ssid
+                        else f"Network: Connected ({self.addresses[0]})")
+        else:
+            net_line = "Network: Not connected"
+        swap = bool(self.app.settings.desired.get("input.swap_command_option"))
+        items = [
+            ui.columns(ui.icon("mac", 32), ui.stack(
+                ui.text("Welcome to RetroBoot", "emphasis"),
+                ui.text(subtitle, "small"))),
+            ui.text(net_line),
+            ui.text("Connect to Wi-Fi or Ethernet to set your time zone automatically, use Web Management, "
+                    "or check for updates.", "small"),
+            ui.popup("input.swap_command_option", "Command key:",
+                     [("mac", "Mac-style (Win = Command)"), ("pc", "PC-style (Alt = Command)")],
+                     "pc" if swap else "mac"),
+            ui.text("Press Alt+Q to quit or Alt+S to save (Windows key = Option)." if swap else
+                    "Press Windows+Q to quit or Windows+S to save (Alt = Option).", "small"),
+        ]
+        util_btns = []
+        has_wifi = bool(self.wifi or (self.wifi_state or {}).get("available") or self.app.capabilities().get("wifi"))
+        util_btns.append(ui.btn("wifi", "Wi-Fi…") if has_wifi else ui.btn("network", "Network…"))
+        if self.app.bluetooth.capable():
+            util_btns.append(ui.btn("bluetooth", "Bluetooth…"))
+        if util_btns:
+            items.append(ui.buttons(*util_btns))
+        cont_label = "Continue" if self.addresses else "Continue Offline"
+        items.append(ui.buttons(ui.btn("poweroff", "Shut Down"),
+                                ui.btn("continue", cont_label, default=True)))
+        return ui.window(self.doc_id, "RetroBoot Setup", items, width=500)
+
+    async def change(self, id, value):
+        if id == "input.swap_command_option":
+            swap = (value == "pc") if isinstance(value, str) else bool(value)
+            if swap != bool(self.app.settings.desired.get("input.swap_command_option")):
+                await self.app.apply_engine.change_and_apply({"input.swap_command_option": swap})
+            await self.panel.refresh()
+
+    async def action(self, id, values):
+        p = self.panel
+        me = lambda: p.show(self)
+        if "input.swap_command_option" in values:
+            val = values["input.swap_command_option"]
+            swap = (val == "pc") if isinstance(val, str) else bool(val)
+            if swap != bool(self.app.settings.desired.get("input.swap_command_option")):
+                await self.app.apply_engine.change_and_apply({"input.swap_command_option": swap})
+        if id == "wifi":
+            await p.show(WiFi(p, back=me))
+        elif id == "network":
+            await p.show(NetworkWeb(p, back=me))
+        elif id == "bluetooth":
+            from .bluetooth import BluetoothDevices
+            await p.show(BluetoothDevices(p, back=me))
+        elif id == "poweroff":
+            await p.show_power_alert()
+        elif id == "continue":
+            async def after_tz():
+                tz_back = lambda: p.show(TimeZone(p, back=me, next_=after_tz, title="Time Zone"))
+                if self.app.machines.list():
+                    await p.show(RpiOobeStartupMac(p, back=tz_back))
+                else:
+                    await p.show(SetupWelcome(p, back=tz_back, skip_timezone=True))
+
+            await p.show(TimeZone(p, back=me, next_=after_tz, title="Time Zone"))
+
+
+class RpiOobeStartupMac(Screen):
+    """Choose which preloaded (or newly downloaded) Mac to start after Raspberry Pi OOBE."""
+    doc_id = "oobe-startup-mac"
+    guest_background_ok = False
+
+    def __init__(self, panel, back, selected: str | None = None):
+        super().__init__(panel)
+        self.back = back
+        self.selected = selected or self.app.settings.desired.get("machine.active")
+
+    def doc(self):
+        machines = self.app.machines.list()
+        ids = {m.id for m in machines}
+        desired = self.app.settings.desired.get("machine.active")
+        if self.selected not in ids:
+            self.selected = desired if desired in ids else (machines[0].id if machines else None)
+        rows = []
+        for m in machines:
+            from ..catalogs import os_label
+            parts = [os_label(m.meta.get("os_version")) or "Mac OS"]
+            if m.quadra:
+                parts.append(FAMILY_LABELS[QUADRA800])
+            rows.append(ui.row(m.id, m.name, " · ".join(parts), "mac", checked=(m.id == self.selected)))
+        items = [
+            ui.text("Choose your startup Mac", "emphasis"),
+            ui.text("Choose which Mac starts when you turn this computer on. You can switch any time "
+                    "in Startup Disk (Control-Alt-Delete).", "small"),
+            ui.lst("machine", rows, self.selected, rows=4),
+            ui.buttons(ui.btn("download", "Download Another Mac…", align="left"),
+                       ui.btn("cancel", "Back"),
+                       ui.btn("start", "Start Mac OS", default=True, disabled=not self.selected)),
+        ]
+        return ui.window(self.doc_id, "RetroBoot Setup", items, width=520)
+
+    async def change(self, id, value):
+        if id == "machine" and isinstance(value, str):
+            self.selected = value
+            await self.panel.refresh()
+
+    async def action(self, id, values):
+        p = self.panel
+        if id == "cancel":
+            await self.back()
+            return
+        if id == "download":
+            await p.show(CatalogList(p, back=lambda: p.show(self), then=self._after_download))
+            return
+        if id == "start":
+            mid = values.get("machine") or self.selected
+            if not mid:
+                return
+            self.selected = mid
+            desired = self.app.settings.desired.get("machine.active")
+            if mid != desired:
+                await p.start_job(lambda: self.app.select_machine_job(mid, origin="panel"),
+                                  "Changing the startup Mac", self._after_select)
+            else:
+                if callable(getattr(self.app, "complete_oobe", None)):
+                    self.app.complete_oobe()
+                await p.start_job(lambda: self.app.lifecycle_job("start", origin="panel"),
+                                  "Starting Mac OS", self._after_start)
+
+    async def _after_select(self, job: Job):
+        if job.state != SUCCEEDED:
+            await self.panel.message("caution", "The startup Mac was not changed.", job.message,
+                                     then=lambda: self.panel.show(self))
+            return
+        if callable(getattr(self.app, "complete_oobe", None)):
+            self.app.complete_oobe()
+        await self.panel.start_job(lambda: self.app.lifecycle_job("start", origin="panel"),
+                                   "Starting Mac OS", self._after_start)
+
+    async def _after_start(self, job: Job):
+        if job.state == SUCCEEDED:
+            await self.panel.close()
+        else:
+            await self.panel.message("stop", "Mac OS could not start.", job.message, then=self.panel.show_recovery)
+
+    async def _after_download(self, panel: Panel, job: Job, back) -> None:
+        if stopped_by_user(job):
+            await back()
+            return
+        if job.state != SUCCEEDED:
+            await panel.message("stop", "The Mac could not be downloaded.", job.message, then=back)
+            return
+        mid = job.result["machine"]
+        await panel.show(RpiOobeStartupMac(panel, self.back, selected=mid))

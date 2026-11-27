@@ -104,6 +104,30 @@ class PlatinumBuildTests(unittest.IsolatedAsyncioTestCase):
         (out / "manifest.json").write_text('{"generator": "rbplatinum 2"}')
         self.assertEqual((await PlatinumAssets(out, root / "lib").ensure(root / "disk.img"))["result"], "skipped")
 
+    async def test_quadra_launch_ensures_platinum_and_prefers_81_over_755(self):
+        td, root = helpers.scratch()
+        self.addCleanup(td.cleanup)
+        helpers.make_package(root)
+        helpers.make_m68k_package(root)
+        helpers.make_quadra_machine(root, "mac-os-7-5-5", "Mac OS 7.5.5", os_version="7.5.5")
+        helpers.make_quadra_machine(root, "mac-os-8-1", "Mac OS 8.1", os_version="8.1")
+        app = Hostd(helpers.make_config(root))
+        app.loop = asyncio.get_running_loop()
+        app.settings.store.load()
+        m755 = app.machines.get("mac-os-7-5-5")
+        self.assertEqual(app.supervisor._platinum_source_disk(m755), app.machines.get("mac-os-8-1").disk)
+        seen = []
+
+        async def fake_ensure(disk):
+            seen.append(Path(disk))
+            return {"result": "built"}
+
+        app.platinum.ensure = fake_ensure
+        with helpers.test_rom():
+            helpers.install_fake_prep(app, module_68k=helpers.FakePrep68kModule())
+            await app.supervisor.prepare_disk(m755, no_system=False)
+        self.assertEqual(seen, [app.machines.get("mac-os-8-1").disk])
+
 
 if __name__ == "__main__":
     unittest.main()

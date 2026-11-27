@@ -4,7 +4,7 @@ Every RetroBoot serves its own management page. Open it from a phone or another 
 
 <img src="../images/manual/web-overview.png" width="760" alt="The paired RetroBoot Overview shows the running Mac, startup timeline and system status">
 
-<sub>Rendered from RetroBoot 3.4.2 in RetroBoot's MIT Platinum theme.</sub>
+<sub>Rendered from RetroBoot 3.5.0 in RetroBoot's MIT Platinum theme.</sub>
 
 The page looks like Mac OS 9. It uses the Charcoal, Geneva and Monaco fonts, the icons and the desktop pattern of the Mac OS system on your RetroBoot, and its buttons, check boxes and windows match Mac OS 9.2.1 pixel for pixel. Until a Mac OS system is installed, the same layout appears with plain fonts and RetroBoot's own icons.
 

@@ -16,7 +16,7 @@ fail() { echo "FAIL: $*"; exit 1; }
 ok() { echo "ok: $*"; }
 
 model=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model"])' "$root/usr/lib/retroboot/rpi-profile.json")
-root_num=3; data_num=5
+root_num=3; root_b_num=4; data_num=5
 if [ "$model" = zero2w ]; then
   python3 - "$img" <<'PY' || fail "Zero 2 W MBR partition table"
 import struct, sys
@@ -25,16 +25,16 @@ with open(sys.argv[1], 'rb') as f:
 assert m[510:512] == b'\x55\xaa'
 assert struct.unpack_from('<I', m, 440)[0]
 parts = [struct.unpack_from('<B3sB3sII', m, 446 + 16 * i) for i in range(4)]
-assert [p[2] for p in parts] == [0x0c, 0x83, 0x83, 0]
+assert [p[2] for p in parts] == [0x0c, 0x83, 0x83, 0x83]
 assert parts[0][0] == 0x80
 assert parts[0][4] == 2048
-for i in range(3):
+for i in range(4):
     assert parts[i][4] % 2048 == 0 and parts[i][5] > 0
     if i:
         assert parts[i][4] == parts[i-1][4] + parts[i-1][5]
 PY
-  root_num=2; data_num=3
-  ok "MBR: FAT32 boot, ext4 root, XFS data (no unused root slot)"
+  root_num=2; root_b_num=3; data_num=4
+  ok "MBR: FAT32 boot, ext4 RBROOT_A, ext4 RBROOT_B, XFS RBDATA"
 else
 names=$(sgdisk -p "$img" | awk '/^ +[0-9]/{print $1":"$6":"$7}' | paste -sd' ' -)
 [ "$names" = "1:0700:RBEFI 2:EF02:BIOSBOOT 3:8300:RBROOT_A 4:8300:RBROOT_B 5:8300:RBDATA" ] || fail "partitions: $names"
@@ -55,13 +55,13 @@ partuuid=$(blkid -s PARTUUID -o value "${loop}p$root_num" || true)
 [ -n "$partuuid" ] || fail "partition $root_num has no PARTUUID after loop discovery"
 [ "$(blkid -o value -s TYPE "${loop}p1")" = vfat ] || fail "partition 1 is not FAT"
 [ "$(blkid -o value -s SEC_TYPE "${loop}p1" 2>/dev/null)" != msdos ] || fail "partition 1 is FAT12/16"
-[ "$(blkid -o value -s TYPE "${loop}p$root_num")" = ext4 ] && [ "$(blkid -o value -s TYPE "${loop}p$data_num")" = xfs ] || fail "file systems"
-ok "file systems: p1 FAT32, p$root_num ext4, p$data_num XFS"
+[ "$(blkid -o value -s TYPE "${loop}p$root_num")" = ext4 ] && [ "$(blkid -o value -s TYPE "${loop}p$root_b_num")" = ext4 ] && [ "$(blkid -o value -s LABEL "${loop}p$root_b_num")" = RBROOT_B ] && [ "$(blkid -o value -s TYPE "${loop}p$data_num")" = xfs ] || fail "file systems"
+ok "file systems: p1 FAT32, p$root_num ext4, p$root_b_num ext4 (RBROOT_B), p$data_num XFS"
 mount -o ro "${loop}p1" "$mnt"
 for f in config.txt cmdline.txt start4.elf fixup4.dat kernel8.img initramfs8 \
          bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2711-rpi-cm4.dtb bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb \
          bcm2712-rpi-500.dtb overlays/overlay_map.dtb overlays/vc4-kms-v3d.dtbo overlays/vc4-kms-v3d-pi4.dtbo \
-         overlays/vc4-kms-v3d-pi5.dtbo retroboot/slots.env; do
+         overlays/vc4-kms-v3d-pi5.dtbo retroboot/slots.env retroboot/slot-a.json; do
   [ -s "$mnt/$f" ] || fail "boot partition lacks $f"
 done
 ok "boot partition: $(ls "$mnt" | wc -l) entries, $(ls "$mnt/overlays" | wc -l) overlays, $(du -sh "$mnt" | cut -f1)"
@@ -114,8 +114,10 @@ fi
 [ "$(readlink "$root/boot/efi")" = firmware ] ||
   fail "boot partition mount (/boot/firmware, /boot/efi link)"
 ok "fstab: root /, data /var/lib/retroboot, FAT /boot/firmware (/boot/efi -> firmware)"
-for b in usr/lib/retroboot/qemu-m68k/bin/qemu-system-m68k usr/lib/retroboot/bin/rb-presenter; do
-  [ -x "$root/$b" ] || fail "$b missing"
+for b in usr/lib/retroboot/qemu-m68k/bin/qemu-system-m68k usr/lib/retroboot/bin/rb-presenter \
+         usr/lib/retroboot/boot/bootfs/kernel8.img usr/lib/retroboot/boot/bootfs/initramfs8 \
+         usr/lib/retroboot/boot/bootfs/config.txt; do
+  [ -e "$root/$b" ] || fail "$b missing"
 done
 if [ "$model" = zero2w ]; then
   [ ! -e "$root/usr/lib/retroboot/qemu/bin/qemu-system-ppc" ] || fail "Zero 2 W image has a PPC emulator"

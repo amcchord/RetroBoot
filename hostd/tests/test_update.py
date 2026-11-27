@@ -21,8 +21,9 @@ import helpers
 from retroboot import schema, settings as settings_mod
 from retroboot.hostd import Hostd
 from retroboot.jobs import JobFailed
-from retroboot.update import bundle as B, slotenv, tree
-from retroboot.update.writer import SlotWriter, WriteError, carry_state, clean_reset_data, set_fstab_root
+from retroboot.update import bundle as B, manager as manager_mod, slotenv, tree
+from retroboot.update.writer import (SlotWriter, WriteError, carry_state, clean_reset_data,
+                                     set_fstab_layout, set_fstab_root, sync_rpi_slot)
 from test_lifecycle import Base
 
 LEGACY_CMD = ("quiet loglevel=0 console=ttyS0,115200 video=efifb:off fbcon=map:9 "
@@ -218,6 +219,44 @@ class SlotEnvTests(unittest.TestCase):
         with self.assertRaises(slotenv.SlotError):
             slotenv.layout(str(sysfs), (8, 4))
 
+    def test_mbr_layout_and_rpi_init_esp(self):
+        sysfs = self.root / "sys-mbr"
+        disk = sysfs / "block/mmcblk0"
+        by_label = self.root / "by-label"
+        by_label.mkdir(parents=True)
+        for num, lbl in ((1, None), (2, "RBROOT_A"), (3, "RBROOT_B"), (4, "RBDATA")):
+            p = disk / f"mmcblk0p{num}"
+            p.mkdir(parents=True)
+            (p / "partition").write_text(f"{num}\n")
+            (p / "uevent").write_text(f"MAJOR=179\nMINOR={num}\nDEVNAME=mmcblk0p{num}\nPARTN={num}\n")
+            if lbl:
+                fake_dev = self.root / f"dev-mmcblk0p{num}"
+                fake_dev.write_text("")
+                os.symlink(fake_dev, by_label / lbl)
+        (sysfs / "dev/block").mkdir(parents=True)
+        os.symlink(disk / "mmcblk0p2", sysfs / "dev/block/179:2")
+        os.symlink(disk / "mmcblk0p3", sysfs / "dev/block/179:3")
+        # Map names cleanly using fake by-label directory pointing to /dev/<part> names
+        for lbl in ("RBROOT_A", "RBROOT_B", "RBDATA"):
+            (by_label / lbl).unlink()
+        os.symlink(disk / "mmcblk0p2", by_label / "RBROOT_A")
+        os.symlink(disk / "mmcblk0p3", by_label / "RBROOT_B")
+        os.symlink(disk / "mmcblk0p4", by_label / "RBDATA")
+        lay_a = slotenv.layout(str(sysfs), (179, 2), by_label=str(by_label), probe_label=lambda _: "")
+        self.assertEqual((lay_a["table"], lay_a["current"], lay_a["esp"], lay_a["a"], lay_a["b"], lay_a["data"]),
+                         ("dos", "a", "/dev/mmcblk0p1", "/dev/mmcblk0p2", "/dev/mmcblk0p3", "/dev/mmcblk0p4"))
+        lay_b = slotenv.layout(str(sysfs), (179, 3), by_label=str(by_label), probe_label=lambda _: "")
+        self.assertEqual(lay_b["current"], "b")
+
+        rpi_esp = self.root / "rpi-esp"
+        rpi_esp.mkdir()
+        (rpi_esp / "config.txt").write_text("[all]\nkernel=kernel8.img\n")
+        slotenv.init_esp(rpi_esp, "quiet", "3.5.0", "3.5.0-rpi-zero2w-20261127T010203Z-1234abcd")
+        self.assertFalse((rpi_esp / "grub").exists())
+        self.assertTrue((rpi_esp / "retroboot/slots.env").is_file())
+        meta = json.loads((rpi_esp / "retroboot/slot-a.json").read_text())
+        self.assertEqual(meta["version"], "3.5.0")
+
 
 class BundleTests(unittest.TestCase):
     def setUp(self):
@@ -272,6 +311,27 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(e.exception.code, code)
         B.compatibility(m, {**legacy, "version": "0.4.0"}, 1, allow_older=True)
         self.assertEqual(B.describe_version("0.3.0", m["build_id"]), "0.3.0 (build 2026-10-12 01:02)")
+
+    def test_rpi_build_id_and_model_compatibility(self):
+        pi_id = "3.4.2-rpi-20261125T220732Z-43e6d5b7"
+        z_id = "3.4.2-rpi-zero2w-20261125T222835Z-43e6d5b7"
+        self.assertEqual(B.describe_version("3.4.2", pi_id), "3.4.2 (build 2026-11-25 22:07)")
+        self.assertEqual(B.describe_version("3.4.2", z_id), "3.4.2 (build 2026-11-25 22:28)")
+        self.assertGreater(B.version_key("3.5.0", "3.5.0-rpi-zero2w-20261127T000000Z-aaaa"),
+                           B.version_key("3.4.2", z_id))
+        m_pi = dict(B.Bundle(self.bundle()).verify(B.trusted_keys(self.keys)),
+                    arch="arm64", board="rpi", model="pi4-5", build_id="0.3.0-rpi-20261012T010203Z-abcdef12")
+        m_z = dict(m_pi, model="zero2w", build_id="0.3.0-rpi-zero2w-20261012T010203Z-abcdef12")
+        inst_z = {"version": "0.2.0", "flavor": "debug", "arch": "arm64", "board": "rpi", "model": "zero2w"}
+        inst_pi = {"version": "0.2.0", "flavor": "debug", "arch": "arm64", "board": "rpi", "model": "pi4-5"}
+        with self.assertRaises(B.BundleError) as e1:
+            B.compatibility(m_pi, inst_z, 1)
+        self.assertEqual(e1.exception.code, "wrong-model")
+        with self.assertRaises(B.BundleError) as e2:
+            B.compatibility(m_z, inst_pi, 1)
+        self.assertEqual(e2.exception.code, "wrong-model")
+        B.compatibility(m_z, inst_z, 1)
+        B.compatibility(m_pi, inst_pi, 1)
 
 
 class TreeTests(unittest.TestCase):
@@ -918,9 +978,10 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
         self.new = self._make_rpi_root(self.root / "newroot", "0.3.0", "0.3.0-20261124T010203Z-abcdef02")
         self.bundle = self._make_rpi_bundle(self.root / "rpi.rbu", self.new)
 
-    def _make_rpi_root(self, path: Path, version: str, build_id: str, hostd_update: bool = True) -> Path:
+    def _make_rpi_root(self, path: Path, version: str, build_id: str, hostd_update: bool = True,
+                       *, model: str = "pi4-5") -> Path:
         import hashlib
-        (path / "usr/lib/retroboot/boot/overlays").mkdir(parents=True, exist_ok=True)
+        (path / "usr/lib/retroboot/boot/bootfs/overlays").mkdir(parents=True, exist_ok=True)
         (path / "etc").mkdir(parents=True, exist_ok=True)
         (path / "boot").mkdir(exist_ok=True)
         (path / "boot/vmlinuz").write_bytes(b"rpi-kernel-" + version.encode())
@@ -933,15 +994,22 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
         )
         (path / "usr/lib/retroboot/release.json").write_text(json.dumps(
             {"product": "RetroBoot", "version": version, "flavor": "debug", "build_id": build_id,
-             "arch": "arm64", "board": "rpi", "settings_schema": 1}))
+             "arch": "arm64", "board": "rpi", "model": model, "settings_schema": 1}))
         boot = path / "usr/lib/retroboot/boot"
-        (boot / "kernel8.img").write_bytes(b"k8-" + version.encode())
-        (boot / "initramfs8").write_bytes(b"init-" + version.encode())
-        (boot / "bcm2712-rpi-5-b.dtb").write_bytes(b"dtb-" + version.encode())
-        (boot / "overlays/vc4-kms-v3d.dtbo").write_bytes(b"dtbo-" + version.encode())
-        (boot / "config.txt").write_text(self.base_cfg)
-        files = {str(p.relative_to(boot)): hashlib.sha256(p.read_bytes()).hexdigest()
-                 for p in boot.rglob("*") if p.is_file() and p.name != "boot.json"}
+        bfs = boot / "bootfs"
+        (bfs / "kernel8.img").write_bytes(b"k8-" + version.encode())
+        (bfs / "initramfs8").write_bytes(b"init-" + version.encode())
+        (bfs / "bcm2712-rpi-5-b.dtb").write_bytes(b"dtb-" + version.encode())
+        (bfs / "overlays/vc4-kms-v3d.dtbo").write_bytes(b"dtbo-" + version.encode())
+        (bfs / "config.txt").write_text(self.base_cfg)
+        if model == "zero2w":
+            (bfs / "bootcode.bin").write_bytes(b"bootcode")
+            (bfs / "start.elf").write_bytes(b"start")
+            (bfs / "start_cd.elf").write_bytes(b"start_cd")
+            (bfs / "fixup.dat").write_bytes(b"fixup")
+            (bfs / "bcm2710-rpi-zero-2-w.dtb").write_bytes(b"zero-dtb-" + version.encode())
+        files = {str(p.relative_to(bfs)): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in bfs.rglob("*") if p.is_file()}
         (boot / "boot.json").write_text(json.dumps({
             "board": "rpi", "kernel_cmdline": "console=serial0,115200 root=PARTUUID=@ROOT_PARTUUID@ retroboot.slot=a",
             "config_txt_sha256": files["config.txt"], "bootfs_files_sha256": files,
@@ -950,7 +1018,8 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
             (path / "usr/lib/retroboot/hostd/retroboot/update").mkdir(parents=True, exist_ok=True)
         return path
 
-    def _make_rpi_bundle(self, out: Path, root: Path) -> Path:
+    def _make_rpi_bundle(self, out: Path, root: Path, *, model: str = "pi4-5",
+                         build_id: str = "0.3.0-20261124T010203Z-abcdef02") -> Path:
         files = gzip.compress(json.dumps(tree.build(str(root))).encode())
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tf:
@@ -959,8 +1028,8 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
         import hashlib
         manifest = {
             "format": B.FORMAT, "product": "RetroBoot", "version": "0.3.0",
-            "build_id": "0.3.0-20261124T010203Z-abcdef02", "flavor": "debug", "min_version": "0.2.0",
-            "arch": "arm64", "board": "rpi", "settings_schema": 1, "settings_schema_min": 1,
+            "build_id": build_id, "flavor": "debug", "min_version": "0.2.0",
+            "arch": "arm64", "board": "rpi", "model": model, "settings_schema": 1, "settings_schema_min": 1,
             "kernel": {"version": "6.12-rpi", "cmdline": "console=serial0,115200 root=PARTUUID=@ROOT_PARTUUID@ quiet"},
             "root": {"member": "root.sqfs", "format": "squashfs", "compression": "tar", "bytes": len(payload),
                      "sha256": hashlib.sha256(payload).hexdigest(), "installed_bytes": 4096, "files": 10},
@@ -978,7 +1047,7 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
                 tf.addfile(ti, io.BytesIO(raw))
         return out
 
-    async def make_rpi_app(self, *, current="a", zero2w=False):
+    async def make_rpi_app(self, *, current="a", zero2w=False, layout=None):
         from types import SimpleNamespace
         helpers.make_package(self.root)
         cfg = helpers.make_config(self.root)
@@ -986,7 +1055,9 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
         cfg.update_keys_dir = str(self.root / "keys")
         cfg.cmdline_path = str(self.cmdline)
         cfg.update_panel_health_s = 1.0
-        if zero2w:
+        if layout is not None:
+            cfg.update_layout = layout
+        elif zero2w:
             cfg.update_layout = None
         else:
             cfg.update_layout = {"current": current, "a": str(self.slots["a"]), "b": str(self.slots["b"]),
@@ -1005,8 +1076,9 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
         return app
 
     async def test_rpi_tryboot_install_arm_commit_and_rollback(self):
+        # Legacy 3-partition Zero 2 W SD card shows clear one-time reflash message.
         zapp = await self.make_rpi_app(zero2w=True)
-        self.assertIsNotNone(zapp.updates.unavailable)
+        self.assertEqual(zapp.updates.unavailable, manager_mod.UNAVAILABLE_PI_LEGACY)
 
         app = await self.make_rpi_app()
         self.assertIsNone(app.updates.unavailable)
@@ -1083,6 +1155,69 @@ class RpiTrybootTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(B.BundleError) as e2:
             B.compatibility(m, {"version": "0.2.0", "flavor": "debug", "arch": "arm64", "board": "pc"}, 1)
         self.assertEqual(e2.exception.code, "wrong-board")
+
+    async def test_zero2w_mbr_tryboot_and_feed_selection(self):
+        z_root_cur = self._make_rpi_root(self.root / "zcur", "0.2.0", "0.2.0-rpi-zero2w-20261011T153043Z-abcdef01", model="zero2w")
+        shutil.copy(z_root_cur / "usr/lib/retroboot/release.json", self.root / "usr/lib/retroboot/release.json")
+        z_new = self._make_rpi_root(self.root / "znew", "0.3.0", "0.3.0-rpi-zero2w-20261124T010203Z-abcdef02", model="zero2w")
+        z_bundle = self._make_rpi_bundle(self.root / "zero2w.rbu", z_new, model="zero2w",
+                                         build_id="0.3.0-rpi-zero2w-20261124T010203Z-abcdef02")
+        mbr_lay = {
+            "current": "a", "table": "dos", "a": str(self.slots["a"]), "b": str(self.slots["b"]),
+            "esp": "p1", "data": "p4",
+            "partuuids": {"a": "abcd1234-02", "b": "abcd1234-03", "esp": "abcd1234-01", "data": "abcd1234-04"},
+        }
+        app = await self.make_rpi_app(current="a", zero2w=True, layout=mbr_lay)
+        self.assertIsNone(app.updates.unavailable)
+        self.assertEqual(app.updates.boot_mode, "rpi")
+        # Default feed URL used when update_default_feed_url is None
+        app.cfg.update_default_feed_url = None
+        self.assertEqual(app.updates.feed_url(), manager_mod.DEFAULT_FEED_URL)
+        feed = {
+            "format": "retroboot-feed/1",
+            "updates": [{"version": "9.0.0", "build_id": "9.0.0-20261127T000000Z-x86", "flavor": "debug",
+                         "url": "https://updates.example/x86.rbu", "sha256": "0" * 64, "bytes": 1000}],
+            "platform_updates": [
+                {"version": "9.1.0", "build_id": "9.1.0-rpi-20261127T000000Z-pi45", "flavor": "debug",
+                 "arch": "arm64", "board": "rpi", "model": "pi4-5",
+                 "url": "https://updates.example/pi45.rbu", "sha256": "1" * 64, "bytes": 1000},
+                {"version": "0.3.0", "build_id": "0.3.0-rpi-zero2w-20261124T010203Z-abcdef02", "flavor": "debug",
+                 "arch": "arm64", "board": "rpi", "model": "zero2w",
+                 "url": "https://updates.example/zero2w.rbu", "sha256": "2" * 64, "bytes": 1000},
+            ],
+        }
+        picked = app.updates.pick_from_feed(feed)
+        self.assertEqual(picked["build_id"], "0.3.0-rpi-zero2w-20261124T010203Z-abcdef02")
+        app.updates.release = {"version": "0.2.0", "build_id": "0.2.0-rpi-20261011T153043Z-abcdef01",
+                               "flavor": "debug", "arch": "arm64", "board": "rpi", "model": "pi4-5"}
+        self.assertEqual(app.updates.pick_from_feed(feed)["build_id"], "9.1.0-rpi-20261127T000000Z-pi45")
+        app.updates.release = {"version": "0.2.0", "build_id": "0.2.0-20261011T153043Z-593ad875",
+                               "flavor": "debug", "arch": "x86_64", "board": "pc"}
+        self.assertEqual(app.updates.pick_from_feed(feed)["build_id"], "9.0.0-20261127T000000Z-x86")
+        app.updates.release = json.loads((self.root / "usr/lib/retroboot/release.json").read_text())
+
+        incoming = app.updates.new_incoming()
+        shutil.copy(z_bundle, incoming)
+        job = app.updates.install_job({"kind": "file", "path": str(incoming)})
+        await job.done.wait()
+        self.assertEqual(job.state, "succeeded", job.error)
+        self.assertFalse((self.esp / "retroboot/slot-b/bootcode.bin").exists())
+        self.assertFalse((self.esp / "retroboot/slot-b/start.elf").exists())
+        self.assertTrue((self.esp / "retroboot/slot-b/bcm2710-rpi-zero-2-w.dtb").is_file())
+        self.assertIn("root=PARTUUID=abcd1234-03", (self.esp / "retroboot/slot-b/cmdline.txt").read_text())
+        fstab = (self.slots["b"] / "etc/fstab").read_text()
+        self.assertIn("PARTUUID=abcd1234-03 / ext4", fstab)
+        self.assertIn("PARTUUID=abcd1234-01 /boot/firmware vfat", fstab)
+        self.assertIn("PARTUUID=abcd1234-04 /var/lib/retroboot xfs", fstab)
+
+        # sync_rpi_slot rejects bundles missing kernel8.img/initramfs8
+        bad_boot = self.root / "bad_boot"
+        (bad_boot / "usr/lib/retroboot/boot/bootfs").mkdir(parents=True)
+        (bad_boot / "usr/lib/retroboot/boot/bootfs/config.txt").write_text("[all]\n")
+        (bad_boot / "usr/lib/retroboot/boot/boot.json").write_text(json.dumps({"bootfs_files_sha256": {}}))
+        with self.assertRaises(WriteError) as we:
+            sync_rpi_slot(self.esp, "b", bad_boot, "quiet")
+        self.assertEqual(we.exception.code, "boot-payload")
 
 
 class CleanUpdateTests(unittest.IsolatedAsyncioTestCase):
@@ -1301,6 +1436,52 @@ class CleanUpdateTests(unittest.IsolatedAsyncioTestCase):
         await helpers.wait_for(lambda: app2.updates.committed, 5, 0.05, "clean commit")
         self.assertIn("clean-updated", app2.updates.state["last_result"]["message"])
         self.assertTrue(app2.updates.state["last_result"]["clean"])
+
+    async def test_rpi_image_model_without_dt_uses_rpi_update_mode(self):
+        from types import SimpleNamespace
+        helpers.make_package(self.root)
+        esp = self.root / "boot/efi"
+        esp.mkdir(parents=True, exist_ok=True)
+        (esp / "config.txt").write_text("arm_64bit=1\n")
+        cmdline = self.root / "proc_cmdline"
+        cmdline.write_text("quiet root=PARTUUID=deadbeef-02\n")
+        cfg = helpers.make_config(self.root)
+        cfg.update_esp = str(esp)
+        cfg.cmdline_path = str(cmdline)
+
+        # Profile-backed image_model (e.g., QEMU virt or newer Pi board) without Broadcom DT:
+        # missing layout reports UNAVAILABLE_PI_LEGACY (not UNAVAILABLE_PI), and valid layout activates rpi mode.
+        cfg.update_layout = None
+        app_legacy = Hostd(cfg)
+        app_legacy.platform = SimpleNamespace(
+            has_grub=False, is_raspberry_pi=False, is_zero2w=True, is_gemini=False,
+            image_model="zero2w", family="other", board=None, model="", ram_mb=512,
+            features={}, public=lambda: {},
+        )
+        app_legacy.loop = asyncio.get_running_loop()
+        app_legacy.settings.store.load()
+        await app_legacy.updates.start()
+        self.addAsyncCleanup(app_legacy.updates.stop)
+        self.assertEqual(app_legacy.updates.unavailable, manager_mod.UNAVAILABLE_PI_LEGACY)
+
+        cfg2 = helpers.make_config(self.root)
+        cfg2.update_esp = str(esp)
+        cfg2.cmdline_path = str(cmdline)
+        cfg2.update_layout = {"current": "a", "a": "/dev/mmcblk0p2", "b": "/dev/mmcblk0p3",
+                              "esp": "/dev/mmcblk0p1", "data": "/dev/mmcblk0p4", "table": "dos"}
+        app_ok = Hostd(cfg2)
+        app_ok.platform = SimpleNamespace(
+            has_grub=False, is_raspberry_pi=False, is_zero2w=True, is_gemini=False,
+            image_model="zero2w", family="other", board=None, model="", ram_mb=512,
+            features={}, public=lambda: {},
+        )
+        app_ok.loop = asyncio.get_running_loop()
+        app_ok.settings.store.load()
+        await app_ok.updates.start()
+        self.addAsyncCleanup(app_ok.updates.stop)
+        self.assertIsNone(app_ok.updates.unavailable)
+        self.assertEqual(app_ok.updates.boot_mode, "rpi")
+        self.assertEqual(app_ok.updates.release.get("model"), "zero2w")
 
 
 if __name__ == "__main__":

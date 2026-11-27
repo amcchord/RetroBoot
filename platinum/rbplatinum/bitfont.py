@@ -50,7 +50,8 @@ def parse_nfnt(data: bytes, family: str, size: int) -> BitFont:
     n = last - first + 3
     loc_off = 26 + row_bytes * frh
     loc = struct.unpack(f">{n}H", data[loc_off:loc_off + 2 * n])
-    ow = struct.unpack(f">{n}h", data[loc_off + 2 * n:loc_off + 4 * n])
+    # locTable has (last - first + 3) words; owTable has (last - first + 2) words.
+    ow = struct.unpack(f">{n - 1}h", data[loc_off + 2 * n:loc_off + 2 * n + 2 * (n - 1)])
     font = BitFont(family, size, "plain", ascent, descent, leading)
 
     def col(x: int, y: int) -> int:

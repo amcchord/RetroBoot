@@ -208,6 +208,7 @@ def make_config(root: Path, **overrides) -> Config:
     cfg.sysfs_path = str(root / "sys")          # no host battery/DMI: a desktop unless a test says otherwise
     cfg.device_tree = str(root / "proc/device-tree")   # no device tree: a PC unless a test makes one (platform.py)
     cfg.catalog_url = "https://127.0.0.1:9/catalog.json"   # tests never reach the Internet catalog
+    cfg.update_default_feed_url = ""                       # tests never reach the public update feed
     cfg.installer_board = "x86"   # the installer's PC layouts on any test host (aarch64 chroots included)
     for k, v in overrides.items():
         setattr(cfg, k, v)

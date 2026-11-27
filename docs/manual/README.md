@@ -1,6 +1,6 @@
-# RetroBoot 3.4.2 User Manual
+# RetroBoot 3.5.0 User Manual
 
-Welcome to the complete **RetroBoot 3.4.2** user manual. RetroBoot turns a spare x86-64 PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini PDA into a dedicated classic Macintosh—no Linux experience or collector hardware required. Power on, hear a genuine classic Mac startup chime, and your chosen Mac OS desktop takes over the screen.
+Welcome to the complete **RetroBoot 3.5.0** user manual. RetroBoot turns a spare x86-64 PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini PDA into a dedicated classic Macintosh—no Linux experience or collector hardware required. Power on, hear a genuine classic Mac startup chime, and your chosen Mac OS desktop takes over the screen.
 
 <table>
   <tr>
@@ -9,8 +9,8 @@ Welcome to the complete **RetroBoot 3.4.2** user manual. RetroBoot turns a spare
       <br><sub>Live Proxmox 3.0.0 cold boot to the Mac OS 9 Finder (playback shortened).</sub>
     </td>
     <td align="center">
-      <img src="../images/manual/panel-main-341.png" width="390" alt="RetroBoot 3.4.2 local Ctrl+Alt+Delete Platinum panel over Mac OS 9.2.2">
-      <br><sub>Live Proxmox 3.4.2 local <strong>Ctrl+Alt+Delete</strong> Platinum panel.</sub>
+      <img src="../images/manual/panel-main-341.png" width="390" alt="RetroBoot 3.5.0 local Ctrl+Alt+Delete Platinum panel over Mac OS 9.2.2">
+      <br><sub>Live Proxmox 3.5.0 local <strong>Ctrl+Alt+Delete</strong> Platinum panel.</sub>
     </td>
   </tr>
 </table>
@@ -42,7 +42,7 @@ flowchart LR
 | 1 | [System Requirements & Supported Hardware](01-system-requirements.md) | Supported PCs, Intel Macs, Raspberry Pi 4/5/400/Zero 2 W, Gemini PDA, storage, RAM, and runtime compatibility |
 | 2 | [Architecture & How RetroBoot Works](02-architecture-how-it-works.md) | Invisible Debian 13 host, A/B root slots, `RBDATA` XFS reflink checkpoints, presenter, QEMU, and `hostd` |
 | 3 | [Installation & First Boot](03-installation.md) | Flashing ISO/USB/SD images (Etcher, Pi Imager JSON, Rufus DD), BitLocker recovery keys, `network.conf`, and disk setup |
-| 4 | [First Start & The 13-Mac Library](04-first-start-and-mac-library.md) | **Mega Deluxe v6** (146 apps, 8-tab 4-row Launcher, ACTION Menus™, on-demand Virtual CDs), clean OS 9, 68k, and Mac OS X |
+| 4 | [First Start & The 13-Mac Library](04-first-start-and-mac-library.md) | **Mega Deluxe v7** (126 apps, Color Oregon Trail, 8-tab 4-row Launcher, clean ACTION Menus™, GoMac Battery Monitor, on-demand Virtual CDs), clean OS 9, 68k, and Mac OS X |
 | 5 | [Everyday Use, Input & Peripherals](05-everyday-use-and-peripherals.md) | Startup chimes, keyboard/mouse DPI, game controllers (`Arrows`/`WASD`), Bluetooth, laptop battery, lid, and rotation |
 | 6 | [Display Scaling & 3D Graphics](06-display-and-3d-graphics.md) | Integer pixel scaling (`1×`–`4×`), smooth fill, per-Mac resolutions, Pi DSI/DPI presets, and ATI Radeon 3D acceleration |
 | 7 | [Networking, AirPort & Modern Web Helper](07-networking-airport-and-web-helper.md) | Wi-Fi, NAT Ethernet, native Apple AirPort emulation, HTTPS translation, search redirects, and whitelist passthrough |
@@ -61,7 +61,7 @@ flowchart LR
 | Your Goal | Jump Straight To |
 | --- | --- |
 | **Brand New User** | [Chapter 3: Installation & First Boot](03-installation.md) → [Chapter 4: First Start & The 13-Mac Library](04-first-start-and-mac-library.md) |
-| **Families & Kids** | [Families & Kids Guide](../guide/families-and-kids.md) · [Chapter 4: Mega Deluxe v6](04-first-start-and-mac-library.md) · [Chapter 8: Print-to-PDF & USB](08-files-usb-and-printing.md) |
+| **Families & Kids** | [Families & Kids Guide](../guide/families-and-kids.md) · [Chapter 4: Mega Deluxe v7](04-first-start-and-mac-library.md) · [Chapter 8: Print-to-PDF & USB](08-files-usb-and-printing.md) |
 | **Raspberry Pi / Zero 2 W** | [Chapter 1: Hardware Support](01-system-requirements.md) · [Chapter 3: Pi Imager & Zero 2 W](03-installation.md) · [Chapter 6: Pi Displays](06-display-and-3d-graphics.md) |
 | **3D Gaming / Mac OS X** | [Chapter 4: Tiger Deluxe & Period Editions](04-first-start-and-mac-library.md) · [Chapter 6: 3D Acceleration (ATI Radeon)](06-display-and-3d-graphics.md) |
 | **Printing & Files** | [Chapter 8: File Sharing, USB Drives & Printing](08-files-usb-and-printing.md) · [Chapter 9: Web Files & Overview](09-web-management-and-remote-screen.md) |
@@ -88,6 +88,6 @@ Manual instructions use PC key labels unless noted otherwise:
 RetroBoot separates built-in MIT-licensed UI chrome from live guest captures (decisions D012, D079, D082):
 
 - **Built-in MIT Platinum UI renders:** Installer screens, local panel dialogs, and browser Web UI pages under `docs/images/manual/` are rendered using RetroBoot's built-in MIT-licensed Platinum theme, fonts, and original icons—never proprietary Apple assets (`RBUI_ASSETS` / `--platinum`).
-- **Live Proxmox captures:** `../images/retroboot-proxmox-boot.gif` (captured on Proxmox in 3.0.0) and live Mac OS / local panel shots (`panel-main-341.png`, `panel-printers-341.png`, `macos9-print-dialog.png`, `macos9-volume-osd.png`, `finder-mega-deluxe-v6.png`, `zero2w-system755.png`) are captured from running RetroBoot systems (`3.4.2` for local panels, Finder, and Volume OSD) and clearly labeled as virtual-machine or board captures.
+- **Live Proxmox captures:** `../images/retroboot-proxmox-boot.gif` (captured on Proxmox in 3.0.0) and live Mac OS / local panel shots (`panel-main-341.png`, `panel-printers-341.png`, `macos9-print-dialog.png`, `macos9-volume-osd.png`, `finder-mega-deluxe-v7.png`, `zero2w-system755.png`) are captured from running RetroBoot systems (`3.5.0` for main panel, `3.4.2` for Printers/Volume OSD, `mega-deluxe-v7` for Finder) and clearly labeled as virtual-machine or board captures.
 - **Redacted & synthetic examples:** Live pairing codes, session cookies, and home Wi-Fi credentials are never published; pairing screens show temporary/synthetic example values.
 - **Public guides:** Topic-focused quick guides remain available for [Installing](../guide/installing.md), [Families & Kids](../guide/families-and-kids.md), [Mac Disk Library](../guide/disk-library.md), [Web Management](../guide/web-management.md), [Image Servers](../guide/image-servers.md), and [Upgrading](../guide/upgrading.md).

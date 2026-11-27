@@ -325,7 +325,8 @@ class PiHostdTests(unittest.IsolatedAsyncioTestCase):
                       json.dumps(Diagnostics(self.app.panel).doc(), ensure_ascii=False))
         upd = self.app.updates.public()
         self.assertFalse(upd["available"])
-        expected_reason = "This RetroBoot wasn't installed with room for updates."
+        from retroboot.update.manager import UNAVAILABLE_PI_LEGACY
+        expected_reason = UNAVAILABLE_PI_LEGACY
         self.assertEqual(upd["reason"], expected_reason)
         self.assertFalse(upd["can_install"])
         self.assertEqual(helpers.events(self.app, "update_unavailable")[0]["reason"], expected_reason)

@@ -569,6 +569,7 @@ class Config:
     update_ca_file: str | None = None    # LAB ONLY: extra CA for a test update server
     update_allow_http: bool = False      # LAB ONLY: plain-HTTP update server (signatures still checked)
     update_layout: dict | None = None    # tests: slot layout instead of the running disk's
+    update_default_feed_url: str | None = None  # tests: override built-in default feed URL ("" disables)
     # Web Screen page (retroboot/remote): frames per second at most, the share of one
     # core encoding may use (slower updates when frames are expensive), and the pace of
     # typed text and key bar keys in Mac OS keyboard events (a burst, then a steady rate

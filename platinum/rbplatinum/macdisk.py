@@ -19,6 +19,7 @@ for cand in (os.environ.get("RB_GUESTPREP_PATH"), _HERE.parents[2] / "guestprep"
             sys.path.insert(0, str(cand))
         break
 
+from rbguestprep import hfs  # noqa: E402
 from rbguestprep.hfsplus import Volume, Fork, Extent, HFSError, ROOT_FOLDER_ID  # noqa: E402
 
 
@@ -114,6 +115,51 @@ class MacDisk:
         return t.decode("mac_roman"), c.decode("mac_roman")
 
 
+class HfsStandardDisk:
+    """Read-only view of a Mac OS Standard (HFS) volume, e.g. System 7.5.5 / Mac OS 8.1."""
+
+    def __init__(self, image: str | os.PathLike):
+        self.vol = hfs.Volume(str(image), writable=False)
+        self._index: dict | None = None
+
+    def close(self) -> None:
+        self.vol.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def _idx(self):
+        if self._index is None:
+            self._index = self.vol.index()
+        return self._index
+
+    def lookup(self, path: str):
+        return self.vol.lookup(path.split(":"), self._idx())
+
+    def exists(self, path: str) -> bool:
+        try:
+            self.lookup(path)
+            return True
+        except (FileNotFoundError, hfs.HFSError):
+            return False
+
+    def children(self, path: str) -> list:
+        folder = self.lookup(path) if path else None
+        cnid = folder.cnid if folder else hfs.ROOT_FOLDER_ID
+        return sorted((r for (p, _), r in self._idx().items() if p == cnid), key=lambda r: r.name.casefold())
+
+    def read_fork(self, path_or_rec, which: str = "data") -> bytes:
+        rec = self.lookup(path_or_rec) if isinstance(path_or_rec, str) else path_or_rec
+        return self.vol.read_fork(rec, which)
+
+    def type_creator(self, path: str) -> tuple[str, str]:
+        t, c = self.lookup(path).type_creator
+        return t.decode("mac_roman"), c.decode("mac_roman")
+
+
 class FolderDisk:
     """Same interface over a folder of extracted files: NAME (data fork) and
     NAME.rsrc or NAME/..namedfork/rsrc (resource fork), ':' mapped to '/'."""
@@ -147,6 +193,14 @@ class FolderDisk:
                 continue
         raise FileNotFoundError(path + " (resource fork)")
 
+    def type_creator(self, path: str) -> tuple[str, str] | None:
+        return None
+
 
 def open_disk(src: str | os.PathLike):
-    return FolderDisk(src) if Path(src).is_dir() else MacDisk(src)
+    p = Path(src)
+    if p.is_dir():
+        return FolderDisk(p)
+    if hfs.is_hfs_standard(str(p)):
+        return HfsStandardDisk(p)
+    return MacDisk(p)

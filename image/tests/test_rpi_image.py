@@ -72,6 +72,8 @@ class ConfigTxtTest(unittest.TestCase):
     def test_zero_firmware_memory_budget(self):
         self.assertIn('gpu_mem=16', self.sections()['pi02'])
         self.assertIn('dtparam=cma-64', self.sections()['pi02'])
+        # Keep BCM2710's native dwc_otg host driver; forcing dwc2 breaks hub/high-speed mice.
+        self.assertFalse(any(l.startswith('dtoverlay=dwc2') for l in self.sections()['pi02']))
 
     def test_audio_param_reaches_the_base_device_tree(self):
         # A dtparam= after a dtoverlay= sets that overlay's parameter (vc4-kms-v3d has its own

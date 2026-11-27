@@ -36,7 +36,8 @@ from .. import schema
 from ..jobs import Job, JobFailed
 from ..util import TransferMeter, atomic_write_json, format_transfer_progress, read_json, wall
 from . import slotenv
-from .bundle import Bundle, BundleError, compatibility, describe_version, trusted_keys, version_key
+from .bundle import (Bundle, BundleError, compatibility, describe_version, effective_rpi_model,
+                     normalize_arch, normalize_board, trusted_keys, version_key)
 from .writer import (RealOps, SlotWriter, WriteError, _restore_or_clear_tryboot, activate_rpi_slot,
                      arm_rpi_tryboot, clean_reset_data, commit_rpi_slot, release_info, sync_esp)
 
@@ -50,6 +51,7 @@ MAX_BUNDLE = 2 * 1024 ** 3
 RESERVE = 512 * MiB
 FEED_FORMAT = "retroboot-feed/1"
 MAX_FEED = 256 * 1024
+DEFAULT_FEED_URL = "https://mcchord.net/retroboot-downloads/feed.json"
 HISTORY = 20
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -65,6 +67,8 @@ def https_url(url: Any, allow_http: bool = False) -> bool:
 
 UNAVAILABLE_PI = ("Software Update isn't available on this Raspberry Pi test build yet. "
                   "To try a newer build, write its SD card image.")
+UNAVAILABLE_PI_LEGACY = ("This Raspberry Pi SD card uses an older partition layout without a second system slot. "
+                         "Flash the latest RetroBoot SD card image once to enable Software Update.")
 UNAVAILABLE_GEMINI = ("Software Update isn't available on this Gemini PDA test build yet. "
                       "To try a newer build, install its boot image and system again.")
 
@@ -117,13 +121,28 @@ class UpdateManager:
     # -- startup --------------------------------------------------------------------
     def _probe(self) -> None:
         """Blocking: layout, environment, release (worker thread)."""
-        self.release = release_info(Path(self.cfg.root))
+        rel = dict(release_info(Path(self.cfg.root)))
+        plat = getattr(self.app, "platform", None)
+        is_rpi = bool(plat is not None and (getattr(plat, "is_raspberry_pi", False)
+                                            or getattr(plat, "image_model", None)))
+        if plat is not None:
+            if not rel.get("board"):
+                if is_rpi:
+                    rel["board"] = "rpi"
+                elif getattr(plat, "is_gemini", False):
+                    rel["board"] = "gemini"
+                else:
+                    rel["board"] = "pc"
+            if not rel.get("arch"):
+                rel["arch"] = "arm64" if rel["board"] in ("rpi", "gemini") else "x86_64"
+            if rel["board"] == "rpi" and not rel.get("model"):
+                rel["model"] = "zero2w" if getattr(plat, "is_zero2w", False) else "pi4-5"
+        self.release = rel
         if self.app.mode != "normal":
             self.unavailable = "Software Update isn't available while the installer is running."
             return
-        plat = getattr(self.app, "platform", None)
         if plat is not None and not plat.has_grub and not self.cfg.update_layout:
-            if getattr(plat, "is_raspberry_pi", False) and not getattr(plat, "is_zero2w", False):
+            if is_rpi:
                 pass
             else:
                 self.unavailable = UNAVAILABLE_GEMINI if getattr(plat, "is_gemini", False) else UNAVAILABLE_PI
@@ -134,18 +153,20 @@ class UpdateManager:
             try:
                 self.layout = slotenv.layout(self.cfg.sysfs_path)
             except slotenv.SlotError as exc:
-                self.unavailable = "This RetroBoot wasn't installed with room for updates."
+                if is_rpi:
+                    self.unavailable = UNAVAILABLE_PI_LEGACY
+                else:
+                    self.unavailable = "This RetroBoot wasn't installed with room for updates."
                 log.info("update layout unavailable: %s", exc)
                 return
         try:
             os.listdir(self.esp)     # triggers the /boot/efi automount
         except OSError:
             pass
-        if (self.esp / "grub" / "grub.cfg").is_file() and not (
-                plat is not None and getattr(plat, "is_raspberry_pi", False)):
+        if (self.esp / "grub" / "grub.cfg").is_file() and not is_rpi:
             self.boot_mode = "grub"
         elif (self.esp / "config.txt").is_file() and (
-                plat is None or getattr(plat, "is_raspberry_pi", False)
+                plat is None or is_rpi
                 or getattr(self.cfg, "update_mode", None) == "rpi"):
             self.boot_mode = "rpi"
         else:
@@ -835,19 +856,30 @@ class UpdateManager:
 
     def feed_url(self) -> str:
         """The update server: setting update.url, else the RetroBoot downloads update list
-        when this computer is signed in to RetroBoot downloads (labauth). Either way it is
-        checked only when asked."""
+        when signed in (labauth), else the public RetroBoot update feed. Checked only when asked."""
         url = self.app.settings.applied.get("update.url") or ""
         auth = getattr(self.app, "lab_auth", None)
-        return url or (auth.feed_url if auth is not None else "")
+        default = DEFAULT_FEED_URL if self.cfg.update_default_feed_url is None else self.cfg.update_default_feed_url
+        return url or (auth.feed_url if auth is not None else "") or default
 
     def _pick_from_feed(self, feed: Any, *, include_current: bool = False) -> dict | None:
         if not isinstance(feed, dict) or feed.get("format") != FEED_FORMAT or not isinstance(feed.get("updates"), list):
             raise JobFailed("The update server's list isn't in a format RetroBoot understands.", None, "invalid-feed")
+        platform_updates = feed.get("platform_updates") if isinstance(feed.get("platform_updates"), list) else []
+        entries = list(feed["updates"][:50]) + list(platform_updates[:50])
+        inst_arch = normalize_arch(self.release.get("arch")) or "x86_64"
+        inst_board = normalize_board(self.release.get("board")) or "pc"
+        inst_model = effective_rpi_model(self.release)
         best = None
         cur = version_key(self.release.get("version", "0.0.0"), self.release.get("build_id"))
-        for u in feed["updates"][:50]:
+        for u in entries:
             if not isinstance(u, dict) or u.get("flavor") != self.release.get("flavor"):
+                continue
+            u_arch = normalize_arch(u.get("arch")) or "x86_64"
+            u_board = normalize_board(u.get("board")) or "pc"
+            if u_arch != inst_arch or u_board != inst_board:
+                continue
+            if inst_board == "rpi" and effective_rpi_model({**u, "board": "rpi"}) != inst_model:
                 continue
             if not (isinstance(u.get("version"), str) and isinstance(u.get("build_id"), str)
                     and https_url(u.get("url"), self.cfg.update_allow_http)

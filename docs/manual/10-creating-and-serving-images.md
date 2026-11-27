@@ -2,7 +2,7 @@
 
 # Chapter 10 — Creating and Serving Custom Mac Images
 
-RetroBoot includes 13 ready-to-run Macintosh editions out of the box, and also lets you author, package, and host your own Mac OS disk images—either for offline distribution on a USB flash drive or over HTTPS via up to eight custom image catalogs.
+RetroBoot includes 14 ready-to-run Macintosh editions out of the box, and also lets you author, package, and host your own Mac OS disk images—either for offline distribution on a USB flash drive or over HTTPS via up to eight custom image catalogs.
 
 This chapter walks through the complete workflow from a blank disk to a verified, resumable HTTPS catalog entry.
 

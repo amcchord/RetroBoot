@@ -532,7 +532,7 @@ class TestPanel310(unittest.IsolatedAsyncioTestCase):
 
     async def test_first_boot_hero_13_mac_library_and_paused_resume(self):
         entries = validate_catalog(json.loads(PUBLIC_CATALOG.read_text()))
-        self.assertEqual(len(entries), 13)
+        self.assertEqual(len(entries), 14)
 
         # Installer ChooseMacs hero + full 13-Mac library + active Add/Remove (#9, #47).
         app = _FakeApp(self.root)
@@ -558,14 +558,14 @@ class TestPanel310(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Mega Deluxe", _all_text(doc))
         self.assertIn("Kid Pix Studio Deluxe", _all_text(doc))
         self.assertIn("Classic Clean", _all_text(doc))
-        self.assertIn("Browse all 13 Library Macs", _all_text(doc))
+        self.assertIn("Browse all 14 Library Macs", _all_text(doc))
         self.assertIn("host-only", _all_buttons(doc))
         # No mysteriously greyed-out Add button on hero screen.
         self.assertNotIn("toggle", _all_buttons(doc))
-        # Expand 13-Mac library -> focused row has enabled Remove/Add button.
+        # Expand 14-Mac library -> focused row has enabled Remove/Add button.
         await cm.change("library", True)
         ldoc = cm.doc()
-        self.assertEqual(len(_find_id(ldoc, "macs")["items"]), 13)
+        self.assertEqual(len(_find_id(ldoc, "macs")["items"]), 14)
         self.assertFalse(_all_buttons(ldoc)["toggle"].get("disabled", False))
 
         # Control Panel Download a Mac: hero + Paused / Resume + no 9.2.1 downgrade (#32, #47).
@@ -585,10 +585,27 @@ class TestPanel310(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(_find_id(cdoc, "hero_pick"))
         self.assertEqual(_all_buttons(cdoc)["install"]["label"], "Resume")
         await cl.change("library", True)
-        mega_row = next(r for r in _find_id(cl.doc(), "entry")["items"] if "mega-deluxe" in r["id"])
+        mega_row = next(r for r in _find_id(cl.doc(), "entry")["items"] if r["id"].endswith(":" + mega["id"]))
         self.assertIn("Paused · 87 of ", mega_row["detail"])
         # Never recommend 9.2.1 downgrade when 9.2.2 is installed.
         self.assertFalse(cl.recommended and str(cl.recommended.entry.get("osVersion", "")).startswith("9.2.1"))
+
+    async def test_68k_mega_deluxe_hero_pick_labels(self):
+        entries = [
+            e for e in validate_catalog(json.loads(PUBLIC_CATALOG.read_text()))
+            if e.get("machineFamily") == "quadra800"
+        ]
+        app = _FakeApp(self.root)
+        (app.paths.qemu_m68k_package / "bin").mkdir(parents=True, exist_ok=True)
+        (app.paths.qemu_m68k_package / "bin" / "qemu-system-m68k").write_text("")
+        app.catalogs = _FakeCatalogs(entries, app)
+        panel = Panel(app)
+        cl = CatalogList(panel, back=panel.show_recovery)
+        await cl._load()
+        txt = _all_text(cl.doc())
+        self.assertIn("Mac OS 8.1 Mega Deluxe — Recommended", txt)
+        self.assertIn("Mac OS 8.1 (v2) — Classic Clean desktop", txt)
+        self.assertNotIn("Mac OS 9.2.2", txt)
 
     async def test_update_copy_no_stale_installer_signin(self):
         app = _FakeApp(self.root)

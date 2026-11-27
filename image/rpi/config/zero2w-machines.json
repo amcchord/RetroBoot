@@ -2,30 +2,42 @@
   "schemaVersion": 1,
   "machines": [
     {
-      "id": "mac-os-7.5.5-v1",
+      "id": "mac-os-7.5.5-v2",
       "name": "Mac OS 7.5.5",
-      "summary": "Standard System 7.5.5 for the Quadra 800.",
+      "summary": "Streamlined System 7.5.5 for the Quadra 800 (v2).",
       "osVersion": "7.5.5",
       "machineFamily": "quadra800",
-      "archiveURL": "https://mcchord.net/retroboot-downloads/files/mac-os-7.5.5-retroboot-v1.thin.tar.gz",
-      "archiveBytes": 17354015,
+      "archiveURL": "https://mcchord.net/retroboot-downloads/files/mac-os-7.5.5-retroboot-v2.thin.tar.gz",
+      "archiveBytes": 11025260,
       "installedBytes": 2148532739,
       "diskCapacityBytes": 2147483648,
-      "requiredStorageBytes": 49283072,
-      "sha256": "713eb65d49cf5355ecfce9be89197b31ea0bd1791a1fee20b1b46dedaf95f2bc"
+      "requiredStorageBytes": 41943040,
+      "sha256": "8fd1a39109e3f35cb7538ba8182c10b0f6756b78907e0d21b2937fb5dedc5b59",
+      "thinArchive": {
+        "format": "retroboot-thin-1",
+        "archiveBytes": 11025260,
+        "sha256": "8fd1a39109e3f35cb7538ba8182c10b0f6756b78907e0d21b2937fb5dedc5b59",
+        "archiveURL": "https://mcchord.net/retroboot-downloads/files/mac-os-7.5.5-retroboot-v2.thin.tar.gz"
+      }
     },
     {
-      "id": "mac-os-8.1-v1",
+      "id": "mac-os-8.1-v2",
       "name": "Mac OS 8.1",
-      "summary": "Standard Mac OS 8.1 for the Quadra 800.",
+      "summary": "Streamlined Mac OS 8.1 for the Quadra 800 (v2).",
       "osVersion": "8.1",
       "machineFamily": "quadra800",
-      "archiveURL": "https://mcchord.net/retroboot-downloads/files/mac-os-8.1-retroboot-v1.thin.tar.gz",
-      "archiveBytes": 60851270,
+      "archiveURL": "https://mcchord.net/retroboot-downloads/files/mac-os-8.1-retroboot-v2.thin.tar.gz",
+      "archiveBytes": 45619237,
       "installedBytes": 2148532737,
       "diskCapacityBytes": 2147483648,
-      "requiredStorageBytes": 204472320,
-      "sha256": "7e07a947b1b00146228fccf545031acca970ec602b86d75ef3467a1991eeefd0"
+      "requiredStorageBytes": 182452224,
+      "sha256": "12dc3f4f95ec9af53ea997a58576b8fe43e609047e960daa057b5f99e39a6bb9",
+      "thinArchive": {
+        "format": "retroboot-thin-1",
+        "archiveBytes": 45619237,
+        "sha256": "12dc3f4f95ec9af53ea997a58576b8fe43e609047e960daa057b5f99e39a6bb9",
+        "archiveURL": "https://mcchord.net/retroboot-downloads/files/mac-os-8.1-retroboot-v2.thin.tar.gz"
+      }
     }
   ]
 }

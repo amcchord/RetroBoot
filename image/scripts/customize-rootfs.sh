@@ -249,8 +249,24 @@ PARTLABEL=RBEFI     /boot/efi           vfat  noauto,nofail,x-systemd.automount,
 EOF
 
 settings_schema=$(sed -n 's/^SCHEMA_VERSION = \([0-9]*\)$/\1/p' "$root/usr/lib/retroboot/hostd/retroboot/schema.py" 2>/dev/null | head -n1)
-cat > "$root/usr/lib/retroboot/release.json" <<EOF
-{"product": "RetroBoot", "version": "$version", "flavor": "$flavor", "build_id": "$build_id", "settings_schema": ${settings_schema:-1}}
+rel_arch=x86_64
+if [ "$board" = rpi ] || [ "$board" = gemini ]; then
+  rel_arch=arm64
+fi
+rel_board=$board
+[ "$rel_board" = x86 ] && rel_board=pc
+rel_model=
+[ "$board" = rpi ] && rel_model=${RB_RPI_MODEL:-pi4-5}
+python3 - "$root/usr/lib/retroboot/release.json" "$version" "$flavor" "$build_id" "${settings_schema:-1}" "$rel_arch" "$rel_board" "$rel_model" <<'EOF'
+import json, sys
+out, version, flavor, build_id, schema, arch, board, model = sys.argv[1:]
+doc = {"product": "RetroBoot", "version": version, "flavor": flavor, "build_id": build_id,
+       "settings_schema": int(schema), "arch": arch, "board": board}
+if model:
+    doc["model"] = model
+with open(out, "w") as f:
+    json.dump(doc, f)
+    f.write("\n")
 EOF
 # Software Update: trusted signing keys (public halves only; ARCHITECTURE 13).
 install -d -m 0755 "$root/usr/lib/retroboot/update/keys"

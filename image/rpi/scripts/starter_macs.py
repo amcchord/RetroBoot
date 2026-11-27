@@ -43,7 +43,7 @@ async def install(data, cache):
             ExtractLimits(entry["installedBytes"], entry["requiredStorageBytes"]),
             lambda *_: None, machines_dir=machines, expected_family=QUADRA800)
         ids.append(mid)
-    atomic_write_json(data / SEED, {"settings": {"machine.active": ids[0]}})
+    atomic_write_json(data / SEED, {"settings": {"machine.active": ids[0]}, "oobe": True})
     (data / MARKER).write_text("".join(f"{mid}\n" for mid in ids))
     verify(data)
 
@@ -52,9 +52,11 @@ def verify(data):
     machines = data / "machines"
     catalog = entries()
     ids = [machine_slug(entry["name"]) for entry in catalog]
+    seed = json.loads((data / SEED).read_text())
     if (set(ids) != {path.name for path in machines.iterdir()}
             or (data / MARKER).read_text().splitlines() != ids
-            or json.loads((data / SEED).read_text())["settings"]["machine.active"] != ids[0]):
+            or (seed.get("settings") or {}).get("machine.active") != ids[0]
+            or seed.get("oobe") is not True):
         raise ValueError("Factory library or startup Mac does not match the pinned catalog.")
     for mid, entry in zip(ids, catalog):
         path = machines / mid

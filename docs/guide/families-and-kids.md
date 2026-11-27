@@ -1,15 +1,15 @@
 # RetroBoot for families and kids
 
-RetroBoot 3.4.2 is built to turn any spare laptop, mini PC, or Raspberry Pi into an approachable, joyful classic Macintosh that kids and families can explore right away.
+RetroBoot 3.5.0 is built to turn any spare laptop, mini PC, or Raspberry Pi into an approachable, joyful classic Macintosh that kids and families can explore right away.
 
-## Recommended first pick: Mega Deluxe v6 vs. Clean Mac OS 9.2.2
+## Recommended first pick: Mega Deluxe v7 vs. Clean Mac OS 9.2.2
 
 When setting up a PC or choosing a system in **Download a Mac** (`Ctrl+Alt+Delete`), RetroBoot highlights two great starting points right at the top:
 
-- **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6** — Packed with **all 146 unique apps, games, and creative programs across 8 tabs in a 4-row Launcher**, **ACTION Menus™**, on-demand Virtual CDs (0 mounted at boot), and the **ACTION GoMac** bar (2-second bottom-edge delay). Favorites include **Kid Pix Studio Deluxe**, **Logical Journey of the Zoombinis**, **The Oregon Trail**, **SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, and **ClarisWorks 5**.
+- **Kids & Family: Mac OS 9.2.2 Mega Deluxe v7** — Packed with **126 unique titles across 8 tabs in a 4-row Launcher** (with a focused 13-app productivity & audio `Applications` tab), **Color *The Oregon Trail* (v1.2 + Oregon Color v1.1)**, **clean ACTION Menus™** (far-left/far-right corner menus removed), on-demand Virtual CDs (0 mounted at boot), and the **ACTION GoMac** bar with **Battery Monitor** (2-second bottom-edge delay). Favorites include **Kid Pix Studio Deluxe**, **Logical Journey of the Zoombinis**, **The Oregon Trail**, **SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, and **ClarisWorks 5**.
 - **Clean Mac OS 9.2.2** — A fast, minimal system with classic browsers, QuickTime 6, AirPort, and plenty of room to install your own favorite discs.
 
-If you have a **Raspberry Pi Zero 2 W**, choose **Mac OS 7.5.5 Deluxe v2** or **Mac OS 8.1 Deluxe v2** for 23 great 68k games (including After Dark Flying Toasters and ClarisWorks 5) tuned for 512 MB boards.
+If you have a **Raspberry Pi Zero 2 W**, choose **Mac OS 8.1 Mega Deluxe** (`99` curated 68k apps, games, and educational titles across an 8-tab Launcher tuned for `64 MB` RAM), **System 7.5.5 Deluxe v3**, or **Mac OS 8.1 Deluxe v3** (23 classic 68k games including After Dark Flying Toasters and ClarisWorks 5).
 
 ## Automatic "Fresh Install" safety checkpoints
 

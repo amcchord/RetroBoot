@@ -19,7 +19,7 @@ RetroBoot updates its own Linux system, emulator packages, presenter, and web ma
 
 ### Signed Ed25519 `.rbu` Bundles
 
-Every RetroBoot update is packaged as an uncompressed POSIX tar bundle ending in `.rbu`—for example `retroboot-update-3.4.2-product.rbu` (x86-64 PC) or `retroboot-update-3.4.2-rpi-product.rbu` (Raspberry Pi 4/5/400). Each bundle contains four members in strict order:
+Every RetroBoot update is packaged as an uncompressed POSIX tar bundle ending in `.rbu`—for example `retroboot-update-3.5.0-product.rbu` (x86-64 PC), `retroboot-update-3.5.0-rpi-product.rbu` (Raspberry Pi 4/5/400), or `retroboot-update-3.5.0-rpi-zero2w-product.rbu` (Raspberry Pi Zero 2 W). Each bundle contains four members in strict order:
 
 1. `manifest.json` — version, `build_id`, flavor (`product` or `debug`), `min_version`, `settings_schema`, kernel arguments, and payload hashes.
 2. `manifest.sig` — an **Ed25519** signature (`retroboot-update-sig/1`) over the exact bytes of `manifest.json`.
@@ -33,8 +33,8 @@ Before writing anything, `hostd` verifies `manifest.sig` against trusted public 
 | Platform | Mechanism | Rollback / Recovery |
 | --- | --- | --- |
 | **x86-64 PC & Intel Mac** | Dual A/B ext4 system partitions (`RBROOT_A` and `RBROOT_B`, 3 GiB each) controlled by GRUB (`grub/retroboot/slots.env`, `slot-a.cfg`, `slot-b.cfg`). `RBDATA` (`/var/lib/retroboot`) is shared and never reformatted. | Automatic GRUB fallback if the trial boot fails; manual **Go Back to …** anytime. |
-| **Raspberry Pi 4, Pi 5 & Pi 400** | Dual A/B system slots controlled by `retroboot/slots.env` and the Raspberry Pi firmware's one-shot `tryboot.txt` (`systemctl reboot "0 tryboot"`). | Automatic fallback to the active `config.txt` slot if trial fails; **Go Back to …** or second-card migration. |
-| **Raspberry Pi Zero 2 W** | Single-slot MBR layout (512 MB RAM profile). Does not offer OTA `.rbu` updates. Flash the new `retroboot-<ver>-rpi-zero2w-*.img.xz` to a second SD card, boot it once to expand `RBDATA`, shut down cleanly, and migrate your data: `sudo bash image/rpi/scripts/migrate-data.sh /dev/OLD_DATA /dev/NEW_DATA`. | Reinsert the original SD card. |
+| **Raspberry Pi 4, Pi 5 & Pi 400** | Dual A/B GPT system slots controlled by `retroboot/slots.env` and the Raspberry Pi firmware's one-shot `tryboot.txt` (`systemctl reboot "0 tryboot"`). | Automatic fallback to the active `config.txt` slot if trial fails; **Go Back to …** or second-card migration. |
+| **Raspberry Pi Zero 2 W** | Dual A/B system slots on a **4-partition MBR layout** (`p1` FAT32 boot, `p2` `RBROOT_A`, `p3` `RBROOT_B`, `p4` `RBDATA`) controlled by `retroboot/slots.env`, MBR `PARTUUID`s, and `tryboot.txt`. *(Older 3-partition Zero 2 W cards must be flashed once to gain `RBROOT_B`, optionally migrating `RBDATA` with `image/rpi/scripts/migrate-data.sh`.)* | Automatic fallback to the active slot if trial fails; **Go Back to …** anytime. |
 | **Planet Gemini PDA** | Single `/retroboot` directory inside `PARTNAME=linux` (alongside Gemian). Extract `retroboot-<ver>-gemini.tar`, verify hashes, and run from Gemian: `sudo sh gemini-install.sh --verify` then `sudo sh gemini-install.sh --keep-data --activate`. | Run `sudo sh gemini-install.sh --rollback previous` from Gemian, or automatic fallback to Gemian after 3 failed boots. |
 
 ### Three Ways to Deliver an Update
@@ -42,7 +42,7 @@ Before writing anything, `hostd` verifies `manifest.sig` against trusted public 
 RetroBoot never checks or downloads updates automatically in the background; it checks only when you ask.
 
 1. **Update Server (`https://`):**
-   On **Ctrl+Alt+Delete → Software Update…** (or the web **Software Update** page), choose **Check for Updates**. By default, devices signed in to RetroBoot downloads check the configured RetroBoot feed, or you can set a custom `https://` feed URL (`update.url`, `retroboot-feed/1` JSON format). Click **Download and Install** when a newer matching flavor appears.
+   On **Ctrl+Alt+Delete → Software Update…** (or the web **Software Update** page), choose **Check for Updates**. By default, RetroBoot checks the public RetroBoot update feed (`https://mcchord.net/retroboot-downloads/feed.json`, which separates PC `updates` from Raspberry Pi `platform_updates` matched strictly by architecture, board, and Pi model), or uses your RetroBoot downloads sign-in / custom `https://` feed URL (`update.url`, `retroboot-feed/1` JSON format). Click **Download and Install** when a newer matching bundle appears.
 2. **Web Upload:**
    In a paired browser, open **Software Update**, click **Choose Update File…**, and select a downloaded `.rbu` file.
 3. **USB Disk:**

@@ -598,7 +598,8 @@ def report(device_tree: str | Path = DEVICE_TREE, dmi: str | Path = DMI) -> dict
     out: dict = {"platform": plat.public(), "revision": plat.revision, "source": plat.source,
                  "timeout_scale": plat.timeout_scale, "scaled_timeouts": {k: v[1] for k, v in
                                                                          scale_timeouts(cfg, plat).items()},
-                 "software_update": f"unavailable ({plat.family} test build)" if not plat.has_grub else "GRUB A/B",
+                 "software_update": ("Pi tryboot A/B" if plat.is_raspberry_pi else
+                                     (f"unavailable ({plat.family} test build)" if not plat.has_grub else "GRUB A/B")),
                  "tcg_tb_size_mb": plat.tcg_tb_size_mb,
                  "throttled": health_for(plat).sample() if health_for(plat) else None, "boot_network_conf": None}
     if plat.is_raspberry_pi:

@@ -321,6 +321,11 @@ class Supervisor:
         if self.boot_hold or not self.app.settings.applied.get("startup.autostart", True):
             await self.app.panel.show_startup_options()
             return
+        if callable(getattr(self.app, "oobe_pending", None)) and self.app.oobe_pending():
+            if self.app.machines.list():
+                self._spawn(self._warm_oobe_platinum(), "oobe-platinum")
+            await self.app.panel.show_rpi_oobe()
+            return
         if self.active_machine() is None:
             if not self.app.machines.list():
                 await self.app.panel.show_setup()
@@ -328,6 +333,17 @@ class Supervisor:
                 await self.app.panel.show_startup_options(notice="The selected Mac could not be found. Choose another in Startup Disk.")
             return
         await self.start_guest("boot")
+
+    async def _warm_oobe_platinum(self) -> None:
+        """Warm authentic Mac OS Platinum assets from a stopped preloaded Mac before OOBE finishes."""
+        try:
+            m = self.active_machine() or next(iter(self.app.machines.list()), None)
+            src = self._platinum_source_disk(m)
+            if src is not None and await self.app.platinum.ensure(src):
+                if self.app.panel.visible:
+                    await self.app.panel.refresh()
+        except Exception:
+            log.exception("warming OOBE Platinum assets failed")
 
     async def try_adopt(self) -> bool:
         try:
@@ -517,10 +533,13 @@ class Supervisor:
                 self.log.event("corrupt_disk_recovery", **log_fields)
                 return {"corrupt_disk_recovery": recovery}
         if getattr(machine, "quadra", False):
-            # A 68k Mac: none of the Mac OS 9 hooks (AirPort, ATI, Control Strip, Platinum
-            # bundle from an HFS+ disk); the presenter's startup geometry is the standard card's.
+            # A 68k Mac: none of the Mac OS 9 hooks (AirPort, ATI, Control Strip);
+            # extract Platinum icons/fonts from the best stopped Mac disk (e.g., 8.1 before 7.5.5).
             await self.app.graphics.sync_startup(machine)
             await self.app.ensure_guest_isolation()      # Mac OS can't reach this computer's services
+            src_disk = self._platinum_source_disk(machine)
+            if src_disk is not None:
+                await self.app.platinum.ensure(src_disk)
             return notice
         await self.app.airport.prepare_launch(machine)   # AirPort hook: TCP/IP matches the adapter
         await self.app.graphics.prepare_launch(machine)  # ATI Radeon: Mac OS has ATI's drivers
@@ -534,6 +553,25 @@ class Supervisor:
                 if gp is not None and hasattr(gp, "ensure_printer"):
                     await gp.ensure_printer(machine.disk)
         return notice
+
+    def _platinum_source_disk(self, machine=None) -> Path | None:
+        """Choose the richest stopped classic Mac disk for Platinum asset extraction (OS 9 > 8.1 > 7.5.5)."""
+        cands = []
+        reg = getattr(self.app, "machines", None)
+        if reg is not None:
+            for m in reg.list():
+                if getattr(m, "osx", False) or not getattr(m, "disk", None) or not Path(m.disk).is_file():
+                    continue
+                if callable(getattr(m, "needs_cd", None)) and m.needs_cd():
+                    continue
+                ver = tuple(int(x) for x in re.findall(r"\d+", str(m.meta.get("os_version") or ""))[:4])
+                cands.append((not getattr(m, "quadra", False), ver, m is machine, Path(m.disk)))
+        if cands:
+            cands.sort(reverse=True)
+            return cands[0][3]
+        if machine is not None and getattr(machine, "disk", None) and Path(machine.disk).is_file():
+            return Path(machine.disk)
+        return None
 
     async def _copy_pre_fsck_disk(self, src: Path, dst: Path) -> str:
         """Create a reflink (or sparse/regular fallback) disk snapshot before fsck."""

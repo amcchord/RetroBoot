@@ -1,17 +1,17 @@
 # Installing RetroBoot
 
-Turn a spare x86-64 PC, Intel Mac, or Raspberry Pi into a classic Macintosh in three simple steps: download, flash to USB or microSD, and choose **Kids & Family Mega Deluxe v6** or **Clean Mac OS 9.2.2**.
+Turn a spare x86-64 PC, Intel Mac, or Raspberry Pi into a classic Macintosh in three simple steps: download, flash to USB or microSD, and choose **Kids & Family Mega Deluxe v7** or **Clean Mac OS 9.2.2**.
 
-All **13 ready-to-run Macs** are built into RetroBoot's catalog—no extra setup is required.
+All **14 ready-to-run Macs** are built into RetroBoot's catalog—no extra setup is required.
 
 > **Hardware notes.** Verified in Proxmox VMs (UEFI and legacy BIOS) and tested on physical mini PCs, laptops, and Raspberry Pi 4/5/Zero 2 W boards.
 
 ## Quick 3-step overview
 
-1. **Download:** Pick your installer from the [RetroBoot 3.4.2 downloads portal](https://mcchord.net/retroboot-downloads/):
-   - **x86-64 PC or Intel Mac:** download `retroboot-installer-3.4.2-product.iso` (USB/DVD) or `retroboot-installer-3.4.2-universal-product.img.xz` (universal USB/SD image for both x86 PCs and Raspberry Pi 4/5).
-   - **Raspberry Pi 4, Pi 5, Pi 400, CM4:** open **Raspberry Pi Imager**, add custom repository URL `https://mcchord.net/retroboot-downloads/rpi-imager.json` (or download `retroboot-3.4.2-rpi-product.img.xz` directly).
-   - **Raspberry Pi Zero 2 W:** download `retroboot-3.4.2-rpi-zero2w-product.img.xz` (tuned for 512 MB boards with System 7.5.5 and Mac OS 8.1; requires a USB OTG adapter/hub for keyboard & mouse).
+1. **Download:** Pick your installer from the [RetroBoot 3.5.0 downloads portal](https://mcchord.net/retroboot-downloads/):
+   - **x86-64 PC or Intel Mac:** download `retroboot-installer-3.5.0-product.iso` (USB/DVD) or `retroboot-installer-3.5.0-universal-product.img.xz` (universal USB/SD image for both x86 PCs and Raspberry Pi 4/5).
+   - **Raspberry Pi 4, Pi 5, Pi 400, CM4:** open **Raspberry Pi Imager**, add custom repository URL `https://mcchord.net/retroboot-downloads/rpi-imager.json` (or download `retroboot-3.5.0-rpi-product.img.xz` directly).
+   - **Raspberry Pi Zero 2 W:** download `retroboot-3.5.0-rpi-zero2w-product.img.xz` (tuned for 512 MB boards with System 7.5.5 and Mac OS 8.1; requires a USB OTG adapter/hub for keyboard & mouse).
 2. **Flash to USB or SD:** Use **balenaEtcher**, **Raspberry Pi Imager**, `dd` ([terminal examples](../dev/testing-other-hardware.md#write-the-stick)), or **Rufus in DD Image mode**.
    - **Windows Rufus tip:** When Rufus prompts for image mode, always select **Write in DD Image mode** (ISO mode breaks dual UEFI/BIOS boot and the `RBINSTEFI` setup folder).
    - **macOS popup warning:** Right after flashing finishes, macOS may say *"The disk you inserted was not readable by this computer."* Always click **Ignore** (or **Eject**) — **never click Initialize**, or it will erase the card/USB stick.
@@ -56,12 +56,12 @@ On erase confirmation, **Cancel** is always the default safe button:
 
 ### 4. Choose the Macs to install
 
-**Choose Macs to Install** lists all 13 Macs from the built-in RetroBoot catalog (plus any **Image Servers…** or **USB disk** archives you add). Right near the top you can choose between **Kids & Family: Mac OS 9.2.2 Mega Deluxe v6** (146 unique apps across 8 tabs in a 4-row Launcher, Kid Pix Studio Deluxe, Zoombinis, ACTION Menus™, 2-second GoMac bar delay, and on-demand Virtual CDs with 0 mounted at boot) or **Clean Mac OS 9.2.2**, or check multiple Macs and set **Starts first**.
+**Choose Macs to Install** lists all 14 Macs from the built-in RetroBoot catalog (plus any **Image Servers…** or **USB disk** archives you add). Right near the top you can choose between **Kids & Family: Mac OS 9.2.2 Mega Deluxe v7** (126 unique titles across 8 tabs in a 4-row Launcher with focused productivity/audio apps, Color Oregon Trail, Kid Pix Studio Deluxe, Zoombinis, clean ACTION Menus™, GoMac Battery Monitor & 2-second bar delay, and on-demand Virtual CDs with 0 mounted at boot) or **Clean Mac OS 9.2.2**, or check multiple Macs and set **Starts first**.
 
 | Source | Where the Mac comes from |
 | --- | --- |
 | On this disc | Pre-bundled Macs in private custom installer images |
-| Internet | The built-in RetroBoot 13-Mac library (free, public HTTPS, SHA-256 verified) |
+| Internet | The built-in RetroBoot 14-Mac library (free, public HTTPS, SHA-256 verified) |
 | Image Servers… | Additional custom HTTPS catalogs (such as ClassicMac) |
 | USB disk | `.tar.gz` machine archives on an attached USB stick |
 
@@ -93,7 +93,7 @@ When installation completes, pull the USB stick out and click **Restart** to boo
 
 <img src="../images/manual/installer-done.png" width="428" alt="RetroBoot is installed: remove installation media and restart">
 
-<img src="../images/manual/finder-mega-deluxe-v6.png" width="640" alt="Mac OS 9.2.2 Mega Deluxe v6 Finder with 4-row 8-tab Launcher and ACTION Menus">
+<img src="../images/manual/finder-mega-deluxe-v7.png" width="640" alt="Mac OS 9.2.2 Mega Deluxe v7 Finder with focused 4-row 8-tab Launcher and clean ACTION Menus">
 
 ## Installing on Raspberry Pi
 

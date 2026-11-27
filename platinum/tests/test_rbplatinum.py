@@ -214,6 +214,50 @@ class BundleTests(unittest.TestCase):
             again = bundle.build(str(src), out)          # existing bundle: kept
             self.assertEqual(again["created"], m["created"])
 
+    def test_nfnt_exact_owtable_length(self):
+        # Apple Inside Macintosh NFNT has n locTable words and n - 1 owTable words.
+        raw = synthetic_nfnt()[:-2]
+        f = bitfont.parse_nfnt(raw, "T", 3)
+        self.assertEqual(f.glyphs[0x41].advance, 3)
+
+    def test_hfs_standard_disk_and_icon_fallback(self):
+        import rbplatinum.macdisk as md
+        from rbguestprep.hfsplus import build_resource_fork
+        from rbguestprep import hfs
+
+        # Synthetic minimal HFS Standard volume with System + Control Panels:Monitors & Sound
+        with tempfile.TemporaryDirectory() as td:
+            img = Path(td) / "hfs81.img"
+            with open(img, "wb") as f:
+                f.truncate(2 * 1024 * 1024)
+            # Write HFS MDB signature so locate_volume finds offset=0 when initialized via hfs.
+            img_dir = Path(td) / "folder"
+            (img_dir / "System Folder" / "Extensions").mkdir(parents=True)
+            sys_rsrc = build_resource_fork([])
+            (img_dir / "System Folder" / "System.rsrc").write_bytes(sys_rsrc)
+            # Fallback icon in Extensions:Appearance Extension cicn 2 works via FolderDisk too.
+            cicn = (
+                struct.pack(">IHhhhhHHIIIHHHHIII", 0, 0x8004, 0, 0, 2, 2, 0, 0, 0, 72 << 16, 72 << 16, 0, 8, 1, 8, 0, 0, 0)
+                + bytes(4)
+                + struct.pack(">Hhhhh", 2, 0, 0, 2, 2) + bytes(4)
+                + struct.pack(">Hhhhh", 2, 0, 0, 2, 2) + bytes(4)
+                + bytes([0xC0, 0, 0xC0, 0])
+                + bytes(4)
+                + struct.pack(">IHH", 0, 0, 0) + struct.pack(">4H", 0, 0xFFFF, 0, 0)
+                + bytes([0, 0, 0, 0, 0, 0, 0, 0])
+            )
+            (img_dir / "System Folder" / "Extensions" / "Appearance Extension.rsrc").write_bytes(
+                build_resource_fork([("cicn", 2, "", cicn)])
+            )
+            out = Path(td) / "out"
+            m = md.open_disk(img_dir)
+            m.close()
+            from rbplatinum import bundle
+            manifest = bundle.build(str(img_dir), out, force=True)
+            self.assertIn("caution", manifest["icons"])
+            self.assertTrue((out / "icons" / "caution-32.rbi").is_file())
+            self.assertFalse(hfs.is_hfs_standard(str(img)))
+
     @unittest.skipUnless(os.environ.get("RB_PLATINUM_DISK"), "RB_PLATINUM_DISK not set")
     def test_fixture_disk(self):
         from rbplatinum import bundle

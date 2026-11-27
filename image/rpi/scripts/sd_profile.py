@@ -44,7 +44,8 @@ def validate_machine(model, machine):
 
 
 def mbr_partitions(boot_mib, root_mib, data_mib):
-    sizes = (boot_mib, root_mib, data_mib)
+    """Build 4 primary MBR partitions: FAT32 boot (p1), RBROOT_A (p2), RBROOT_B (p3), RBDATA (p4)."""
+    sizes = (boot_mib, root_mib, root_mib, data_mib)
     if any(type(n) is not int or n < 1 for n in sizes):
         raise ValueError("Partition sizes must be positive MiB integers.")
     start = 2048
@@ -60,7 +61,7 @@ def mbr_partitions(boot_mib, root_mib, data_mib):
 
 
 def write_mbr(path, boot_mib, root_mib, data_mib, disk_id=None):
-    """Initialize a newly created sparse regular file with three aligned partitions."""
+    """Initialize a newly created sparse regular file with four aligned A/B partitions."""
     parts = mbr_partitions(boot_mib, root_mib, data_mib)
     disk_id = secrets.randbelow(0xFFFFFFFF) + 1 if disk_id is None else disk_id
     if type(disk_id) is not int or not 0 < disk_id <= 0xFFFFFFFF:

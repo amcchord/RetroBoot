@@ -392,6 +392,51 @@ def set_fstab_root(root: Path, label: str) -> None:
     p.write_text("\n".join(out) + "\n")
 
 
+def _partuuid(dev: str | None, lay: dict | None = None, role: str | None = None) -> str | None:
+    if role and isinstance((lay or {}).get("partuuids"), dict):
+        pu = lay["partuuids"].get(role)
+        if pu and re.fullmatch(r"[A-Za-z0-9-]+", str(pu)):
+            return str(pu)
+    if not dev:
+        return None
+    try:
+        r = subprocess.run(["blkid", "-s", "PARTUUID", "-o", "value", dev],
+                           capture_output=True, text=True, timeout=5)
+        pu = r.stdout.strip()
+        if r.returncode == 0 and pu and re.fullmatch(r"[A-Za-z0-9-]+", pu):
+            return pu
+    except OSError:
+        pass
+    return None
+
+
+def set_fstab_layout(root: Path, slot: str, lay: dict | None) -> None:
+    """Update ``etc/fstab`` for the target slot (PARTLABEL on GPT, PARTUUID on MBR)."""
+    if (lay or {}).get("table") != "dos":
+        set_fstab_root(root, slotenv.SLOT_LABEL[slot])
+        return
+    p = Path(root) / "etc" / "fstab"
+    try:
+        lines = p.read_text().splitlines()
+    except OSError:
+        return
+    specs: dict[str, str] = {}
+    for mount_pts, role in ((("/",), slot), (("/var/lib/retroboot",), "data"),
+                            (("/boot/firmware", "/boot/efi"), "esp")):
+        pu = _partuuid((lay or {}).get(role), lay, role)
+        if not pu:
+            raise WriteError(f"Could not read the partition identifier for {role}.", "fstab-partuuid")
+        for mp in mount_pts:
+            specs[mp] = f"PARTUUID={pu}"
+    out = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 2 and not line.lstrip().startswith("#") and parts[1] in specs:
+            line = re.sub(r"^\s*\S+", specs[parts[1]], line, count=1)
+        out.append(line)
+    p.write_text("\n".join(out) + "\n")
+
+
 # --- ESP payload ---------------------------------------------------------------------------
 
 def release_info(root: Path) -> dict:
@@ -480,17 +525,24 @@ def _resolve_rpi_src(base: Path, rel: str) -> Path | None:
     return None
 
 
-def _rpi_root_arg(dev: str, slot: str) -> str:
-    """Kernel root= argument for a Pi GPT slot (PARTUUID when readable, else PARTLABEL)."""
-    try:
-        r = subprocess.run(["blkid", "-s", "PARTUUID", "-o", "value", dev],
-                           capture_output=True, text=True, timeout=5)
-        pu = r.stdout.strip()
-        if r.returncode == 0 and pu and re.fullmatch(r"[A-Za-z0-9-]+", pu):
-            return f"PARTUUID={pu}"
-    except OSError:
-        pass
+def _rpi_root_arg(dev: str, slot: str, lay: dict | None = None) -> str:
+    """Kernel root= argument for a Pi slot (PARTUUID when readable, else PARTLABEL on GPT)."""
+    pu = _partuuid(dev, lay, slot)
+    if pu:
+        return f"PARTUUID={pu}"
+    if (lay or {}).get("table") == "dos":
+        raise WriteError("Could not read the partition identifier for the new system slot.", "boot-payload")
     return f"PARTLABEL={slotenv.SLOT_LABEL[slot]}"
+
+
+def _rpi_root_only(clean: str) -> bool:
+    if clean in {"config.txt", "cmdline.txt", "tryboot.txt", "DISPLAY-SETUP.txt", "SETUP.txt",
+                 "bootcode.bin", "LICENCE.broadcom"} or clean.startswith("retroboot/"):
+        return True
+    if "/" not in clean and ((clean.startswith("start") and clean.endswith(".elf"))
+                             or (clean.startswith("fixup") and clean.endswith(".dat"))):
+        return True
+    return False
 
 
 def sync_rpi_slot(esp: Path, slot: str, boot_root: Path, cmdline: str, version: str = "", build_id: str = "",
@@ -498,8 +550,8 @@ def sync_rpi_slot(esp: Path, slot: str, boot_root: Path, cmdline: str, version: 
     """Verify bootfs files shipped inside ``boot_root`` and stage them under ``retroboot/slot-<slot>/``."""
     base, info = boot_payload(boot_root)
     files_map = info.get("bootfs_files_sha256") or info.get("files_sha256") or {}
-    skip_exact = {"config.txt", "cmdline.txt", "tryboot.txt", "DISPLAY-SETUP.txt", "SETUP.txt"}
     copied = []
+    staged: set[str] = set()
     dest_dir = Path(esp) / "retroboot" / f"slot-{slot}"
     dest_dir.mkdir(parents=True, exist_ok=True)
     import hashlib
@@ -507,7 +559,7 @@ def sync_rpi_slot(esp: Path, slot: str, boot_root: Path, cmdline: str, version: 
         clean = rel[4:] if rel.startswith("esp/") else (rel[7:] if rel.startswith("bootfs/") else rel)
         if not clean or clean.startswith("/") or ".." in Path(clean).parts:
             continue
-        if clean in skip_exact or clean.startswith("retroboot/"):
+        if _rpi_root_only(clean):
             continue
         src = _resolve_rpi_src(base, rel)
         if src is None:
@@ -515,6 +567,7 @@ def sync_rpi_slot(esp: Path, slot: str, boot_root: Path, cmdline: str, version: 
         data = src.read_bytes()
         if hashlib.sha256(data).hexdigest() != digest:
             raise WriteError(f"The startup file {clean} doesn't match its checksum.", "boot-payload")
+        staged.add(clean)
         dst = dest_dir / clean
         try:
             if dst.read_bytes() == data:
@@ -523,6 +576,8 @@ def sync_rpi_slot(esp: Path, slot: str, boot_root: Path, cmdline: str, version: 
             pass
         slotenv.write_file_atomic(dst, data)
         copied.append(clean)
+    if not {"kernel8.img", "initramfs8"} <= staged:
+        raise WriteError("The update is missing Raspberry Pi startup files.", "boot-payload")
     cfg_src = _resolve_rpi_src(base, "config.txt") or (Path(esp) / "config.txt")
     cfg_text = cfg_src.read_text(errors="replace") if cfg_src.is_file() else "[all]\nkernel=kernel8.img\ninitramfs initramfs8 followkernel\n"
     if cfg_src.is_file() and info.get("config_txt_sha256") and cfg_src != Path(esp) / "config.txt":
@@ -695,7 +750,7 @@ class SlotWriter:
                 _log("verification problems: " + "; ".join(problems[:10]))
                 raise WriteError("The new system didn't verify after it was written.", "verify-failed")
             progress(0.92, "Finishing…")
-            set_fstab_root(Path(slot_mnt), slotenv.SLOT_LABEL[target])
+            set_fstab_layout(Path(slot_mnt), target, self.lay)
             carried = carry_state(self.running_root, Path(slot_mnt), self.data_dir, clean=clean)
             new_root_boot = self.work / "boot"
             if new_root_boot.exists():
@@ -715,7 +770,7 @@ class SlotWriter:
         if self.mode == "rpi":
             converted = convert_legacy_rpi(self.esp, self.running_root, self.lay.get("current") or "a")
             sync_rpi_slot(self.esp, target, new_root_boot, cmdline, version, build_id,
-                          root_arg=_rpi_root_arg(dev, target))
+                          root_arg=_rpi_root_arg(dev, target, self.lay))
         else:
             slotenv.write_slot_cfg(self.esp, target, cmdline, version, build_id)
             converted = convert_legacy(self.esp, self.running_root, new_root_boot)
@@ -730,7 +785,7 @@ class SlotWriter:
         mnt = str(self.work / "slot")
         self.ops.mount(self.lay[slot], mnt)
         try:
-            set_fstab_root(Path(mnt), slotenv.SLOT_LABEL[slot])
+            set_fstab_layout(Path(mnt), slot, self.lay)
             return carry_state(self.running_root, Path(mnt), self.data_dir, clean=clean)
         finally:
             self.ops.umount(mnt)

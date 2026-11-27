@@ -1,16 +1,18 @@
 [← Previous](03-installation.md) · [Table of Contents](README.md) · [Next →](05-everyday-use-and-peripherals.md)
 
-# Chapter 4: First Start & The 13-Mac Library
+# Chapter 4: First Start & The 14-Mac Library
 
 On most installs, turning on the computer plays your startup chime, shows the checkerboard with the Happy Mac progress bar, and hands seamlessly over to your chosen Mac OS desktop. When you install RetroBoot without a pre-staged Mac—such as choosing **Install RetroBoot Only…** on a PC or booting a fresh **Raspberry Pi 4/5** card—first boot opens **RetroBoot Setup** instead.
 
-This chapter covers first-boot setup, every icon in the local **Ctrl+Alt+Delete** Platinum control panel, what RetroBoot prepares automatically on Classic Mac disks, the complete **13-Mac Disk Library** specification, a deep spotlight on **Mac OS 9.2.2 Mega Deluxe v6**, and managing multiple Macs with **Startup Disk** and **Fresh Install** checkpoints.
+This chapter covers first-boot setup, every icon in the local **Ctrl+Alt+Delete** Platinum control panel, what RetroBoot prepares automatically on Classic Mac disks, the complete **14-Mac Disk Library** specification, spotlights on **Mac OS 9.2.2 Mega Deluxe v7** and **Mac OS 8.1 Mega Deluxe v1 (68k)**, and managing multiple Macs with **Startup Disk** and **Fresh Install** checkpoints.
 
 ---
 
 ## First-Boot Setup (`RetroBoot Setup`)
 
-If no Mac disk is installed yet when RetroBoot starts, the presenter displays **RetroBoot Setup** (`setup-welcome`) on your screen using RetroBoot's built-in MIT-licensed Platinum interface—no terminal or secondary computer required:
+If no Mac disk is installed yet—or on a fresh **Raspberry Pi** microSD card—first boot runs **RetroBoot Setup** (`oobe-welcome` on Raspberry Pi, or `setup-welcome` on a host-only PC install) using RetroBoot's built-in Platinum interface—no terminal or secondary computer required:
+
+- On **Raspberry Pi 4/5 & Zero 2 W**, RetroBoot greets you with live **Network / Wi-Fi…** and **Bluetooth…** configuration plus **Command key** selection, advances through automatic **Time Zone** detection, and then either lets you pick between **Zero 2 W**'s preloaded clean **System 7.5.5 (v2)** and **Mac OS 8.1 (v2)** installs (with **Download Another Mac…** right on screen) or opens **Download a Mac** on an empty Pi 4/5 card.
 
 <img src="../images/manual/pi45-first-setup.png" width="560" alt="RetroBoot Setup and Download a Mac hero selection on first boot">
 
@@ -19,15 +21,16 @@ If no Mac disk is installed yet when RetroBoot starts, the presenter displays **
    - **Network…:** Join a Wi-Fi network (or confirm wired Ethernet) before downloading a Mac.
    - **Bluetooth…:** Shown when a Bluetooth adapter is present so you can pair wireless keyboards or mice during setup.
 2. **Choose an Install Source:**
-   - **The Internet (RetroBoot Mac library):** Browse RetroBoot's built-in **13-Mac catalog** over HTTPS with automatic SHA-256 verification.
+   - **The Internet (RetroBoot Mac library):** Browse RetroBoot's built-in **14-Mac catalog** over HTTPS with automatic SHA-256 verification.
    - **A USB disk:** Import a `.tar.gz` Mac archive (with optional `.sha256` sidecar) from an attached USB flash drive.
 3. **Time Zone Detection (`3.4.0+`):**
    - If your time zone is still `UTC` and a network connection is up, RetroBoot automatically queries HTTPS geolocation (`ipinfo.io`, `ipwho.is`, `ipapi.co`) to suggest your local IANA time zone. You can click **Detect**, search by city, filter by region, and verify the live local clock preview before clicking **Continue**.
 4. **Pick Your Mac in `Download a Mac`:**
    - When **Mac OS 9.2.2 Mega Deluxe** and **Mac OS 9.2.2** are both available and not yet installed, **Download a Mac** highlights them as **Recommended Picks** right at the top:
-     - **Mac OS 9.2.2 Mega Deluxe — Recommended:** RetroBoot's flagship family edition with 146 apps and games across 8 Launcher tabs, Kid Pix Studio Deluxe, Zoombinis, Oregon Trail, SimCity, and ClarisWorks 5.
+     - **Mac OS 9.2.2 Mega Deluxe — Recommended:** RetroBoot's flagship family edition with 126 curated titles across 8 Launcher tabs, Kid Pix Studio Deluxe, Zoombinis, Oregon Trail, SimCity, and ClarisWorks 5.
      - **Mac OS 9.2.2 — Classic Clean desktop:** A fast, clean Mac OS 9.2.2 desktop ready for your own software.
-   - Check **Browse all 13 Library Macs** to view every 68k, PowerPC Mac OS 9, and Mac OS X edition supported on your hardware.
+   - On 68k-only boards such as **Raspberry Pi Zero 2 W**, RetroBoot highlights **Mac OS 8.1 Mega Deluxe** (`99` curated 68k apps, games, and educational titles across an 8-tab Launcher) alongside clean **Mac OS 8.1 (v2)**.
+   - Check **Browse all 14 Library Macs** to view every 68k, PowerPC Mac OS 9, and Mac OS X edition supported on your hardware.
    - Downloads show live sliding-window transfer speed and ETA (`3.4.0+`), verify SHA-256 checksums, prepare the disk offline, create an automatic **Fresh Install** checkpoint, and prompt you to click **Start Mac OS**.
 
 > [!NOTE]
@@ -39,7 +42,7 @@ If no Mac disk is installed yet when RetroBoot starts, the presenter displays **
 
 Press **Ctrl+Alt+Delete** at any time—whether Mac OS is starting, running normally, or frozen—to open the **RetroBoot** window over the dimmed Mac screen (`hostd/retroboot/panel/controller.py`). Mac OS continues running underneath, and the recovery key chord is intercepted before Mac OS ever sees it. (You can also pause boot on the checkerboard by pressing **Escape** and then **Return** to open **Startup Options**.)
 
-<img src="../images/manual/panel-main-341.png" width="640" alt="RetroBoot 3.4.2 local Ctrl+Alt+Delete Platinum Control Panel over Mac OS 9.2.2">
+<img src="../images/manual/panel-main-341.png" width="640" alt="RetroBoot 3.5.0 local Ctrl+Alt+Delete Platinum Control Panel over Mac OS 9.2.2">
 
 ### Control Panel Icons
 
@@ -54,8 +57,8 @@ The icon grid adapts automatically to your hardware capabilities (up to 12 items
 | **Printers…** | Always (`3.3.0+`) | Configure Mac OS 9's virtual **Color LaserWriter 12/600 PS** (`Save as PDF` in `RetroBoot Share/Printed PDFs` or Linux CUPS printer queues), toggle **Also save PDF copy**, run **Test Page**, **Find Printers…** (mDNS/IPP/USB discovery), or **Add by IP…**. |
 | **Modern Web Helper** | When available (`3.2.0+`) | Live status and translated page count, enable/disable toggle, **Page view** (`Automatic` / `Simplified pages` / `Full pages`), old home pages → System 7 Today, search engine choice, LAN access toggle, and local **Whitelist…** management. |
 | **Bluetooth** | When BT adapter exists | Turn the Bluetooth radio on/off (**Use Bluetooth**), scan and pair keyboards, mice, trackpads, and game controllers, view battery levels, **Forget…** pairings, and toggle **Offer to pair a keyboard when none is connected**. |
-| **Download a Mac** | Always | Browse and download from the 13-Mac library, manage custom HTTPS **Image Servers…**, or import `.tar.gz` archives **From a USB Disk…**. |
-| **Software Update** | Always | Check for signed over-the-air `.rbu` updates (PC and Raspberry Pi 4/5), install `.rbu` bundles from USB, run **Clean Update** (resetting disks/settings while keeping saved Wi-Fi networks), or roll back on A/B systems. |
+| **Download a Mac** | Always | Browse and download from the 14-Mac library, manage custom HTTPS **Image Servers…**, or import `.tar.gz` archives **From a USB Disk…**. |
+| **Software Update** | Always | Check for signed over-the-air `.rbu` updates from RetroBoot's public feed or a custom server (PC, Raspberry Pi 4/5, and 4-part MBR Pi Zero 2 W), install `.rbu` bundles from USB, run **Clean Update** (resetting disks/settings while keeping saved Wi-Fi networks), or roll back on A/B systems. |
 | **Date & Time** | Always | Set the Mac OS time zone via region popup, city search, UTC offset, live local clock preview, and network geolocation **Detect**. |
 | **Diagnostics** | Always | View RetroBoot & QEMU versions, hardware model, active display mode, Mac OS state & startup timeline, network addresses, last evidence ID, and **Capture Evidence** for troubleshooting bundles. |
 | **Start Installer** | Pi cards with installer | Restarts once (`0 tryboot`) into the RetroBoot installer kept on the SD card without overwriting your system. |
@@ -96,9 +99,9 @@ Whenever a Classic Mac disk is imported—or when a newer RetroBoot update intro
 
 ---
 
-## Complete 13-Mac Disk Library Reference
+## Complete 14-Mac Disk Library Reference
 
-All **13 ready-to-run Macs** in RetroBoot's built-in public catalog (`lab/catalogs/retroboot-public.json`, minimum app version `3.0.0`) are free to download straight from **Download a Mac** or the RetroBoot installer—no account, password, or manual server configuration required.
+All **14 ready-to-run Macs** in RetroBoot's built-in public catalog (`lab/catalogs/retroboot-public.json`, minimum app version `3.0.0`) are free to download straight from **Download a Mac** or the RetroBoot installer—no account, password, or manual server configuration required.
 
 - **68k (`quadra800`):** Runs on **x86-64 PCs**, **Raspberry Pi 4/5**, **Raspberry Pi Zero 2 W**, and **Gemini PDA**.
 - **PowerPC Classic (`powerMacG4`):** Runs on **x86-64 PCs**, **Raspberry Pi 4/5**, and **Gemini PDA**.
@@ -108,20 +111,21 @@ All **13 ready-to-run Macs** in RetroBoot's built-in public catalog (`lab/catalo
 
 | Catalog ID | Name & OS | Download Size | Installed / Disk Capacity | Required Free Space | Highlights |
 | --- | --- | --- | --- | --- | --- |
-| `mac-os-7.5.5-v1` | **Mac OS 7.5.5** (`7.5.5`) | `17,354,015` bytes (`16.6 MiB`) | `2,148,532,739` bytes (`2 GiB` cap) | `49,283,072` bytes (`47.0 MiB`) | Clean System 7.5.5 on emulated Quadra 800 (68040, 128 MB default), fast boot with Ethernet & DHCP |
-| `mac-os-7-5-5-deluxe-v2` | **Mac OS 7.5.5 Deluxe v2** (`7.5.5`) | `163,596,031` bytes (`156.0 MiB`) | `2,148,532,749` bytes (`2 GiB` cap) | `365,953,024` bytes (`349.0 MiB`) | 23 classic 1990s games, ClarisWorks 5, After Dark, Speedometer 4.02, retro browsers; smooth on Pi Zero 2 W |
-| `mac-os-8.1-v1` | **Mac OS 8.1** (`8.1`) | `60,851,270` bytes (`58.0 MiB`) | `2,148,532,737` bytes (`2 GiB` cap) | `204,472,320` bytes (`195.0 MiB`) | Clean Mac OS 8.1 Platinum desktop, Java, OpenDoc, MacLink Plus, Ethernet & DHCP |
-| `mac-os-8-1-deluxe-v2` | **Mac OS 8.1 Deluxe v2** (`8.1`) | `219,803,734` bytes (`209.6 MiB`) | `2,148,532,748` bytes (`2 GiB` cap) | `688,914,432` bytes (`657.0 MiB`) | 23 classic games with automatic color mode switching, Thousands of colors, ClarisWorks 5, After Dark; great for Pi Zero 2 W |
+| `mac-os-7.5.5-v2` | **Mac OS 7.5.5 (v2)** (`7.5.5`) | `11,025,260` bytes (`10.5 MiB`) | `2,148,532,739` bytes (`2 GiB` cap) | `41,943,040` bytes (`40.0 MiB`) | Streamlined System 7.5.5 on emulated Quadra 800 (68040), cleaned extensions/PRAM, fast boot with Ethernet & DHCP |
+| `mac-os-7-5-5-deluxe-v3` | **Mac OS 7.5.5 Deluxe v3** (`7.5.5`) | `163,091,611` bytes (`155.5 MiB`) | `2,148,532,749` bytes (`2 GiB` cap) | `365,953,024` bytes (`349.0 MiB`) | 23 classic 1990s games, ClarisWorks 5, After Dark, Speedometer 4.02, cleaned extensions/PRAM; smooth on Pi Zero 2 W |
+| `mac-os-8.1-v2` | **Mac OS 8.1 (v2)** (`8.1`) | `45,619,237` bytes (`43.5 MiB`) | `2,148,532,737` bytes (`2 GiB` cap) | `182,452,224` bytes (`174.0 MiB`) | Streamlined Mac OS 8.1 Platinum desktop, cleaned extensions (zero red-X alerts), Ethernet & DHCP |
+| `mac-os-8-1-mega-deluxe-v1` | **Mac OS 8.1 Mega Deluxe** (`8.1`) | `607,195,578` bytes (`579.1 MiB`) | `2,148,532,748` bytes (`2 GiB` cap) | `1,413,480,448` bytes (`1.32 GiB`) | 68k flagship: **99 curated apps, games & educational titles** across 8-tab Launcher (`640×480` & `800×600`), Oregon Trail v1.2, auto 1/4/8-bit color, tuned for **64 MB RAM / Pi Zero 2 W** |
+| `mac-os-8-1-deluxe-v3` | **Mac OS 8.1 Deluxe v3** (`8.1`) | `219,298,341` bytes (`209.1 MiB`) | `2,148,532,748` bytes (`2 GiB` cap) | `687,865,856` bytes (`656.0 MiB`) | 23 classic games with automatic color mode switching, Thousands of colors, ClarisWorks 5, After Dark, cleaned extensions (zero red-X icons) |
 
 ### 2. PowerPC Classic Macs (`powerMacG4` — 32 GiB HFS+ Disk)
 
 | Catalog ID | Name & OS | Download Size | Installed / Disk Capacity | Required Free Space | Highlights |
 | --- | --- | --- | --- | --- | --- |
-| `os921-full-v4` | **Mac OS 9.2.1 (v4)** (`9.2.1`) | `205,784,328` bytes (`196.3 MiB`) | `34,359,738,651` bytes (`32 GiB` cap) | `522,190,848` bytes (`498.0 MiB`) | Clean Mac OS 9.2.1, QuickTime 5, AirPort 2.0.4 wireless, StuffIt, classic browsers |
-| `os922-full-v5` | **Mac OS 9.2.2 (v5)** (`9.2.2`) | `207,111,795` bytes (`197.5 MiB`) | `34,359,738,651` bytes (`32 GiB` cap) | `533,725,184` bytes (`509.0 MiB`) | Clean Mac OS 9.2.2, QuickTime 6, AirPort, Classilla & iCab, Acrobat 5, ATI 3D software, crisp RetroBoot Display |
-| `os922-deluxe-v10` | **Mac OS 9.2.2 Deluxe v10** (`9.2.2`) | `1,014,419,806` bytes (`967.4 MiB`) | `34,359,738,724` bytes (`32 GiB` cap) | `1,655,701,504` bytes (`1.54 GiB`) | 16 classic games, Audion MP3 player & Groove Salad preset, 3 QuickTime movies, After Dark, on-demand Myst CD, 2 s GoMac delay |
-| `os922-superdeluxe-v7` | **Mac OS 9.2.2 SuperDeluxe v7** (`9.2.2`) | `1,382,848,133` bytes (`1.29 GiB`) | `34,359,738,728` bytes (`32 GiB` cap) | `2,249,195,520` bytes (`2.09 GiB`) | 59 classic games (*Harry*, *Mighty Mike*, *Wolfenstein 3D*, *Cro-Mag Rally*), ClarisWorks 5, Home Page 3, SoundEdit 16, Audion, full After Dark, 2 s GoMac delay |
-| `os922-mega-deluxe-v6` | **Mac OS 9.2.2 Mega Deluxe v6** (`9.2.2`) | Thin: `4,253,676,005` bytes (`3.96 GiB`) · Classic: `4,288,304,249` bytes (`3.99 GiB`) | `34,359,738,771` bytes (`32 GiB` cap) | `6,847,201,280` bytes (`6.38 GiB`) | Flagship Kids & Family edition: 146 unique apps across 8 tabs in a 4-row Launcher, ACTION Menus™, 7 on-demand Virtual CDs (0 mounted at boot), 2 s GoMac delay, host-governed resolution |
+| `os921-full-v5` | **Mac OS 9.2.1 (v5)** (`9.2.1`) | `206,952,753` bytes (`197.4 MiB`) | `34,359,738,656` bytes (`32 GiB` cap) | `523,239,424` bytes (`499.0 MiB`) | Clean Mac OS 9.2.1 with RetroBoot Display, ATI Radeon 3D, Time Synchronizer, QuickTime 5, AirPort 2.0.4, StuffIt, USB Overdrive |
+| `os922-full-v6` | **Mac OS 9.2.2** (`9.2.2`) | `207,112,803` bytes (`197.5 MiB`) | `34,359,738,656` bytes (`32 GiB` cap) | `533,725,184` bytes (`509.0 MiB`) | Clean Mac OS 9.2.2, QuickTime 6, AirPort, Classilla & iCab, Acrobat 5, ATI 3D software, crisp RetroBoot Display |
+| `os922-deluxe-v11` | **Mac OS 9.2.2 Deluxe v11** (`9.2.2`) | `1,014,404,499` bytes (`967.4 MiB`) | `34,359,738,739` bytes (`32 GiB` cap) | `1,655,701,504` bytes (`1.54 GiB`) | 16 classic games, Audion MP3 player & Groove Salad preset, 3 QuickTime movies, After Dark, clean ACTION Menus™, Battery Monitor & 2 s GoMac delay, on-demand Myst CD |
+| `os922-superdeluxe-v8` | **Mac OS 9.2.2 SuperDeluxe v8** (`9.2.2`) | `1,383,420,401` bytes (`1.29 GiB`) | `34,359,738,743` bytes (`32 GiB` cap) | `2,251,292,672` bytes (`2.10 GiB`) | 59 classic games (*Harry*, *Mighty Mike*, *Wolfenstein 3D*, *Cro-Mag Rally*), Color *The Oregon Trail* v1.2, ClarisWorks 5, Home Page 3, SoundEdit 16, Audion, full After Dark, clean ACTION Menus™, Battery Monitor & 2 s GoMac delay |
+| `os922-mega-deluxe-v7` | **Mac OS 9.2.2 Mega Deluxe v7** (`9.2.2`) | Thin: `4,254,239,361` bytes (`3.96 GiB`) · Classic: `4,288,866,001` bytes (`3.99 GiB`) | `34,359,738,771` bytes (`32 GiB` cap) | `6,848,249,856` bytes (`6.38 GiB`) | Flagship Kids & Family edition: 126 curated apps across 8 tabs (focused 13-app `Applications` tab), Color *The Oregon Trail* v1.2, clean ACTION Menus™, GoMac Battery Monitor (2 s delay), 7 on-demand Virtual CDs (0 mounted at boot), host resolution |
 
 ### 3. PowerPC Mac OS X Editions (`powerMacOSX` — x86-64 PCs Only)
 
@@ -137,18 +141,19 @@ All **13 ready-to-run Macs** in RetroBoot's built-in public catalog (`lab/catalo
 
 ---
 
-## Spotlight: Mac OS 9.2.2 Mega Deluxe v6
+## Spotlight: Mac OS 9.2.2 Mega Deluxe v7
 
-**Mac OS 9.2.2 Mega Deluxe v6** (`os922-mega-deluxe-v6`) is RetroBoot's flagship Kids & Family edition, bringing together creative studios, classic educational adventures, productivity suites, and arcade favorites in one curated desktop (`apps/reports/mega-deluxe-v6-20261125.md`):
+**Mac OS 9.2.2 Mega Deluxe v7** (`os922-mega-deluxe-v7`) is RetroBoot's flagship Kids & Family edition, bringing together creative studios, classic educational adventures, focused productivity & audio tools, and arcade favorites in one curated desktop (`apps/reports/mega-deluxe-v7-20261125.md`):
 
-<img src="../images/manual/finder-mega-deluxe-v6.png" width="760" alt="Mac OS 9.2.2 Mega Deluxe v6 Finder with 4-row 8-tab Apple Launcher and ACTION Menus">
+<img src="../images/manual/finder-mega-deluxe-v7.png" width="760" alt="Mac OS 9.2.2 Mega Deluxe v7 Finder with focused 4-row 8-tab Apple Launcher and clean ACTION Menus">
 
-- **146 Unique Titles Across 8 Launcher Tabs:** Apple's **Launcher** is pre-sized to **4 full rows × 7 columns** (28 icons per screen) with **8 category tabs** arranged cleanly across two header rows (**150 Launcher buttons** covering **146 unique applications**, plus **118 Start Menu targets** in ACTION GoMac), verified across `800×600`, `960×540`, and `1280×800`.
-- **Featured Family & Creative Favorites:** **Kid Pix Studio Deluxe**, **Kid Pix Studio**, **Logical Journey of the Zoombinis**, **The Oregon Trail**, **Amazon Trail 3rd Edition**, **Magic School Bus (Human Body & Ocean)**, **The Way Things Work**, **SimCity Classic / SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, **Myst**, and **ClarisWorks 5**.
-- **ACTION Menus™ Re-Enabled:** `dACTION Menus™` is active in `System Folder:Extensions`, giving you hierarchical Apple menu submenus (such as **Control Panels ▸**) and the **ACTION Menus Open Windows** menu bar switcher (with startup tips disabled and *Internet Explorer* added to the Compatibility exclusion list).
-- **2-Second ACTION GoMac Hover Delay (`dlay=120`):** Moving the pointer to the bottom edge reveals the ACTION GoMac Start Menu and tray only after a **2.0-second** intentional hover—preventing accidental popups while drawing in Kid Pix or playing full-screen games.
-- **7 On-Demand Virtual CDs (0 CDs Mounted at Boot):** In v6, all 7 CD-based titles (*Kid Pix Studio*, *The Way Things Work*, *Kid Pix Studio Deluxe*, *Magic School Bus - Human Body*, *Magic School Bus - Ocean*, *Zoombinis Logical Journey*, and *Amazon Trail 3*) plus *Myst* live as standalone `GImg`/`VCDM` `.iso` images on `Macintosh HD` paired with stay-open AppleScript launcher applets. Clicking an app mounts its virtual CD automatically, closes any auto-opened CD Finder window, launches the game, and cleanly unmounts the CD when you quit—leaving **zero CDs cluttering the Desktop at boot**.
-- **Host-Governed Boot Resolution:** Mega Deluxe v6 removes the legacy `Display Preferences` (`1024×768`) override while keeping ` RetroBoot Display Startup` enabled, so every screen size (`800×600`, `960×540`, `1280×800`, etc.) boots directly at the resolution RetroBoot chooses for your display.
+- **126 Curated Titles Across 8 Launcher Tabs:** Apple's **Launcher** is pre-sized to **4 full rows × 7 columns** (28 icons per screen) with **8 category tabs** arranged cleanly across two header rows (**126 Launcher buttons / 126 unique targets**). In v7, the default **`Applications`** tab focuses strictly on **13 productivity & audio/media apps** (`Acrobat Reader 5.0`, `AppleCD Audio Player`, `Audion`, `Claris Home Page`, `ClarisWorks`, `Graphing Calculator`, `Note Pad`, `PictureViewer`, `QuickTime Player`, `SimpleSound`, `SimpleText`, `SoundEdit 16`, and `SoundJam MP`), removing standalone utilities, benchmarks, browsers/mail, and duplicate games while preserving underlying tools in `Utilities` / Desktop / ACTION GoMac Start Menu.
+- **Color *The Oregon Trail* (v1.2 + Oregon Color v1.1):** v7 upgrades original MECC *The Oregon Trail* to **v1.2** with **Oregon Color v1.1**, pre-personalized natively (`"RetroBoot"` / `"Classic Mac"`) so launching goes directly to the 256-color title screen with no modal registration prompt, wrapped by `Play The Oregon Trail` (`RBcf` 8-bit color mode switching on launch/quit) alongside its Launcher and Start Menu color icons. (*Oregon Trail II* stays alongside it.)
+- **Featured Family & Creative Favorites:** **Kid Pix Studio Deluxe**, **Kid Pix Studio**, **Logical Journey of the Zoombinis**, **The Oregon Trail (v1.2 Color)**, **Amazon Trail 3rd Edition**, **Magic School Bus (Human Body & Ocean)**, **The Way Things Work**, **SimCity Classic / SimCity 2000**, **DinoPark Tycoon**, **Marble Drop**, **Myst**, and **ClarisWorks 5**.
+- **Clean ACTION Menus™ (Corner Menus Removed):** `dACTION Menus™` remains enabled in `System Folder:Extensions` for hierarchical Apple menu submenus (`Sapl`), Open Windows / Documents (`Snap`), Drives (`Ssys`), and Application switcher (`Sprc`), while the far-left (`Slft`) and far-right (`Srit`) corner dropdown `▼` menus are removed cleanly. Startup tips stay disabled and *Internet Explorer* remains in Compatibility exclusions.
+- **ACTION GoMac™ Battery Monitor & 2-Second Hover Delay (`dlay=120`):** Moving the pointer to the bottom edge reveals the ACTION GoMac Start Menu and tray only after a **2.0-second** intentional hover. On laptop/PMU systems (`Battery Monitor` installed in GoMac alongside `Monitor Resolution`, `Monitor BitDepth`, and `Sound Volume`), the tray renders the live AC/battery charge meter (automatically hidden when running on non-PMU desktop hardware; shutting down a non-PMU machine removes `Battery Monitor` from GoMac's module list).
+- **7 On-Demand Virtual CDs (0 CDs Mounted at Boot):** All 7 CD-based titles (*Kid Pix Studio*, *The Way Things Work*, *Kid Pix Studio Deluxe*, *Magic School Bus - Human Body*, *Magic School Bus - Ocean*, *Zoombinis Logical Journey*, and *Amazon Trail 3*) plus *Myst* live as standalone `GImg`/`VCDM` `.iso` images on `Macintosh HD` paired with stay-open AppleScript launcher applets. Clicking an app mounts its virtual CD automatically, closes any auto-opened CD Finder window, launches the game, and cleanly unmounts the CD when you quit—leaving **zero CDs cluttering the Desktop at boot**.
+- **Host-Governed Boot Resolution:** Mega Deluxe v7 keeps `Display Preferences` absent and ` RetroBoot Display Startup` enabled, booting directly at the host-chosen RetroBoot resolution (`960×540`, `1280×800`, etc.).
 
 > [!IMPORTANT]
 > **Zero Kid-Proofing Locks (Decision D087):** By design, RetroBoot includes **no PIN gates, parental lockouts, or Web Helper allowlist filters**. Letting kids explore Classic Mac OS freely—clicking into control panels, moving folders, and trying out apps—is part of the experience. Automatic **Fresh Install** checkpoints let you restore a clean system in seconds whenever needed.
@@ -157,10 +162,11 @@ All **13 ready-to-run Macs** in RetroBoot's built-in public catalog (`lab/catalo
 
 ## Overview of the Other Editions
 
-- **Clean Mac OS 9.2.2 (v5) & Mac OS 9.2.1 (v4):** Fast, minimal bases with QuickTime 6 (v5) or QuickTime 5 (v4), AirPort 2.0.4, Classilla, iCab, Internet Explorer, Netscape, Acrobat Reader 5, and StuffIt. Choose **9.2.2 (v5)** if you want ATI 3D software preinstalled and plenty of room to install your own discs.
-- **Mac OS 9.2.2 Deluxe v10:** Includes **16 classic games** (including *Shanghai II*, *Snood*, *Glider PRO*, *Crystal Quest*, *SimCity Classic/2000*, *Bolo*, *Escape Velocity*, *Myst*, *Marathon 2*, *Quake*, *Quake III Arena Demo*), **Audion 3** with 6 extra faces, 6 visualizers, and a ready SomaFM **Groove Salad** playlist, 3 original Apple QuickTime sample movies, **After Dark 4.94** (*2.0 Flying Toasters*), a clean Desktop, and a 2-second ACTION GoMac delay.
-- **Mac OS 9.2.2 SuperDeluxe v7:** Expands the game library to **59 classic games** across Arcade, Puzzle & Cards, Strategy & Simulation, Adventure, and Action & 3D (including *Harry the Handsome Executive*, *Mighty Mike*, *Bub & Bob*, *Wolfenstein 3D*, *Angband*, *King's Quest VI*, *Nanosaur*, and *Cro-Mag Rally*), adds **ClarisWorks 5**, **Claris Home Page 3**, **SoundEdit 16**, and the **complete After Dark collection**, with classic Apple menus (`dACTION Menus™` disabled), clean Desktop, and 2-second GoMac delay.
-- **System 7.5.5 & Deluxe v2 / Mac OS 8.1 & Deluxe v2 (68k Quadra 800):** Lightweight 68040 editions on 2 GiB HFS disks that boot rapidly and run smoothly even on a **Raspberry Pi Zero 2 W** (512 MB RAM, capped at 128 MB guest RAM on Zero 2 W). The **Deluxe v2** editions pack **23 classic 1990s games**, **ClarisWorks 5**, **After Dark**, **Speedometer 4.02**, retro browsers, and automatic color-depth switching on Mac OS 8.1 Deluxe v2.
+- **Clean Mac OS 9.2.2 (v6) & Mac OS 9.2.1 (v5):** Fast, minimal bases with QuickTime 6 (`9.2.2 v6`) or QuickTime 5 (`9.2.1 v5`), AirPort 2.0.4, Classilla, iCab, Internet Explorer, Netscape, Acrobat Reader 5, ATI 3D software, Time Synchronizer, and crisp RetroBoot Display.
+- **Mac OS 9.2.2 Deluxe v11:** Includes **16 classic games** (including *Shanghai II*, *Snood*, *Glider PRO*, *Crystal Quest*, *SimCity Classic/2000*, *Bolo*, *Escape Velocity*, *Myst*, *Marathon 2*, *Quake*, *Quake III Arena Demo*), **Audion 3** with 6 extra faces, 6 visualizers, and a ready SomaFM **Groove Salad** playlist, 3 original Apple QuickTime sample movies, **After Dark 4.94** (*2.0 Flying Toasters*), clean ACTION Menus™, ACTION GoMac Battery Monitor & 2-second bar delay, and a clean Desktop.
+- **Mac OS 9.2.2 SuperDeluxe v8:** Expands the game library to **59 classic games** across Arcade, Puzzle & Cards, Strategy & Simulation, Adventure, and Action & 3D (including *Harry the Handsome Executive*, *Mighty Mike*, *Bub & Bob*, *Wolfenstein 3D*, *Angband*, *King's Quest VI*, *Nanosaur*, and *Cro-Mag Rally*), upgrades *The Oregon Trail* to **Color v1.2 + Oregon Color v1.1**, adds **ClarisWorks 5**, **Claris Home Page 3**, **SoundEdit 16**, and the **complete After Dark collection**, with clean ACTION Menus™, ACTION GoMac Battery Monitor & 2-second bar delay, clean SimpleText printing (`TeachText 1.2` removed), and a clean Desktop.
+- **Mac OS 8.1 Mega Deluxe v1 (68k Kids & Family):** Flagship 68k family edition packing **99 curated apps, games, and educational titles across an 8-tab Apple Launcher** (`Action & 3D`, `Applications`, `Arcade`, `Build`, `Create`, `Explore`, `Learn`, `Puzzles`), pre-sized to fit cleanly inside both `640×480` and `800×600`, pre-personalized *The Oregon Trail* v1.2, automatic 1-bit/16-color/256-color switching, and streamlined extensions tuned to run smoothly even in **64 MB RAM** on a **Raspberry Pi Zero 2 W**.
+- **System 7.5.5 (v2) & Deluxe v3 / Mac OS 8.1 (v2) & Deluxe v3 (68k Quadra 800):** Streamlined 68040 editions on 2 GiB HFS disks with cleaned extensions (zero red-X boot alerts), emptied Trash, and fixed PRAM that boot rapidly and run smoothly even on a **Raspberry Pi Zero 2 W** (preloaded with clean `7.5.5 v2` and `8.1 v2`; capped at 128 MB guest RAM on Zero 2 W). On 68k Macs, `rbplatinum v8` extracts authentic Mac icons directly from your Mac OS 8.1 or 7.5.5 disk for the local **Ctrl+Alt+Delete** panel and Web UI. The **Deluxe v3** editions pack **23 classic 1990s games**, **ClarisWorks 5**, **After Dark**, **Speedometer 4.02**, retro browsers, and automatic color-depth switching on Mac OS 8.1 Deluxe v3.
 
 <img src="../images/manual/zero2w-system755.png" width="640" alt="System 7.5.5 running on Raspberry Pi Zero 2 W">
 
@@ -170,7 +176,7 @@ All **13 ready-to-run Macs** in RetroBoot's built-in public catalog (`lab/catalo
 
 ## Switching Macs, Downloading & Checkpoints (`Startup Disk`)
 
-You can keep multiple Macs installed side by side—for example, Mega Deluxe v6 for family gaming, Clean 9.2.2 for software tinkering, System 7.5.5 for 68k nostalgia, and Tiger Deluxe on an x86 PC.
+You can keep multiple Macs installed side by side—for example, Mega Deluxe v7 for family gaming, Clean 9.2.2 for software tinkering, System 7.5.5 for 68k nostalgia, and Tiger Deluxe on an x86 PC.
 
 <table>
   <tr>

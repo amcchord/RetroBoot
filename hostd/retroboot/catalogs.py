@@ -207,7 +207,7 @@ def first_boot_picks(items, *, max_bytes: int | None = None):
             is_ed = bool(EDITION_RE.search(str(e.get("name", ""))) or EDITION_RE.search(eid))
             if not is_ed:
                 continue
-            tier = (3 if eid.startswith("os922-mega-deluxe") else
+            tier = (3 if "mega-deluxe" in eid else
                     2 if "superdeluxe" in eid else
                     1 if "deluxe" in eid else 0)
             score = (fam == POWERMAC, tier, ver)

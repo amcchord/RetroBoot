@@ -14,8 +14,9 @@
 #   retroboot-<ver>-rpi-<flavor>[-private].img.xz         the same, for Raspberry Pi Imager/Etcher
 #   retroboot-<ver>-rpi-<flavor>[-private].img{,.xz}.sha256
 #   retroboot-<ver>-rpi-<flavor>[-private].manifest.json  packages, components, boot files, hashes
-# One image boots both boards (kernel8.img, 4 KiB pages): see image/README.md "Raspberry Pi".
-# No installer ISO and no Software Update payload (updates are unavailable on the Pi).
+# One image boots Pi 4/5 boards (kernel8.img, 4 KiB pages); --model zero2w builds the 4-part MBR
+# image for Raspberry Pi Zero 2 W. Both build unsigned Software Update payloads (update-*/).
+# No installer ISO.
 #
 # Inputs besides image/: RB_WORK_ROOT (default /srv/retroboot/wave6/rpi-image), the
 # components staged there by image/lab/stage_components.py (RB_BUILDER_ROOT=...),
@@ -141,7 +142,9 @@ if [ "$root_only" = 1 ]; then
 fi
 
 img=$out/retroboot-$version-$suffix.img
-data_mib=$(rcfg data_mib); [ -n "$machine_dir" ] && data_mib=$(rcfg data_mib_private)
+data_mib=$(rcfg data_mib)
+[ "$RB_RPI_MODEL" = zero2w ] && data_mib=$(rcfg data_mib_zero2w)
+[ -n "$machine_dir" ] && data_mib=$(rcfg data_mib_private)
 "$here/scripts/make-disk.sh" "$work/rootfs" "$work/boot" "$img" "$data_mib" "$machine_dir" "$machine_id" "$factory_macs"
 "$here/scripts/check-image.sh" "$img" "$work/rootfs" "$factory_macs" > "$out/check.txt" || { cat "$out/check.txt"; die "image check failed"; }
 cat "$out/check.txt" >&2
@@ -153,11 +156,11 @@ if [ "$do_xz" = 1 ]; then
   (cd "$out" && sha256sum "$(basename "$img").xz" > "$(basename "$img").xz.sha256")
   artifacts+=(--artifact "$img.xz")
 fi
-if [ "$do_update" = 1 ] && [ "$RB_RPI_MODEL" != zero2w ] && [ -f "$work/rootfs/usr/lib/retroboot/hostd/retroboot/update/tree.py" ] && \
+if [ "$do_update" = 1 ] && [ -f "$work/rootfs/usr/lib/retroboot/hostd/retroboot/update/tree.py" ] && \
    [ -n "$(find "$work/rootfs/usr/lib/retroboot/update/keys" -name '*.pub' -print -quit 2>/dev/null)" ]; then
-  log "Pi update bundle payload (unsigned, arm64)"
+  log "Pi update bundle payload (unsigned, arm64, $RB_RPI_MODEL)"
   python3 "$IMAGE_SRC/scripts/make-update.py" build "$work/rootfs" "$work/boot/boot.json" "$out/update-$suffix" \
-    --arch arm64 --build-id "$build_id" --flavor "$flavor" --version "$version" \
+    --arch arm64 --model "$RB_RPI_MODEL" --build-id "$build_id" --flavor "$flavor" --version "$version" \
     --min-version "$(rcfg update_min_version)" --source-revision "$src_rev" --notes "${RB_UPDATE_NOTES:-}"
 fi
 python3 "$IMAGE_SRC/scripts/make-manifest.py" --out "$out/retroboot-$version-$suffix.manifest.json" \

@@ -123,6 +123,21 @@ def target_arch(arch, root, boot):
     return "x86_64"
 
 
+def target_model(model, root, boot):
+    if model:
+        return model
+    prof_model = (boot.get("profile") or {}).get("model")
+    if prof_model:
+        return prof_model
+    rpi_prof = os.path.join(root, "usr/lib/retroboot/rpi-profile.json")
+    if os.path.isfile(rpi_prof):
+        try:
+            return json.load(open(rpi_prof)).get("model") or ""
+        except (OSError, ValueError):
+            pass
+    return ""
+
+
 def build(a):
     root, out = a.root, a.out
     os.makedirs(out, exist_ok=True)
@@ -181,13 +196,27 @@ def build(a):
                       ["-Xcompression-level", "19"] if a.compression == "zstd" else []) + pseudo, check=True)
     print(f"root.sqfs: {os.path.getsize(os.path.join(out, 'root.sqfs'))} bytes ({time.time() - t0:.0f} s)",
           file=sys.stderr)
+    board = boot.get("board", "pc")
+    model = target_model(getattr(a, "model", ""), root, boot) if board == "rpi" else ""
+    if board == "rpi":
+        if not model:
+            model = "pi4-5"
+        boot_base = os.path.join(root, "usr/lib/retroboot/boot")
+        missing = [
+            f for f in ("kernel8.img", "initramfs8", "config.txt")
+            if not (os.path.isfile(os.path.join(boot_base, "bootfs", f)) or os.path.isfile(os.path.join(boot_base, f)))
+        ]
+        if missing:
+            sys.exit("make-update: Pi root is missing staged boot files under usr/lib/retroboot/boot/bootfs/: "
+                     + ", ".join(missing))
     kernels = sorted(os.listdir(os.path.join(root, "lib/modules")))
     schema = int(rel.get("settings_schema") or 1)
     manifest = {
         "format": "retroboot-update/1",
         "product": "RetroBoot",
         "arch": arch,
-        "board": boot.get("board", "pc"),
+        "board": board,
+        **({"model": model} if model else {}),
         "version": a.version,
         "build_id": a.build_id,
         "flavor": a.flavor,
@@ -269,6 +298,7 @@ def derive(a):
                             version=src["version"], min_version=src["min_version"],
                             settings_schema_min=src["settings_schema_min"], source_revision=src["source_revision"],
                             compression=src["root"]["compression"], arch=src.get("arch", "auto"),
+                            model=src.get("model", ""),
                             notes=f"LAB TEST build derived from {src['build_id']} (break: {a.break_}).")
     build(ns)
     shutil.rmtree(tmp)
@@ -288,6 +318,7 @@ def main():
     b.add_argument("--settings-schema-min", type=int, default=1)
     b.add_argument("--source-revision", default="unknown")
     b.add_argument("--arch", default="auto", choices=("auto", "x86_64", "arm64"))
+    b.add_argument("--model", default="", help="Raspberry Pi model (e.g. pi4-5, zero2w)")
     b.add_argument("--compression", default="xz", choices=("xz", "zstd"))
     b.add_argument("--notes", default="")
     s = sub.add_parser("assemble")

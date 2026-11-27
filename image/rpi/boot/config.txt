@@ -50,8 +50,10 @@ enable_uart=1
 arm_boost=1
 
 [pi02]
-# The Zero 2 W USB connector supplies host input and USB storage.
-dtoverlay=dwc2,dr_mode=host
+# Keep BCM2710's built-in dwc_otg host driver active (FIQ, NAK holdoff, and
+# split-transaction FSM are enabled in linux-image-rpi-v8). Forcing dwc2 on
+# Zero 2 W limits periodic host channels to 8 and starves high-speed / multi-
+# interface USB mice behind hubs.
 
 [all]
 # Display selection lives on the FAT partition; see DISPLAY-SETUP.txt.

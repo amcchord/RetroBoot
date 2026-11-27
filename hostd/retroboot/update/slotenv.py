@@ -365,11 +365,52 @@ def _uevent(sysdir: Path) -> dict:
     return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
 
 
-def layout(sysfs: str = "/sys", root_dev: tuple[int, int] | None = None) -> dict:
+def _blkid_label(dev: str) -> str:
+    import subprocess
+    try:
+        r = subprocess.run(["blkid", "-o", "value", "-s", "LABEL", dev],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _resolve_fs_labels(by_num: dict[int, tuple[str, str]], by_label: str = "/dev/disk/by-label",
+                       probe_label=None) -> dict[str, str]:
+    """Map filesystem label -> /dev/<part> for partitions on the disk."""
+    out: dict[str, str] = {}
+    devs = {dev: os.path.realpath(dev) for dev, _ in by_num.values()}
+    lb_dir = Path(by_label)
+    if lb_dir.is_dir():
+        for lbl in (SLOT_LABEL["a"], SLOT_LABEL["b"], DATA_LABEL):
+            link = lb_dir / lbl
+            if link.exists() or link.is_symlink():
+                try:
+                    target = os.path.realpath(link)
+                except OSError:
+                    continue
+                for dev, real in devs.items():
+                    if target == real or Path(target).name == Path(dev).name:
+                        out[lbl] = dev
+                        break
+    probe = probe_label or _blkid_label
+    for dev, _ in by_num.values():
+        if dev in out.values():
+            continue
+        lbl = probe(dev)
+        if lbl and lbl not in out:
+            out[lbl] = dev
+    return out
+
+
+def layout(sysfs: str = "/sys", root_dev: tuple[int, int] | None = None, *,
+           by_label: str = "/dev/disk/by-label", probe_label=None) -> dict:
     """Partitions of the disk holding the running root, by role.
 
-    ``{"disk", "root", "current", "esp", "a", "b", "data", "labels"}`` with /dev paths;
-    ``current`` is the slot the running root is (from its partition label), or None
+    ``{"disk", "root", "current", "table", "esp", "a", "b", "data", "labels"}`` with /dev paths;
+    ``current`` is the slot the running root is (from its partition label or slot path), or None
     (live installer, a root that is not a RetroBoot slot)."""
     if root_dev is None:
         st = os.stat("/")
@@ -381,20 +422,25 @@ def layout(sysfs: str = "/sys", root_dev: tuple[int, int] | None = None) -> dict
         raise SlotError("the running system is not on a disk partition")
     if not (part / "partition").exists():
         raise SlotError("the running system is not on a disk partition")
-    out = disk_layout(part.parent)
-    out["root"] = "/dev/" + part.name
+    out = disk_layout(part.parent, by_label=by_label, probe_label=probe_label)
+    root_dev_path = "/dev/" + part.name
+    out["root"] = root_dev_path
     root_label = _uevent(part).get("PARTNAME", "")
     for s in SLOTS:
-        if root_label == SLOT_LABEL[s]:
+        if root_label == SLOT_LABEL[s] or out.get(s) == root_dev_path:
             out["current"] = s
+            break
     return out
 
 
-def disk_layout(disk: Path) -> dict:
+def disk_layout(disk: Path, *, by_label: str = "/dev/disk/by-label", probe_label=None) -> dict:
     """Roles of a RetroBoot disk's partitions from its sysfs directory (/sys/block/<disk>).
-    Raises SlotError unless partitions 1, 3, 4 and 5 carry the RetroBoot labels."""
+
+    Accepts the 5-partition GPT layout (RBEFI, BIOSBOOT, RBROOT_A, RBROOT_B, RBDATA via PARTNAME)
+    or the 4-partition MBR layout used on Raspberry Pi Zero 2 W (p1 boot, p2 RBROOT_A, p3 RBROOT_B,
+    p4 RBDATA via filesystem labels)."""
     disk = Path(disk)
-    out = {"disk": "/dev/" + disk.name, "root": None, "current": None, "labels": {}}
+    out: dict = {"disk": "/dev/" + disk.name, "root": None, "current": None, "table": "gpt", "labels": {}}
     by_num = {}
     for child in sorted(disk.iterdir()):
         try:
@@ -404,6 +450,23 @@ def disk_layout(disk: Path) -> dict:
         ev = _uevent(child)
         by_num[num] = ("/dev/" + child.name, ev.get("PARTNAME", ""))
         out["labels"]["/dev/" + child.name] = ev.get("PARTNAME", "")
+    has_partnames = any(pname for _, pname in by_num.values())
+    if not has_partnames and 5 not in by_num and all(n in by_num for n in (1, 2, 3, 4)):
+        fs_labels = _resolve_fs_labels({n: by_num[n] for n in (1, 2, 3, 4)},
+                                       by_label=by_label, probe_label=probe_label)
+        mbr_expect = {"esp": (1, ESP_LABEL), "a": (2, SLOT_LABEL["a"]), "b": (3, SLOT_LABEL["b"]),
+                      "data": (4, DATA_LABEL)}
+        out["table"] = "dos"
+        out["esp"] = by_num[1][0]
+        out["labels"][out["esp"]] = ESP_LABEL
+        for role in ("a", "b", "data"):
+            num, lbl = mbr_expect[role]
+            dev = by_num[num][0]
+            if fs_labels.get(lbl) != dev:
+                raise SlotError(f"partition {num} of {out['disk']} is not {lbl}")
+            out[role] = dev
+            out["labels"][dev] = lbl
+        return out
     expect = {"esp": (ESP_PARTN, ESP_LABEL), "a": (3, SLOT_LABEL["a"]), "b": (4, SLOT_LABEL["b"]),
               "data": (5, DATA_LABEL)}
     for role, (num, label) in expect.items():
@@ -464,7 +527,12 @@ def mark_healthy(run_dir: str, info: dict) -> None:
 
 
 def init_esp(esp: Path, cmdline: str, version: str = "", build_id: str = "") -> None:
-    """A newly installed disk: slot a active, its kernel arguments recorded."""
+    """A newly installed disk: slot a active, its kernel arguments or Pi slot metadata recorded."""
+    esp = Path(esp)
+    if is_rpi_esp(esp):
+        write_rpi_slot_meta(esp, "a", version, build_id)
+        write_env(esp, DEFAULTS, env_name=RPI_ENV_NAME)
+        return
     write_slot_cfg(esp, "a", cmdline, version, build_id)
     write_env(esp, DEFAULTS)
 
@@ -477,9 +545,11 @@ def main(argv: list[str]) -> int:
         init_esp(Path(argv[1]), argv[2], argv[3], argv[4])
         return 0
     if argv[:1] == ["show"] and len(argv) == 2:
-        env, source = read_env(Path(argv[1]))
-        print(json.dumps({"env": env, "source": source, "slotted": grub_cfg_is_slotted(Path(argv[1])),
-                          "slots": {s: read_slot_cfg(Path(argv[1]), s) for s in SLOTS}}, indent=1))
+        esp = Path(argv[1])
+        env, source = read_env(esp)
+        slotted = rpi_cfg_is_slotted(esp) if is_rpi_esp(esp) else grub_cfg_is_slotted(esp)
+        print(json.dumps({"env": env, "source": source, "slotted": slotted,
+                          "slots": {s: read_slot_cfg(esp, s) for s in SLOTS}}, indent=1))
         return 0
     print(main.__doc__, file=sys.stderr)
     return 2

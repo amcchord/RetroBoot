@@ -87,6 +87,13 @@ for f in start4.elf fixup4.dat bcm2711-rpi-4-b.dtb bcm2711-rpi-400.dtb bcm2711-r
          overlays/vc4-kms-v3d-pi5.dtbo overlays/overlay_map.dtb kernel8.img initramfs8; do
   [ -s "$bfs/$f" ] || die "boot partition: $f missing"
 done
+# Stage slot-bootable Pi files inside the rootfs so Software Update bundles (.rbu)
+# carry them to the inactive slot (hostd/retroboot/update/writer.py sync_rpi_slot).
+rm -rf "$root/usr/lib/retroboot/boot/bootfs"
+install -d "$root/usr/lib/retroboot/boot/bootfs/overlays"
+cp "$bfs/kernel8.img" "$bfs/initramfs8" "$bfs/config.txt" "$root/usr/lib/retroboot/boot/bootfs/"
+cp "$bfs"/*.dtb "$root/usr/lib/retroboot/boot/bootfs/"
+cp "$bfs"/overlays/*.dtb* "$root/usr/lib/retroboot/boot/bootfs/overlays/"
 # The boot partition is mounted where Debian and Raspberry Pi OS mount it, /boot/firmware
 # (hostd reads retroboot/network.conf there); /boot/efi, where the x86 image mounts its
 # ESP and where hostd's ESP code and rb-bootdisplay-rpi look by default, points to it.
@@ -121,5 +128,5 @@ b['raspberrypi_archive']['packages'] = sorted(rpt)
 json.dump(b, open(path, 'w'), indent=2)
 PY
 cp "$boot/boot.json" "$root/usr/lib/retroboot/boot/boot.json"
-chown 0:0 "$root/usr/lib/retroboot/boot/boot.json"
+chown -R 0:0 "$root/usr/lib/retroboot/boot"
 log "boot partition: $(du -sh "$bfs" | cut -f1), kernel8.img $(stat -c %s "$bfs/kernel8.img") bytes, initramfs8 $(stat -c %s "$bfs/initramfs8") bytes"
