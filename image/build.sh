@@ -121,7 +121,8 @@ if [ -n "${RB_BOOT_PAYLOAD_FROM:-}" ]; then
   python3 - "$RB_BOOT_PAYLOAD_FROM" "$work/boot" <<'PY' || die "RB_BOOT_PAYLOAD_FROM: not usable"
 import hashlib, json, os, sys
 prev, cur = sys.argv[1:]
-GRUB = {'esp/EFI/BOOT/BOOTX64.EFI', 'esp/EFI/retroboot/grubx64.efi', 'i386-pc/core.img', 'i386-pc/grub-bios-setup'}
+GRUB = {'esp/EFI/BOOT/BOOTX64.EFI', 'esp/EFI/BOOT/BOOTIA32.EFI', 'esp/EFI/retroboot/grubx64.efi',
+        'esp/EFI/retroboot/grubia32.efi', 'i386-pc/core.img', 'i386-pc/grub-bios-setup'}
 sha = lambda p: hashlib.sha256(open(p, 'rb').read()).hexdigest()
 walk = lambda d: sorted(os.path.relpath(os.path.join(b, n), d) for b, _, ns in os.walk(d) for n in ns)
 pj, cj = json.load(open(os.path.join(prev, 'boot.json'))), json.load(open(os.path.join(cur, 'boot.json')))

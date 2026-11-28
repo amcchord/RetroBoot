@@ -1242,3 +1242,16 @@ class Boot4KAndIsoContinuityTest(unittest.TestCase):
         disable_pos = customize.index('for unit in cups.service')
         enable_pos = customize.index('avahi-daemon.service cups.socket')
         self.assertLess(disable_pos, enable_pos)
+
+    def test_efi_nvram_loader_matches_firmware_word_size(self):
+        inst = load(IMAGE / 'rootfs/usr/lib/retroboot/installer/install-to-disk', 'rb_install_to_disk_efi')
+        with tempfile.TemporaryDirectory() as tmp:
+            p = pathlib.Path(tmp, 'fw_platform_size')
+            self.assertEqual(inst.efi_nvram_loader(str(p)), '\\EFI\\retroboot\\grubx64.efi')
+            p.write_text('64\n')
+            self.assertEqual(inst.efi_nvram_loader(str(p)), '\\EFI\\retroboot\\grubx64.efi')
+            p.write_text('32\n')
+            self.assertEqual(inst.efi_nvram_loader(str(p)), '\\EFI\\retroboot\\grubia32.efi')
+        src = (IMAGE / 'rootfs/usr/lib/retroboot/installer/install-to-disk').read_text()
+        self.assertIn('esp/EFI/BOOT/BOOTIA32.EFI', src)
+        self.assertIn('esp/EFI/retroboot/grubia32.efi', src)

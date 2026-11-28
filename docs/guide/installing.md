@@ -8,10 +8,10 @@ All **14 ready-to-run Macs** are built into RetroBoot's catalog—no extra setup
 
 ## Quick 3-step overview
 
-1. **Download:** Pick your installer from the [RetroBoot 3.5.0 downloads portal](https://mcchord.net/retroboot-downloads/):
-   - **x86-64 PC or Intel Mac:** download `retroboot-installer-3.5.0-product.iso` (USB/DVD) or `retroboot-installer-3.5.0-universal-product.img.xz` (universal USB/SD image for both x86 PCs and Raspberry Pi 4/5).
-   - **Raspberry Pi 4, Pi 5, Pi 400, CM4:** open **Raspberry Pi Imager**, add custom repository URL `https://mcchord.net/retroboot-downloads/rpi-imager.json` (or download `retroboot-3.5.0-rpi-product.img.xz` directly).
-   - **Raspberry Pi Zero 2 W:** download `retroboot-3.5.0-rpi-zero2w-product.img.xz` (tuned for 512 MB boards with System 7.5.5 and Mac OS 8.1; requires a USB OTG adapter/hub for keyboard & mouse).
+1. **Download:** Pick your installer from the [RetroBoot 3.5.1 downloads portal](https://mcchord.net/retroboot-downloads/):
+   - **x86-64 PC or Intel Mac:** download `retroboot-installer-3.5.1-product.iso` (USB/DVD) or `retroboot-installer-3.5.1-universal-product.img.xz` (universal USB/SD image for 64-bit/32-bit UEFI and BIOS x86 PCs/Macs plus Raspberry Pi 4/5).
+   - **Raspberry Pi 4, Pi 5, Pi 400, CM4:** open **Raspberry Pi Imager**, add custom repository URL `https://mcchord.net/retroboot-downloads/rpi-imager.json` (or download `retroboot-3.5.1-rpi-product.img.xz` directly).
+   - **Raspberry Pi Zero 2 W:** download `retroboot-3.5.1-rpi-zero2w-product.img.xz` (tuned for 512 MB boards with System 7.5.5 and Mac OS 8.1; requires a USB OTG adapter/hub for keyboard & mouse).
 2. **Flash to USB or SD:** Use **balenaEtcher**, **Raspberry Pi Imager**, `dd` ([terminal examples](../dev/testing-other-hardware.md#write-the-stick)), or **Rufus in DD Image mode**.
    - **Windows Rufus tip:** When Rufus prompts for image mode, always select **Write in DD Image mode** (ISO mode breaks dual UEFI/BIOS boot and the `RBINSTEFI` setup folder).
    - **macOS popup warning:** Right after flashing finishes, macOS may say *"The disk you inserted was not readable by this computer."* Always click **Ignore** (or **Eject**) — **never click Initialize**, or it will erase the card/USB stick.
@@ -24,7 +24,7 @@ All **14 ready-to-run Macs** are built into RetroBoot's catalog—no extra setup
 
 ### What you need
 
-- An x86-64 PC or Intel Mac with UEFI or legacy BIOS firmware (**Secure Boot must be turned off**; turning off *Fast Boot* also helps USB devices initialize cleanly).
+- An x86-64 PC or Intel Mac with 64-bit UEFI (`BOOTX64.EFI`), 32-bit UEFI (`BOOTIA32.EFI` + UGA framebuffer for 2006–2007 Core 2 Duo Macs), or legacy BIOS firmware (**Secure Boot must be turned off**; turning off *Fast Boot* also helps USB devices initialize cleanly). Pure 32-bit x86 CPUs (such as early Core Duo / Core Solo Macs) are not supported.
 - A target disk of at least **8 GiB** that RetroBoot may **erase completely**. (Note: use **Product** builds for everyday family use; **Debug** is only for developer logs.)
 - Optional: Ethernet or Wi-Fi to download Macs from the built-in catalog during installation.
 
@@ -94,6 +94,14 @@ When installation completes, pull the USB stick out and click **Restart** to boo
 <img src="../images/manual/installer-done.png" width="428" alt="RetroBoot is installed: remove installation media and restart">
 
 <img src="../images/manual/finder-mega-deluxe-v7.png" width="640" alt="Mac OS 9.2.2 Mega Deluxe v7 Finder with focused 4-row 8-tab Launcher and clean ACTION Menus">
+
+### Running in VirtualBox
+
+Verified on VirtualBox 6.0 and 7.1 (`x86_64` host):
+
+1. Create a **64-bit Linux** VM (for example **Debian (64-bit)** or **Other Linux (64-bit)**) with at least **1024 MiB RAM** (**2048 MiB+** recommended), **I/O APIC enabled**, **VMSVGA** or **VBoxVGA** graphics, and at least an **8 GiB** target disk. Do not pick 32-bit or **Mac OS X (32-bit)** guest profiles (`x86_64` CPU required).
+2. **Preferred boot media:** Attach `retroboot-installer-3.5.1-product.iso` to the IDE/SATA optical drive, or convert the extracted `.img` to a raw VMDK (`VBoxManage internalcommands createrawvmdk`) on SATA/IDE — both boot in UEFI and BIOS modes.
+3. **If booting the Universal `.img` over VirtualBox USB:** VirtualBox's UEFI firmware loads EHCI (USB 2.0) and xHCI (USB 3.0) drivers, **not** USB 1.1 OHCI. Leaving USB 1.1 (OHCI) active prevents VirtualBox UEFI from seeing the USB stick (`No bootable option` / `No mapping found` in the EFI shell). Either enable **USB 2.0 (EHCI)** or **USB 3.0 (xHCI)** *and* disable OHCI, or boot from the `.iso` / SATA raw VMDK instead.
 
 ## Installing on Raspberry Pi
 

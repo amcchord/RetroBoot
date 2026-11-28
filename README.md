@@ -2,7 +2,7 @@
 
 RetroBoot turns a spare PC, Intel Mac, Raspberry Pi, or Planet Computers Gemini PDA into a dedicated classic Mac for kids, families, and retro enthusiasts—no collector hardware required. Power on, hear a genuine classic Mac startup chime, and the selected Mac takes over the screen. Press **Ctrl+Alt+Delete** on a PC keyboard (or **Windows+Alt+Backspace** on some laptops) at any time to open the local **RetroBoot** panel, or manage everything from a phone or browser on your local network.
 
-[User Manual](docs/manual/README.md) · [Download RetroBoot 3.5.0](https://mcchord.net/retroboot-downloads/#devices) · [Install](docs/guide/installing.md) · [Families & kids](docs/guide/families-and-kids.md) · [Upgrade to 3.5.0](docs/guide/upgrading.md) · [Mac disk library](docs/guide/disk-library.md) · [Web management](docs/guide/web-management.md) · [How it works](docs/dev/how-it-works.md)
+[User Manual](docs/manual/README.md) · [Download RetroBoot 3.5.1](https://mcchord.net/retroboot-downloads/#devices) · [Install](docs/guide/installing.md) · [Families & kids](docs/guide/families-and-kids.md) · [Upgrade to 3.5.1](docs/guide/upgrading.md) · [Mac disk library](docs/guide/disk-library.md) · [Web management](docs/guide/web-management.md) · [How it works](docs/dev/how-it-works.md)
 
 ![A cold boot in Proxmox shows the RetroBoot checkerboard, Mac OS 9 startup and Finder](docs/images/retroboot-proxmox-boot.gif)
 
@@ -21,8 +21,9 @@ RetroBoot is a sister project to **[ClassicMac](https://github.com/amcchord/Clas
 2. **Flash to USB or SD:** Write it with **balenaEtcher**, **Raspberry Pi Imager**, **Fedora Media Writer**, or **Rufus** in **DD Image** mode.
 3. **Boot & pick a Mac:** Choose **Kids & Family: Mac OS 9.2.2 Mega Deluxe v7** (126 unique titles across 8 tabs in a 4-row Launcher with a focused 13-app `Applications` tab, pre-personalized color *The Oregon Trail* v1.2, clean ACTION Menus™ with corner menus removed, ACTION GoMac Battery Monitor & 2-second bar delay, and on-demand Virtual CDs with 0 mounted at boot—featuring Kid Pix Studio Deluxe & Logical Journey of the Zoombinis) or **Mac OS 9.2.2 (Classic Clean desktop)**—or expand **Browse all 14 Library Macs** (including the 68k **Mac OS 8.1 Mega Deluxe v1** tuned for Raspberry Pi Zero 2 W).
 
-## What's in RetroBoot 3.5.0
+## What's in RetroBoot 3.5.1
 
+- **32-bit UEFI (`BOOTIA32.EFI` + `efi_uga`) & VirtualBox documentation (`3.5.1`).** Adds `i386-efi` GRUB (`BOOTIA32.EFI` and `grubia32.efi`) with EFI UGA display support (`efi_uga`) across the installer ISO, Universal raw image, and installed ESP (plus firmware-matching `efibootmgr` registration and `hid-apple` in initramfs) so 64-bit Intel Macs with 32-bit Apple EFI 1.10 (such as 2006–2007 Core 2 Duo MacBooks) and 32-bit EFI PCs/VMs can boot natively, alongside clear VirtualBox setup instructions.
 - **Pi Zero 2 W USB mouse fix, RPi OOBE & Pi Zero 2 W OTA updates (`3.5.0`).** Fixes Raspberry Pi Zero 2 W USB mouse movement (`host`-mode USB replacing `dwc2` OTG under `[pi02]`), adds guided first-start onboarding (Network / Wi-Fi, Bluetooth, Command key, and auto-detected Time Zone) across Pi 4/5 and Pi Zero 2 W (over preloaded System 7.5.5 v2 & Mac OS 8.1 v2), brings signed A/B `tryboot` Software Updates to Pi Zero 2 W on a 4-partition MBR layout alongside a **public unauthenticated update feed** (`https://mcchord.net/retroboot-downloads/feed.json`), hides PowerPC/OS X images on 68k-only boards, and completes 68k Ctrl+Alt+Del Platinum icons.
 - **Polish & bugfixes (`3.4.2`).** Fixes download progress text wrapping (`layout_text_lines` avoids orphan leading `·`, removes duplicate scaled percentages, and uses a wider two-line dialog), turns Mac printing **off by default** (`printer.enabled = false`) with a prominent **Enable Mac printing** toggle at the top of local **Printers…** and Web **Printers**, ensures the Mac startup chime finishes cleanly without being interrupted or doubled during boot (`start_startup_chime`, ALSA `dmix` `buffer_size 8192`), and uses the authentic Mac OS 9 three-wave speaker icon (`speaker_high`) on the Volume/Mute OSD.
 - **Seamless CUPS & Mac OS 9 Color LaserWriter printing (`3.4.1`).** Fixes CUPS network printer discovery and IPP/JetDirect/LPD setup (keeping partial results on slow Avahi/mDNS backends, supporting USB/DNS-SD query `&` URIs, deduplicating protocols, and falling back cleanly to generic PostScript instead of failing `lpadmin` IPP Everywhere on JetDirect/LPD queues), replaces the speaking-message icon with an authentic Mac OS 9 `LaserWriter 8` printer icon, automatically provisions **`RetroBoot Printer`** (**Apple Color LaserWriter 12/600 PS** over TCP/IP LPR `10.0.2.2`, with **AppleTalk kept off** for fast Mac OS 9 startup) when enabled, and fixes Mac OS 9 Desktop PrintMonitor duplicate-header LPD streaming.
@@ -36,18 +37,18 @@ RetroBoot is a sister project to **[ClassicMac](https://github.com/amcchord/Clas
 - **Print to PDF, plug-and-play USB drives & Web Files previews.** Print straight from Mac apps into **`RetroBoot Share/Printed PDFs/`**, plug FAT32 or exFAT USB flash drives into **`RetroBoot Share/USB Drives/`**, preview Apple `PICT`, images, PDFs, and text directly in any browser, move files, and download folders as `.zip`.
 - **Game controllers & authentic Classic Mac input.** Play games with USB or Bluetooth controllers (`Arrow keys` or `WASD`), toggle **Natural scrolling**, choose PC (`Ctrl`) or Mac (`Win`) **Command key** mapping, and keep native unaccelerated Classic Mac mouse tracking with live **Mouse DPI** control.
 - **Safety checkpoints, BitLocker warnings & privacy masking.** Every downloaded or imported catalog Mac automatically saves a zero-cost reflink **Fresh Install** checkpoint, interrupted HFS+ disks snapshot before repair, the installer flags encrypted Windows partitions (`Windows (encrypted)`), and remote **Screen** feeds automatically hide local pairing codes (`PAIRING CODE HIDDEN`).
-- **A/B Software Updates & Raspberry Pi Imager JSON.** x86-64 PCs, Raspberry Pi 4/5, and Raspberry Pi Zero 2 W update live via signed A/B slots (`Software Update` against the public `https://mcchord.net/retroboot-downloads/feed.json` feed) or offline `.rbu` bundles alongside [Release `v3.5.0`](https://github.com/amcchord/RetroBoot/releases/tag/v3.5.0).
+- **A/B Software Updates & Raspberry Pi Imager JSON.** x86-64 PCs, Raspberry Pi 4/5, and Raspberry Pi Zero 2 W update live via signed A/B slots (`Software Update` against the public `https://mcchord.net/retroboot-downloads/feed.json` feed) or offline `.rbu` bundles alongside [Release `v3.5.1`](https://github.com/amcchord/RetroBoot/releases/tag/v3.5.1).
 
 ## Choose your hardware
 
 | Hardware | Install media | Mac runtimes |
 | --- | --- | --- |
-| **x86-64 PC or Intel Mac** | Hybrid USB/DVD ISO or **Universal Raw USB Image** (`.img.xz`). UEFI & legacy BIOS. | Classic PowerPC, Quadra 800 & PowerPC Mac OS X |
+| **x86-64 PC or Intel Mac** | Hybrid USB/DVD ISO or **Universal Raw USB Image** (`.img.xz`). 64-bit & 32-bit UEFI + legacy BIOS. | Classic PowerPC, Quadra 800 & PowerPC Mac OS X |
 | **Raspberry Pi 4, Pi 5 & Pi 400** | Ready-to-flash `.img.xz` via [Pi Imager JSON](https://mcchord.net/retroboot-downloads/rpi-imager.json) or direct download | Classic PowerPC & Quadra 800 |
 | **Raspberry Pi Zero 2 W** | Dedicated microSD image preloaded with System 7.5.5 & Mac OS 8.1 (USB OTG hub required) | 68040 Macs |
 | **Planet Computers Gemini PDA** | Installer bundle run from Gemian | Classic PowerPC & Quadra 800 |
 
-Consult the [installation guide](docs/guide/installing.md) and [verify checksums (`SHA256SUMS`)](https://github.com/amcchord/RetroBoot/releases/tag/v3.5.0) before flashing or erasing a disk. [Open RetroBoot downloads](https://mcchord.net/retroboot-downloads/#devices)
+Consult the [installation guide](docs/guide/installing.md) and [verify checksums (`SHA256SUMS`)](https://github.com/amcchord/RetroBoot/releases/tag/v3.5.1) before flashing or erasing a disk. [Open RetroBoot downloads](https://mcchord.net/retroboot-downloads/#devices)
 
 ## Screenshots
 
@@ -65,10 +66,10 @@ The Debian 13 host handles your hardware quietly behind the scenes—Linux stays
 
 | Guide | Covers |
 | --- | --- |
-| [User Manual](docs/manual/README.md) | Complete 12-chapter RetroBoot 3.5.0 manual, architecture, printing, Web UI, and full settings reference |
+| [User Manual](docs/manual/README.md) | Complete 12-chapter RetroBoot 3.5.1 manual, architecture, printing, Web UI, and full settings reference |
 | [Install](docs/guide/installing.md) | PC, Raspberry Pi, Universal USB/SD, BitLocker & flashing safety |
 | [Families & kids](docs/guide/families-and-kids.md) | Mega Deluxe (Kid Pix, Zoombinis), Print-to-PDF, gamepads & Fresh Install checkpoints |
-| [Upgrade to 3.5.0](docs/guide/upgrading.md) | A/B Software Updates (PC, Pi 4/5 & Zero 2 W) and Gemini upgrades |
+| [Upgrade to 3.5.1](docs/guide/upgrading.md) | A/B Software Updates (PC, Pi 4/5 & Zero 2 W) and Gemini upgrades |
 | [Mac disk library](docs/guide/disk-library.md) | All 14 included guest systems and editions |
 | [Image servers](docs/guide/image-servers.md) | Custom HTTPS catalogs and packaging `retroboot-thin-1` disk archives |
 | [Web management](docs/guide/web-management.md) | Browser pairing, Overview, Files (PICT/ZIP/Move) & remote Screen audio |

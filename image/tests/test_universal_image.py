@@ -199,6 +199,17 @@ def pe_stub(marker):
     return bytes(pe) + f'search --no-floppy --file --set=root /{marker}'.encode()
 
 
+def pe_stub_ia32(marker):
+    pe = bytearray(0x200)
+    pe[0:2] = b'MZ'
+    struct.pack_into('<I', pe, 0x3C, 0x40)
+    pe[0x40:0x44] = b'PE\0\0'
+    struct.pack_into('<H', pe, 0x44, 0x014C)
+    struct.pack_into('<H', pe, 0x40 + 24, 0x10B)
+    struct.pack_into('<H', pe, 0x40 + 24 + 68, 10)
+    return bytes(pe) + f'search --no-floppy --file --set=root /{marker}'.encode()
+
+
 def bzimage_stub(version):
     b = bytearray(0x4000)
     b[0x202:0x206] = b'HdrS'
@@ -233,6 +244,7 @@ class CheckerTest(unittest.TestCase):
         (fat / 'kernel8.img').write_bytes(arm64_stub('6.18.50+rpt-rpi-v8'))
         (fat / 'EFI' / 'BOOT').mkdir(parents=True)
         (fat / 'EFI' / 'BOOT' / 'BOOTX64.EFI').write_bytes(pe_stub(MARKER))
+        (fat / 'EFI' / 'BOOT' / 'BOOTIA32.EFI').write_bytes(pe_stub_ia32(MARKER))
         (fat / 'retroboot').mkdir()
         (fat / 'retroboot' / '.keep').write_text('')
         (pay / 'live' / 'x86_64').mkdir(parents=True)
@@ -329,6 +341,8 @@ class CheckerTest(unittest.TestCase):
             cfg.write_text((IMAGE / 'rpi' / 'boot' / 'config.txt').read_text().replace('enable_uart=1', ''))
             subprocess.run(['mcopy', '-o', '-i', part, str(cfg), '::config.txt'], check=True, env=env)
             self.assertIn('PI-config', self.failed_rules(self.check(img)))
+            subprocess.run(['mdel', '-i', part, '::/EFI/BOOT/BOOTIA32.EFI'], check=True, env=env)
+            self.assertIn('UEFI-ia32', self.failed_rules(self.check(img)))
 
 
 if __name__ == '__main__':

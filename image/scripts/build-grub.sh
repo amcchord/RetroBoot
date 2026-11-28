@@ -1,14 +1,14 @@
 #!/bin/bash
-# Build RetroBoot's quiet GRUB for x86_64-efi and i386-pc from the pinned Debian
-# source package, plus RetroBoot's small gfxterm patch (image/grub/patches).
+# Build RetroBoot's quiet GRUB for x86_64-efi, i386-efi and i386-pc from the
+# pinned Debian source package, plus RetroBoot's small gfxterm patch (image/grub/patches).
 #
 # Why a rebuild: Debian only enables --enable-quiet-boot for Ubuntu. Without it
-# i386-pc prints "Welcome to GRUB!", both platforms print "Booting `...'" and
+# i386-pc prints "Welcome to GRUB!", all platforms print "Booting `...'" and
 # clear the screen before starting Linux, and the text cursor stays enabled.
 #
 # Output (cached by version + patch hash):
-#   $GRUB_OUT/{pc,efi}/lib/grub/{i386-pc,x86_64-efi}/   modules, kernel.img, boot.img
-#   $GRUB_OUT/pc/{bin,sbin}/                             grub-mkimage, grub-bios-setup
+#   $GRUB_OUT/{pc,efi,efi32}/lib/grub/{i386-pc,x86_64-efi,i386-efi}/ modules, kernel.img, boot.img
+#   $GRUB_OUT/pc/{bin,sbin}/                                          grub-mkimage, grub-bios-setup
 #   $GRUB_OUT/build-info.json
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -16,7 +16,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 GRUB_DEB_VERSION=${GRUB_DEB_VERSION:-$(cfg grub_debian_version)}
 patch_hash=$(cat "$IMAGE_SRC"/grub/patches/*.patch | sha256sum | cut -c1-12)
-GRUB_OUT=${GRUB_OUT:-$CACHE/grub-${GRUB_DEB_VERSION//[^A-Za-z0-9.]/_}-quiet-$patch_hash}
+GRUB_OUT=${GRUB_OUT:-$CACHE/grub-${GRUB_DEB_VERSION//[^A-Za-z0-9.]/_}-quiet-dualefi-$patch_hash}
 echo "$GRUB_OUT"
 [ -f "$GRUB_OUT/.complete" ] && exit 0
 command -v gawk >/dev/null || die "GNU awk (gawk) is required to build GRUB"
@@ -60,8 +60,10 @@ build_platform() {
 }
 log "building GRUB i386-pc"; build_platform pc pc i386
 log "building GRUB x86_64-efi"; build_platform efi efi x86_64
+log "building GRUB i386-efi"; build_platform efi32 efi i386
 grep -q '^#define QUIET_BOOT 1' "$work/build-pc/config.h" || die "quiet boot not enabled (pc)"
 grep -q '^#define QUIET_BOOT 1' "$work/build-efi/config.h" || die "quiet boot not enabled (efi)"
+grep -q '^#define QUIET_BOOT 1' "$work/build-efi32/config.h" || die "quiet boot not enabled (efi32)"
 if strings -a "$GRUB_OUT/pc/lib/grub/i386-pc/kernel.img" | grep -q 'Welcome to GRUB'; then
   die "i386-pc kernel still contains the welcome banner"
 fi

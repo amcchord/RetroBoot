@@ -47,7 +47,7 @@ esac
 
 . /usr/share/initramfs-tools/hook-functions
 
-for module in bochs virtio-gpu qxl i915 \
+for module in bochs virtio-gpu qxl i915 hid-apple \
               squashfs overlay iso9660 loop sr_mod uas usb_storage xfs \
               vfat nls_cp437 nls_ascii; do
     if modinfo -k "${version}" "$module" >/dev/null 2>&1; then

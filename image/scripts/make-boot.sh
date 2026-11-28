@@ -4,7 +4,8 @@
 #   make-boot.sh OUTDIR
 #
 # OUTDIR/esp/        files for the RBEFI partition (EFI/BOOT/BOOTX64.EFI,
-#                    EFI/retroboot/grubx64.efi, grub/grub.cfg, fonts, checkerboard)
+#                    EFI/BOOT/BOOTIA32.EFI, EFI/retroboot/{grubx64,grubia32}.efi,
+#                    grub/grub.cfg, fonts, checkerboard)
 # OUTDIR/i386-pc/    boot.img, core.img and grub-bios-setup for the BIOS boot partition
 # OUTDIR/boot.json   provenance (GRUB build, modules, hashes, kernel command line)
 #
@@ -20,14 +21,18 @@ cmdline=$(tr -s ' \n' ' ' < "$IMAGE_SRC/config/cmdline" | sed 's/ $//')
 rm -rf "$out"; mkdir -p "$out/esp/EFI/BOOT" "$out/esp/EFI/retroboot" "$out/esp/grub/fonts" "$out/esp/grub/retroboot" "$out/i386-pc"
 
 common_mods="part_gpt part_msdos fat ext2 normal configfile linux search search_fs_file search_fs_uuid search_label regexp test echo loadenv gfxterm gfxterm_background png font video halt reboot"
-# EFI: GOP only. A native bochs/cirrus driver would modeset behind the
-# firmware's back and the kernel would inherit stale GOP information.
-efi_mods="$common_mods efi_gop"
+# EFI: GOP plus UGA (32-bit Apple EFI 1.10 on early Core 2 Duo Macs; GRUB ranks efi_gop ahead of efi_uga).
+# A native bochs/cirrus driver would modeset behind the firmware's back and the kernel would inherit stale GOP state.
+efi_mods="$common_mods efi_gop efi_uga"
 bios_mods="$common_mods biosdisk vbe"
 
 "$grub/pc/bin/grub-mkimage" -d "$grub/efi/lib/grub/x86_64-efi" -O x86_64-efi -p /grub \
   -o "$out/esp/EFI/BOOT/BOOTX64.EFI" $efi_mods
 cp "$out/esp/EFI/BOOT/BOOTX64.EFI" "$out/esp/EFI/retroboot/grubx64.efi"
+
+"$grub/pc/bin/grub-mkimage" -d "$grub/efi32/lib/grub/i386-efi" -O i386-efi -p /grub \
+  -o "$out/esp/EFI/BOOT/BOOTIA32.EFI" $efi_mods
+cp "$out/esp/EFI/BOOT/BOOTIA32.EFI" "$out/esp/EFI/retroboot/grubia32.efi"
 
 "$grub/pc/bin/grub-mkimage" -d "$grub/pc/lib/grub/i386-pc" -O i386-pc -p '(,gpt1)/grub' \
   -o "$out/i386-pc/core.img" $bios_mods
@@ -64,4 +69,4 @@ json.dump({'grub': info, 'kernel_cmdline': cmdline, 'efi_modules': efi_mods.spli
            'bios_modules': bios_mods.split(), 'files_sha256': files},
           open(root / 'boot.json', 'w'), indent=2)
 EOF
-log "boot payload ready: EFI $(stat -c %s "$out/esp/EFI/BOOT/BOOTX64.EFI") bytes, core.img $core_size bytes"
+log "boot payload ready: EFI64 $(stat -c %s "$out/esp/EFI/BOOT/BOOTX64.EFI") bytes, EFI32 $(stat -c %s "$out/esp/EFI/BOOT/BOOTIA32.EFI") bytes, core.img $core_size bytes"

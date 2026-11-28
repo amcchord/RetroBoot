@@ -16,7 +16,7 @@ From the instant firmware hands off to the bootloader until the Mac OS Finder ap
 
 Standard Linux distributions print kernel messages, initialize framebuffer consoles (`fbcon`), clear the display during KMS driver handoffs, and launch login managers (`getty`). RetroBoot suppresses every Linux surface across four stages:
 
-1. **Quiet Bootloader (GRUB):** RetroBoot's patched GRUB 2.12 uses `timeout=0`, `timeout_style=hidden`, `gfxpayload=keep`, and an empty glyph font (`blank.pf2`) so no menu or text renders. On UEFI it preserves the firmware GOP mode and paints the anchored 50% checkerboard (`rb_startup_scene`) directly over the firmware image.
+1. **Quiet Bootloader (GRUB):** RetroBoot's patched GRUB 2.12 ships 64-bit UEFI (`BOOTX64.EFI`), 32-bit UEFI (`BOOTIA32.EFI` with `efi_gop` and `efi_uga` for 32-bit EFI 64-bit Macs), and legacy BIOS (`i386-pc`), using `timeout=0`, `timeout_style=hidden`, `gfxpayload=keep`, and an empty glyph font (`blank.pf2`) so no menu or text renders. On UEFI it preserves the firmware GOP/UGA mode and paints the anchored 50% checkerboard (`rb_startup_scene`) directly over the firmware image.
 2. **Silent Kernel (`config/cmdline`):** Boot parameters pass `quiet loglevel=0 rd.udev.log_level=0 systemd.show_status=false rd.systemd.show_status=false vt.global_cursor_default=0 console=ttyS0,115200` together with `video=efifb:off video=vesafb:off fbcon=map:9 drm_kms_helper.fbdev_emulation=0`. Because Debian 13 has no `simpledrm` and framebuffer consoles are disabled, `fbcon` never clears or writes to the screen.
 3. **Initramfs Splash (`rb-splash`):** Before systemd even starts, `rb-splash` draws the exact same anchored checkerboard on any DRM/KMS device that appears and animates the Happy Mac progress bar (or the Mac OS 9.2-style installer startup box in installer mode).
 4. **Masked Consoles & Unified Compositor:** Product builds mask `getty@.service`, `serial-getty@.service`, `getty.target`, `ctrl-alt-del.target`, and console password prompts. `rb-presenter` inherits the DRM master directly from `rb-splash` with no video mode change, and every setup, error, and recovery screen renders in native Mac OS 8/9 Platinum styling. (Pressing `Escape` on the checkerboard reveals the optional Platinum **Startup Details** diagnostic window if startup stalls.)
@@ -94,7 +94,7 @@ sequenceDiagram
     participant Hostd as hostd + guestprep
     participant QEMU as QEMU Guest
 
-    FW->>GRUB: Transfers video mode (GOP or VBE)
+    FW->>GRUB: Transfers video mode (GOP, UGA, or VBE)
     GRUB->>GRUB: Draws anchored checkerboard + empty Happy Mac bar
     GRUB->>Splash: Boots quiet Linux kernel (fbcon disabled)
     Splash->>Splash: Keeps checkerboard, animates bar & 1 Hz green LED

@@ -14,7 +14,7 @@ On the computer, the same controls are in **Ctrl+Alt+Delete ▸ Software Update�
 
 ## Where updates come from
 
-An update is a signed bundle whose name ends in `.rbu`—for example `retroboot-update-3.5.0-product.rbu` (x86-64 PC), `retroboot-update-3.5.0-rpi-product.rbu` (Raspberry Pi 4/5), or `retroboot-update-3.5.0-rpi-zero2w-product.rbu` (Raspberry Pi Zero 2 W). RetroBoot verifies the signature before writing anything and refuses unsigned files, corrupted downloads, or bundles for the wrong architecture, board, Pi model, or flavor.
+An update is a signed bundle whose name ends in `.rbu`—for example `retroboot-update-3.5.1-product.rbu` (x86-64 PC), `retroboot-update-3.5.1-rpi-product.rbu` (Raspberry Pi 4/5), or `retroboot-update-3.5.1-rpi-zero2w-product.rbu` (Raspberry Pi Zero 2 W). RetroBoot verifies the signature before writing anything and refuses unsigned files, corrupted downloads, or bundles for the wrong architecture, board, Pi model, or flavor.
 
 | Way | How |
 | --- | --- |

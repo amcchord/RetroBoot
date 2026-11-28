@@ -12,13 +12,13 @@ Because QEMU translates 68040 and PowerPC instructions in software using its Tin
 
 | Platform | CPU Architecture | Boot Loader & Partitioning | Supported Mac Runtimes | Software Update | Notes |
 | --- | --- | --- | --- | --- | --- |
-| **x86-64 PC** | `x86_64` | Hybrid GRUB (UEFI + Legacy BIOS), GPT | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2), PowerPC Mac OS X (10.2.8–10.4.11) | Signed A/B `.rbu` OTA & USB | Primary platform; supports ATI Radeon 3D on hardware OpenGL ES 3.0 GPUs |
-| **Intel Mac** | `x86_64` | Hybrid GRUB (UEFI via Option/Alt boot), GPT | 68040, PowerPC Classic, PowerPC Mac OS X | Signed A/B `.rbu` OTA & USB | Boot installer via Option/Alt startup manager; target drive erased completely |
+| **x86-64 PC** | `x86_64` | Hybrid GRUB (64-bit & 32-bit UEFI + Legacy BIOS), GPT | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2), PowerPC Mac OS X (10.2.8–10.4.11) | Signed A/B `.rbu` OTA & USB | Primary platform; supports ATI Radeon 3D on hardware OpenGL ES 3.0 GPUs |
+| **Intel Mac** | `x86_64` | Hybrid GRUB (64-bit & 32-bit UEFI via Option/Alt boot), GPT | 68040, PowerPC Classic, PowerPC Mac OS X | Signed A/B `.rbu` OTA & USB | Supports 64-bit & 32-bit EFI Macs (`BOOTX64.EFI` + `BOOTIA32.EFI` + `efi_uga` for 2006–2007 Core 2 Duo Macs; Core Duo 32-bit CPUs unsupported) |
 | **Raspberry Pi 4 / 400 / CM4 / CM4S** | `aarch64` (BCM2711, Cortex-A72) | Pi EEPROM + `kernel8.img` (4 KiB pages), GPT | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2) | A/B `tryboot` `.rbu` or card migration | Pi 4 requires EEPROM `>= 2020-09-03` for GPT SD/USB boot; 3.5 mm jack on Pi 4B |
 | **Raspberry Pi 5 / 500 / CM5** | `aarch64` (BCM2712, Cortex-A76) | Pi EEPROM + `kernel8.img` (4 KiB pages), GPT | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2) | A/B `tryboot` `.rbu` or card migration | Uses 4 KiB-page `kernel8.img` (not `kernel_2712.img`); hardware power button & RTC |
 | **Raspberry Pi Zero 2 W** | `aarch64` (BCM2837, Cortex-A53, 512 MB) | Pi firmware (`dwc_otg` USB) + `kernel8.img`, 4-partition MBR | **68040 Quadra 800 only** (7.5.5, 8.1) | A/B `tryboot` `.rbu` (or 3-part card migration) | Excludes PowerPC runtimes; no DSI port; requires USB OTG adapter/hub |
 | **Planet Computers Gemini PDA** | `aarch64` (MT6797X / Helio X27) | MediaTek LK `boot.img` (`boot` p22), `/retroboot` in `linux` p29 | 68040 (7.5.5–8.1), PowerPC Classic (8.5–9.2.2) | `gemini-install.sh --keep-data --activate` | Dual-boot alongside Gemian; lid sleep, Hall sensor, speaker/headphone switch |
-| **Proxmox / KVM / QEMU VMs** | `x86_64` (`q35`) or `aarch64` (`virt`) | OVMF (UEFI) or SeaBIOS (Legacy BIOS) | All 3 runtimes (`x86_64`); 68k/PPC (`aarch64`) | Signed A/B `.rbu` (`x86_64` VMs) | Software-path validation; does not qualify real display, Wi-Fi, audio, or speed |
+| **Proxmox / KVM / QEMU / VirtualBox VMs** | `x86_64` (`q35` / `Debian_64`) or `aarch64` (`virt`) | OVMF (`x64`/`ia32`), VirtualBox EFI/BIOS, or SeaBIOS | All 3 runtimes (`x86_64`); 68k/PPC (`aarch64`) | Signed A/B `.rbu` (`x86_64` VMs) | Software-path validation; VirtualBox USB boot requires EHCI/xHCI (OHCI off); does not qualify physical display, Wi-Fi, audio, or speed |
 
 > [!NOTE]
 > Physical hardware validation (display wiring, touch, battery gauges, Wi-Fi radios, speakers, and real-time clock/speed) is strictly distinct from Proxmox VM and QEMU emulator tests. Always verify hardware-specific claims against physical device reports rather than VM captures.
@@ -48,12 +48,12 @@ Because QEMU translates 68040 and PowerPC instructions in software using its Tin
   - **8 GiB absolute minimum:** `install-to-disk` and `list-disks` reject any target drive smaller than **8 GiB** because the fixed system partitions (`RBEFI` 256 MiB + `BIOSBOOT` 1 MiB + `RBROOT_A` 3 GiB + `RBROOT_B` 3 GiB) consume ~6.25 GiB before `RBDATA` and its mandatory 1 GiB free margin.
   - **16–32+ GiB (or 64+ GiB) recommended:** Required for **Kids & Family: Mac OS 9.2.2 Mega Deluxe v7** (`4,254,239,361` B / `3.96 GiB` thin archive inside a 32 GiB sparse disk), **Mac OS X Period & Tiger Deluxe** editions, additional Mac installations, XFS reflink checkpoints, `RetroBoot Share` files, and uploaded CD images in `/var/lib/retroboot/media/`.
 - **Raspberry Pi microSD / USB SSD:** **16 GB minimum** microSD card (Class 10 / A1 / U1 or better) or USB SSD/NVMe; `RBDATA` automatically expands to fill the remaining card space on first boot.
-- **Installer USB Stick:** **4 GB+** USB drive for `retroboot-installer-3.5.0-product.iso` or `retroboot-installer-3.5.0-universal-product.img.xz`.
+- **Installer USB Stick:** **4 GB+** USB drive for `retroboot-installer-3.5.1-product.iso` or `retroboot-installer-3.5.1-universal-product.img.xz`.
 
 ### Firmware Settings
 
 - **x86-64 PC & Intel Mac:**
-  - **UEFI** (`BOOTX64.EFI`) and **Legacy BIOS** (`grub-bios-setup` + `BIOSBOOT`) are both supported by the hybrid installer and installed layout.
+  - **64-bit UEFI (`BOOTX64.EFI`), 32-bit UEFI (`BOOTIA32.EFI` + `efi_uga`),** and **Legacy BIOS** (`grub-bios-setup` + `BIOSBOOT`) are all supported by the hybrid installer, universal USB/SD image, and installed layout. Early 2006–2007 64-bit Core 2 Duo Macs with 32-bit Apple EFI must still have an `x86_64`-capable CPU (32-bit-only Core Duo/Core Solo Macs remain unsupported). Note that 32-bit Apple EFI 1.10 (`uga` framebuffer) fixes cannot be verified physically without a 2007 MacBook and are tested under QEMU `ovmf-ia32` and VirtualBox `efi32`.
   - **Secure Boot must be OFF:** RetroBoot's GRUB bootloader and Debian kernel are not signed for Microsoft Secure Boot.
   - **Fast Boot should be OFF:** Prevents the firmware from skipping USB controller initialization, which can hide USB keyboards or installer sticks at early boot (observed on GPD MicroPC and Ryzen mini PCs).
   - **Windows BitLocker warning:** Save your BitLocker Recovery Key at `https://aka.ms/myrecoverykey` before disabling Secure Boot or wiping any drive.
@@ -178,6 +178,7 @@ Measured inside Proxmox VE virtual machines (`q35`, 4 vCPU `x86-64-v3`, OVMF/Sea
 | **Proxmox VM 165 / 169** (x86-64) | System 7.5.5 & Mac OS 8.1 (68040 Quadra 800) | `~8.8–9.1 s` kernel launch → Finder (`~4.7–4.8 s` after QEMU start) | `7.4%` (8.1) / `10.8%` (7.5.5) whole-VM idle CPU (`3.0–3.5%` emulator with `RetroBoot Idle`); Speedometer 4.02 CPU `~34.7`, Gfx `34.0` |
 | **Proxmox VM 350 / 351** (x86-64) | RetroBoot `3.4.2` + Mega Deluxe v6 | Fresh ISO install & signed A/B `3.4.1 -> 3.4.2 -> 3.4.1` verified | Confirmed default-off `Enable Mac printing` checkmark + PDF test page + `RetroBoot Printer` on restart, 3-wave Volume OSD, clean download wrap, & serialized startup chime |
 | **Proxmox VM 352 / 353** (x86-64) | RetroBoot `3.5.0` (`8.1` 68k & `9.2.2`) | Fresh ISO install & signed A/B `3.4.2 -> 3.5.0 -> 3.4.2` verified | Confirmed 68k `rbplatinum` panel icons on Mac OS 8.1, public feed default URL, and live A/B upgrade commit & rollback |
+| **VirtualBox 6.0.24 & 7.1** (`x86_64`) | RetroBoot `3.5.1` (`Debian_64`, EFI64/EFI32/BIOS) | ISO, SATA/IDE raw VMDK, USB EHCI/xHCI (OHCI off) verified | Confirmed `BOOTIA32.EFI` + `efi_uga` mixed-mode UEFI boot; VirtualBox EFI has no `OhciDxe` USB 1.1 driver |
 | **ARM64 QEMU `virt`** (`qa-pi45`, `qa-zero2w`) | Pi 4/5 Setup & Zero 2 W System 7.5.5 | Reaches Setup (`pi45`) & System 7.5.5 Finder (`zero2w`) in software QA | Validates rootfs, `rpi-profile.json`, and 68k guest path only; does not test Pi firmware, HDMI/DSI/GPIO wiring, touch, Wi-Fi, or physical speed |
 
 ---

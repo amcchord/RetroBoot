@@ -171,12 +171,14 @@ if [ -n "$startup_initrd" ]; then
   cat "$work/startup.cpio" >> "$fat/initramfs8"
 fi
 
-# BOOTX64.EFI and the BIOS core image: the ISO's module set, the embedded configuration
+# BOOTX64.EFI, BOOTIA32.EFI and the BIOS core image: the ISO's module set, the embedded configuration
 # that finds the payload by its marker (grub/embed-iso.cfg.in); MBR partitions on a disk
 mods="part_gpt part_msdos fat iso9660 ext2 normal configfile linux search search_fs_file search_fs_uuid search_label regexp test echo loadenv gfxterm gfxterm_background png font video halt reboot keystatus"
 sed "s|@MARKER@|$marker|" "$IMAGE_SRC/grub/embed-iso.cfg.in" > "$work/embed.cfg"
 "$grub/pc/bin/grub-mkimage" -d "$grub/efi/lib/grub/x86_64-efi" -O x86_64-efi -p /boot/grub -c "$work/embed.cfg" \
-  -o "$fat/EFI/BOOT/BOOTX64.EFI" $mods efi_gop
+  -o "$fat/EFI/BOOT/BOOTX64.EFI" $mods efi_gop efi_uga
+"$grub/pc/bin/grub-mkimage" -d "$grub/efi32/lib/grub/i386-efi" -O i386-efi -p /boot/grub -c "$work/embed.cfg" \
+  -o "$fat/EFI/BOOT/BOOTIA32.EFI" $mods efi_gop efi_uga
 mkdir -p "$work/bios"
 "$grub/pc/bin/grub-mkimage" -d "$grub/pc/lib/grub/i386-pc" -O i386-pc -p /boot/grub -c "$work/embed.cfg" \
   -o "$work/bios/core.img" $mods biosdisk vbe

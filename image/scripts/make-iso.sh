@@ -129,7 +129,9 @@ cp "$boot/esp/grub/retroboot/checker-default"*.png "$tree/boot/grub/retroboot/"
 
 mods="part_gpt part_msdos fat iso9660 ext2 normal configfile linux search search_fs_file search_fs_uuid search_label regexp test echo loadenv gfxterm gfxterm_background png font video halt reboot keystatus"
 "$grub/pc/bin/grub-mkimage" -d "$grub/efi/lib/grub/x86_64-efi" -O x86_64-efi -p /boot/grub -c "$tree/embed.cfg" \
-  -o "$tree/EFI/BOOT/BOOTX64.EFI" $mods efi_gop
+  -o "$tree/EFI/BOOT/BOOTX64.EFI" $mods efi_gop efi_uga
+"$grub/pc/bin/grub-mkimage" -d "$grub/efi32/lib/grub/i386-efi" -O i386-efi -p /boot/grub -c "$tree/embed.cfg" \
+  -o "$tree/EFI/BOOT/BOOTIA32.EFI" $mods efi_gop efi_uga
 "$grub/pc/bin/grub-mkimage" -d "$grub/pc/lib/grub/i386-pc" -O i386-pc-eltorito -p /boot/grub -c "$tree/embed.cfg" \
   -o "$tree/boot/grub/i386-pc/eltorito.img" $mods biosdisk vbe
 rm "$tree/embed.cfg"
@@ -155,10 +157,11 @@ Control-Alt-Delete opens settings and troubleshooting during installation.
 Wi-Fi (optional): open the retroboot folder on this partition, rename
 network.conf.example to network.conf, and enter your network details.
 EOF
-truncate -s 4M "$tree/efi.img"
+truncate -s 8M "$tree/efi.img"
 mkfs.vfat -n RBINSTEFI "$tree/efi.img" >/dev/null
 mmd -i "$tree/efi.img" ::/EFI ::/EFI/BOOT ::/retroboot
 mcopy -i "$tree/efi.img" "$tree/EFI/BOOT/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
+mcopy -i "$tree/efi.img" "$tree/EFI/BOOT/BOOTIA32.EFI" ::/EFI/BOOT/BOOTIA32.EFI
 mcopy -i "$tree/efi.img" "$efi_stage/network.conf.example" ::/retroboot/network.conf.example
 mcopy -i "$tree/efi.img" "$efi_stage/SETUP.txt" ::/SETUP.txt
 rm -rf "$efi_stage"; efi_stage=

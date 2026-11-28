@@ -19,7 +19,7 @@ RetroBoot updates its own Linux system, emulator packages, presenter, and web ma
 
 ### Signed Ed25519 `.rbu` Bundles
 
-Every RetroBoot update is packaged as an uncompressed POSIX tar bundle ending in `.rbu`—for example `retroboot-update-3.5.0-product.rbu` (x86-64 PC), `retroboot-update-3.5.0-rpi-product.rbu` (Raspberry Pi 4/5/400), or `retroboot-update-3.5.0-rpi-zero2w-product.rbu` (Raspberry Pi Zero 2 W). Each bundle contains four members in strict order:
+Every RetroBoot update is packaged as an uncompressed POSIX tar bundle ending in `.rbu`—for example `retroboot-update-3.5.1-product.rbu` (x86-64 PC), `retroboot-update-3.5.1-rpi-product.rbu` (Raspberry Pi 4/5/400), or `retroboot-update-3.5.1-rpi-zero2w-product.rbu` (Raspberry Pi Zero 2 W). Each bundle contains four members in strict order:
 
 1. `manifest.json` — version, `build_id`, flavor (`product` or `debug`), `min_version`, `settings_schema`, kernel arguments, and payload hashes.
 2. `manifest.sig` — an **Ed25519** signature (`retroboot-update-sig/1`) over the exact bytes of `manifest.json`.
@@ -210,6 +210,9 @@ No. Product builds mask `getty@tty1` and hide GRUB (`timeout=0`) so Linux stays 
 
 **Why did Rufus produce an unbootable USB installer on Windows?**
 Always choose **DD Image mode** when Rufus prompts. ISO mode alters the partition layout and breaks dual UEFI/BIOS boot and the `RBINSTEFI` partition.
+
+**Why does VirtualBox fail to boot the raw `.img` or stop at `UEFI Interactive Shell`?**
+Check three settings: (1) use a **64-bit Linux** guest type (e.g. `Debian (64-bit)`, never `Mac OS X (32-bit)` or 32-bit templates), (2) boot `retroboot-installer-3.5.1-product.iso` or a SATA/IDE raw VMDK rather than raw USB whenever possible, and (3) if attaching over virtual USB under VirtualBox EFI, disable **USB 1.1 (OHCI)** and use **USB 2.0 (EHCI)** or **USB 3.0 (xHCI)** because VirtualBox's UEFI firmware does not include an OHCI driver.
 
 **How do I reset a Mac OS disk if an extension or System Folder change breaks startup?**
 Shut down Mac OS (or force stop if stuck), open **Ctrl+Alt+Delete → Startup Disk → Checkpoints…**, and restore the automatic **Fresh Install** checkpoint or your latest manual checkpoint.

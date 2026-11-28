@@ -703,6 +703,14 @@ def check(image, min_fat_mib=512, rpi_config=None, deep=False):
         if marker:
             r.expect(efi is not None and marker.encode() in efi, 'UEFI-marker',
                      'BOOTX64.EFI\'s embedded config searches this build\'s marker', 'BOOTX64.EFI lacks the marker')
+        efi32 = fat.read('EFI/BOOT/BOOTIA32.EFI')
+        info32 = pe_info(efi32)
+        r.expect(info32 is not None and info32[0] == 0x014C and info32[1] == 10 and not info32[2], 'UEFI-ia32',
+                 r'\EFI\BOOT\BOOTIA32.EFI: PE32 IA32 EFI application (32-bit EFI Macs/PCs)',
+                 f'BOOTIA32.EFI: {info32}')
+        if marker:
+            r.expect(efi32 is not None and marker.encode() in efi32, 'UEFI-ia32-marker',
+                     'BOOTIA32.EFI\'s embedded config searches this build\'s marker', 'BOOTIA32.EFI lacks the marker')
         r.expect(fat.lookup('retroboot') is not None, 'FAT-retroboot', 'retroboot/ folder for network.conf, '
                  'lab-auth.env and Startup Details reports', 'no retroboot/ folder')
         stray = [n for n in ('grub', 'EFI/retroboot') if fat.lookup(n)]

@@ -217,9 +217,22 @@ def validate_inputs(args):
         except rpi_layout.LayoutError as error:
             raise InstallError(str(error)) from None
         return
-    for need in ('esp/EFI/BOOT/BOOTX64.EFI', 'esp/grub/grub.cfg', 'i386-pc/core.img', 'i386-pc/boot.img', 'i386-pc/grub-bios-setup'):
+    for need in ('esp/EFI/BOOT/BOOTX64.EFI', 'esp/EFI/BOOT/BOOTIA32.EFI', 'esp/EFI/retroboot/grubx64.efi',
+                 'esp/EFI/retroboot/grubia32.efi', 'esp/grub/grub.cfg', 'i386-pc/core.img',
+                 'i386-pc/boot.img', 'i386-pc/grub-bios-setup'):
         if not os.path.exists(os.path.join(BOOT, need)):
             raise InstallError(f'boot payload incomplete: {need}')
+
+
+def efi_nvram_loader(fw_size_path='/sys/firmware/efi/fw_platform_size'):
+    """Firmware-matching GRUB loader path on RBEFI for efibootmgr (64-bit vs 32-bit EFI)."""
+    try:
+        with open(fw_size_path) as f:
+            if f.read().strip() == '32':
+                return '\\EFI\\retroboot\\grubia32.efi'
+    except OSError:
+        pass
+    return '\\EFI\\retroboot\\grubx64.efi'
 
 
 def validate_free_space(args, disk):
@@ -817,7 +830,7 @@ def install(args):
                     if m:
                         run(['efibootmgr', '-q', '-b', m.group(1), '-B'])
                 run(['efibootmgr', '-q', '-c', '-d', args.target, '-p', '1', '-L', 'RetroBoot',
-                     '-l', '\\EFI\\retroboot\\grubx64.efi'])
+                     '-l', efi_nvram_loader()])
                 # Skip the firmware's boot-option countdown where the firmware honours it.
                 run(['efibootmgr', '-q', '-t', '0'])
                 nvram = 'entry created'

@@ -42,7 +42,7 @@ If no Mac disk is installed yet—or on a fresh **Raspberry Pi** microSD card—
 
 Press **Ctrl+Alt+Delete** at any time—whether Mac OS is starting, running normally, or frozen—to open the **RetroBoot** window over the dimmed Mac screen (`hostd/retroboot/panel/controller.py`). Mac OS continues running underneath, and the recovery key chord is intercepted before Mac OS ever sees it. (You can also pause boot on the checkerboard by pressing **Escape** and then **Return** to open **Startup Options**.)
 
-<img src="../images/manual/panel-main-341.png" width="640" alt="RetroBoot 3.5.0 local Ctrl+Alt+Delete Platinum Control Panel over Mac OS 9.2.2">
+<img src="../images/manual/panel-main-341.png" width="640" alt="RetroBoot 3.5.1 local Ctrl+Alt+Delete Platinum Control Panel over Mac OS 9.2.2">
 
 ### Control Panel Icons
 
